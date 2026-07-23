@@ -1,0 +1,80 @@
+# ---------------------------------------------------------------------------
+# Generated assets. Reproduced by `make assets` from tools/gen_*.py, and
+# rtl/banner.hex is rewritten in place by `make render-i`, which would
+# otherwise show up as a spurious diff every time.
+# ---------------------------------------------------------------------------
+rtl/font8x8.hex
+rtl/banner.hex
+rtl/banner_i.hex
+
+# ---------------------------------------------------------------------------
+# Simulation
+# ---------------------------------------------------------------------------
+README_preview.html
+sim/*.vvp
+sim/*.vcd
+sim/*.lxt
+sim/*.fst
+rtl/render.txt
+
+# ---------------------------------------------------------------------------
+# Quartus
+# ---------------------------------------------------------------------------
+quartus/output_files/
+quartus/blitscrt.txt
+quartus/db/
+quartus/incremental_db/
+quartus/greybox_tmp/
+quartus/simulation/
+quartus/.qsys_edit/
+quartus/hps_isw_handoff/
+quartus/*.qws
+quartus/*.rpt
+quartus/*.summary
+quartus/*.smsg
+quartus/*.done
+quartus/*.jdi
+quartus/*.pin
+quartus/*.sld
+quartus/*.qdf
+quartus/*.qarlog
+quartus/*.sopcinfo
+quartus/*.bak
+quartus/PLLJ_PLLSPE_INFO.txt
+
+# Platform Designer generated output, from M2 onward. The .qsys source is
+# tracked; what it generates is not.
+quartus/*/synthesis/
+quartus/*/simulation/
+quartus/*_sim/
+
+# ---------------------------------------------------------------------------
+# Toolchain and editors
+# ---------------------------------------------------------------------------
+__pycache__/
+*.pyc
+*.swp
+*~
+.vscode/
+.idea/
+.DS_Store
+
+# ---------------------------------------------------------------------------
+# Deliberately tracked, listed here so nobody adds a rule that kills them:
+#
+#   sim/*.png       the README embeds these; ignoring them breaks the page
+#   docs/images/*   hardware photographs and the runtime clip, embedded
+#   docs/video/*    the full-length capture the GIF is cut from
+#   sdcard/*.txt    the u-boot override is source, not output
+#   quartus/*.qsf   project settings
+#   quartus/*.qpf   project file
+#   quartus/*.sdc   timing constraints
+#   quartus/*.tcl   pin assignments
+# ---------------------------------------------------------------------------
+
+# gadget daemon
+sw/*.o
+sw/blitscrtd
+sw/test_pll
+sw/test_modes
+sw/test_device

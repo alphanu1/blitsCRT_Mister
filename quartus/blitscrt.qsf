@@ -1,0 +1,65 @@
+# blitsCRT_Mister -- milestone 1, fabric only
+#
+# Build the interlaced variant by uncommenting the MODE macro below.
+
+set_global_assignment -name TOP_LEVEL_ENTITY blitscrt_top
+# No LAST_QUARTUS_VERSION here. The string is version-specific and Quartus
+# writes its own on first save. Built and tested against Prime Lite 24.1std.
+
+set_global_assignment -name GENERATE_RBF_FILE ON
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL
+
+# Everything not assigned in pins.tcl -- SDRAM, HDMI, the HPS-side GPIO -- must
+# stay released. Driving those pins from a design that knows nothing about what
+# is on the other end is how boards die.
+#
+# The two settings take different value sets. RESERVE_ALL_UNUSED_PINS accepts
+# the weak pull-up variant; RESERVE_ALL_UNUSED_PINS_NO_OUTPUT_GND takes only
+# "As input tri-stated" or "As output driving an unspecified signal".
+set_global_assignment -name RESERVE_ALL_UNUSED_PINS "AS INPUT TRI-STATED WITH WEAK PULL-UP"
+set_global_assignment -name RESERVE_ALL_UNUSED_PINS_NO_OUTPUT_GND "AS INPUT TRI-STATED"
+
+set_global_assignment -name MIN_CORE_JUNCTION_TEMP "-40"
+set_global_assignment -name MAX_CORE_JUNCTION_TEMP 100
+
+# $readmemh in font_rom/char_ram uses bare filenames so the same source runs
+# under Icarus from rtl/ and under Quartus from here.
+set_global_assignment -name SEARCH_PATH ../rtl
+
+# Mode is selected at runtime. These set what comes up at reset:
+#
+#   0  320x240p60  15.764 kHz   15kHz CRT
+#   1  640x480i60  15.750 kHz   15kHz CRT, standard 480i
+#   2  640x480p60  31.500 kHz   any VGA or HDMI display, no DAC needed
+#
+# Both default to 1. 640x480i60 is a standard SD format, so an HDMI sink is far
+# more likely to accept it than 320x240p, and a 15kHz CRT takes it either way.
+# Set DEFAULT_VGA to 0 for 240p once the analog path is known good.
+#
+# DEFAULT_VGA applies when the analog board is fitted, DEFAULT_HDMI when it is
+# not. BTN_OSD cycles from there. Set FORCE_MODE to 0, 1 or 2 to pin one and
+# ignore detection entirely.
+set_parameter -name DEFAULT_VGA  1
+set_parameter -name DEFAULT_HDMI 1
+set_parameter -name FORCE_MODE   -1
+
+# Composite sync on the HS pin, for SCART pin 20.
+set_parameter -name CSYNC 0
+
+set_global_assignment -name VERILOG_FILE ../rtl/blitscrt_top.v
+set_global_assignment -name VERILOG_FILE ../rtl/video_timing.v
+set_global_assignment -name VERILOG_FILE ../rtl/testcard.v
+set_global_assignment -name VERILOG_FILE ../rtl/overlay.v
+set_global_assignment -name VERILOG_FILE ../rtl/char_ram.v
+set_global_assignment -name VERILOG_FILE ../rtl/font_rom.v
+set_global_assignment -name VERILOG_FILE ../rtl/pll_modes.v
+set_global_assignment -name VERILOG_FILE ../rtl/mode_table.v
+set_global_assignment -name VERILOG_FILE ../rtl/adv7513_init.v
+set_global_assignment -name VERILOG_FILE ../rtl/i2c_master.v
+
+set_global_assignment -name SDC_FILE blitscrt.sdc
+
+source pins.tcl
+
+set_global_assignment -name LAST_QUARTUS_VERSION "24.1std.0 Lite Edition"

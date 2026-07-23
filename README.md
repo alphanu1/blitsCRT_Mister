@@ -18,22 +18,24 @@ yet.
 ## Lineage
 
 This grew out of **BlitCRT** — <https://github.com/alphanu1/blitcrt> — my 15kHz
-FPGA video card, built as a blit streamer. The host pushes damage rectangles
-straight into live scanout over FT245 and the device holds no frame store at
-all. No present, no flip, nothing to double buffer. Pixels land on the raster as
-they arrive.
+FPGA video card. It is a blit streamer: the host pushes damage rectangles
+straight into live scanout over FT245. No present, no flip, nothing to double
+buffer.
 
 Before that I wrote MME4CRT, RetroArch's 15kHz support, and CRTPi.
 
-The blit model carries over here. GUD is a damage-rect protocol too. A cursor
-crossing a static screen costs a few hundred bytes instead of a megabyte.
+**This is a blit streamer too.** The model is defined by the write path, not by
+where the pixels live. BlitCRT keeps a 4bpp frame on-chip in block RAM and is
+still a streamer, because rects go into live scanout and nothing is ever
+presented or flipped. Same here.
 
-Where it differs is storage. GUD scanout runs on my clock, not the host's, and a
-rect has to survive every field until something overwrites it. BlitCRT dodged
-that by keeping the write path and the raster in lockstep. GUD breaks the
-coupling on purpose, which is the whole trick — it lets the host write whenever
-it likes, and that is what makes the board look like an ordinary display to the
-OS. The price is a frame store, and that is why M3 exists.
+GUD suits that. It is a damage-rect protocol: a cursor crossing a static screen
+costs a few hundred bytes instead of a megabyte, and there is no frame
+submission step anywhere in it.
+
+What changes is how much scanout memory the write path needs, and this board has
+far more of it than the Cyclone IV BlitCRT runs on. See **Scanout memory** below
+for where the pixels go. M3 is the plumbing, not a change of model.
 
 Target is the MiSTer Pi (Cyclone V SE 5CSEBA6U23I7) with the analog A/V board.
 A DE10-Nano works identically.
@@ -114,17 +116,17 @@ The timing generator itself has no built-in modes. Porches, active size and the
 interlace flag are all inputs, latched while the pipeline is held in reset. It
 will drive whatever timing it is given. Only the clock is pinned.
 
-## How the picture gets updated
+## The write path
 
 The host does not send frames. GUD is a damage-rect protocol: after
 `GUD_REQ_SET_BUFFER` names a rectangle, a bulk transfer carries only the pixels
 inside it. A cursor moving across a static screen costs a few hundred bytes,
 not a megabyte.
 
-**Lineage** above covers why this needs a frame store where BlitCRT did not.
-Short version: GUD decouples host writes from scanout, and the kernel header
-spells out that the rectangle says where the buffer *is placed inside the
-framebuffer*. Hence M3.
+Rects land in scanout memory and the raster reads from it. There is no present
+and no flip; the write path goes straight at the picture. GUD's kernel header
+happens to call that region a framebuffer, but nothing in the protocol submits
+a frame.
 
 ### Pixel formats
 
@@ -141,21 +143,40 @@ from BlitCRT does not map onto it at all. Three formats are offered:
 | RGB565 | 2 | 5/6/5 into 6/6/6 | gives up a bit on red and blue, halves the bandwidth |
 | RGB332 | 1 | 3/3/2 into 6/6/6 | for tight bandwidth |
 
-RGB888 is listed first because it uses the whole ladder. Frame store per mode:
+RGB888 is listed first because it uses the whole ladder.
 
-| mode | RGB888 | RGB565 | RGB888 double-buffered |
+### Scanout memory
+
+Three tiers are available on this board, which is a different situation from the
+Cyclone IV BlitCRT was built on.
+
+| | size | notes |
+|---|---|---|
+| **M10K on-chip** | ~696 KB | no controller, lowest latency, no arbitration |
+| **SDRAM module** | 128 MB | optional add-on, fabric-side, 16-bit |
+| **HPS DDR3** | 1 GB | always fitted, reached over the f2sdram bridge |
+
+What fits on-chip, leaving headroom for the rest of the design:
+
+| mode | RGB332 | RGB565 | RGB888 |
 |---|---|---|---|
-| 640x240p60 | 450 KB | 300 KB | 900 KB |
-| 640x480i60 | 900 KB | 600 KB | 1.8 MB |
-| 640x480p60 | 900 KB | 600 KB | 1.8 MB |
+| 640x240p60 | 150 KB, double-buffered | 300 KB, single | 450 KB, single |
+| 640x480i60 | 300 KB, single | 600 KB, off-chip | 900 KB, off-chip |
+| 640x480p60 | 300 KB, single | 600 KB, off-chip | 900 KB, off-chip |
 
-Against 128 MB on the SDRAM module, capacity is a non-issue. The controller and
-the arbiter between host writes and live scanout are the work.
+The 240p modes run entirely from block RAM. That is worth having: no controller,
+no refresh, no arbitration between host writes and the raster, and a scanout
+read that cannot be late.
 
-Bandwidth is the reason RGB565 stays on the list. A full 640x480 frame in
-RGB888 at 60Hz is 55 MB/s, past what USB 2.0 bulk will carry. Damage rects mean
-that ceiling is rarely approached, and the 15kHz modes sit well inside it: 640
-x240 in RGB888 at 60Hz is 27 MB/s full-frame.
+Everything above that goes off-chip, either to the SDRAM module if it is fitted
+or to HPS DDR3 over f2sdram if it is not. DDR3 is the more interesting target —
+it is always present, it is 1 GB, and the latency is absorbed by a line FIFO in
+front of scanout. Capacity stops being a consideration at either.
+
+Bandwidth is the reason RGB565 stays on the list. A full 640x480 frame in RGB888
+at 60Hz is 55 MB/s, past what USB 2.0 bulk will carry. Damage rects mean that
+ceiling is rarely approached, and the 15kHz modes sit well inside it: 640x240 in
+RGB888 at 60Hz is 27 MB/s full-frame.
 
 ## Modes and how one is picked
 
@@ -745,9 +766,10 @@ fail to produce it.
 Next up is the Platform Designer system. Everything else in M2 is waiting on
 it.
 
-**M3 — framebuffer.** Not started. SDRAM controller, scanout, double buffering.
-The bulk endpoint in `gadget.c` drains transfers and counts them without
-writing pixels.
+**M3 — scanout memory.** Not started. The 240p modes fit in M10K with no
+controller at all, which is the sensible first target. Deeper formats and the
+480 modes go off-chip to the SDRAM module or HPS DDR3. The bulk endpoint in
+`gadget.c` drains transfers and counts them without writing pixels anywhere.
 
 **M4 — USB peripheral mode.** Not started. dwc2 with `dr_mode = "peripheral"`,
 our own kernel and device tree. Needs an A-to-A cable with VBUS cut on the
@@ -768,8 +790,8 @@ DE10-Nano has micro-AB.
   would feed it is written and tested with nothing to write to.
 - HDMI hot plug detect is inferred from the transmitter acking I2C. I never
   read its HPD register, because `rtl/i2c_master.v` is write-only.
-- The bulk endpoint drains pixel data and counts it. There is no framebuffer to
-  write it into yet, and no format conversion in the fabric.
+- The bulk endpoint drains pixel data and counts it. Nothing is wired to scanout
+  memory yet, and there is no format conversion in the fabric.
 
 ## Credits and licensing
 
@@ -797,8 +819,7 @@ would rederive from the datasheet.
 
 The test card, at every stage.
 
-There is no framebuffer path in the fabric yet. The card is all it can
-produce. From M2 the `BLITSCRT_CTRL_TESTCARD` bit selects between the card
+There is no scanout path in the fabric yet. The card is all it can produce. From M2 the `BLITSCRT_CTRL_TESTCARD` bit selects between the card
 and scanout, and `blitscrt_dev_on_host()` clears scanout on `FUNCTIONFS_DISABLE`.
 Pulling the cable falls back to the card. A stale frame left on screen would
 look exactly like a crash.

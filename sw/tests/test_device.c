@@ -42,8 +42,10 @@ int main(void)
 	}
 
 	n = req(GUD_REQ_GET_FORMATS, 0, NULL, 0);
-	check("GET_FORMATS offers RGB565 first",
-	      n == 2 && buf[0] == GUD_PIXEL_FORMAT_RGB565);
+	check("GET_FORMATS offers RGB888 first, matching the RGB666 ladder",
+	      n == 3 && buf[0] == GUD_PIXEL_FORMAT_RGB888);
+	check("RGB565 and RGB332 also offered",
+	      buf[1] == GUD_PIXEL_FORMAT_RGB565 && buf[2] == GUD_PIXEL_FORMAT_RGB332);
 
 	n = req(GUD_REQ_GET_CONNECTORS, 0, NULL, 0);
 	{

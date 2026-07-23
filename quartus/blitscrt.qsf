@@ -61,5 +61,3 @@ set_global_assignment -name VERILOG_FILE ../rtl/i2c_master.v
 set_global_assignment -name SDC_FILE blitscrt.sdc
 
 source pins.tcl
-
-set_global_assignment -name LAST_QUARTUS_VERSION "24.1std.0 Lite Edition"

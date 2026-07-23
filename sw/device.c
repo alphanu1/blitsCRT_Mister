@@ -202,11 +202,17 @@ int blitscrt_handle_ctrl(struct blitscrt_dev *d,
 
 	case GUD_REQ_GET_FORMATS: {
 		/*
-		 * GUD has no indexed format, so the 4bpp palette idea does not
-		 * map. RGB565 into the RGB666 ladder is the sane default;
-		 * RGB332 is offered for the bandwidth-constrained case.
+		 * The DAC is a six-bit resistor ladder per channel, so RGB666
+		 * is what actually reaches the CRT. GUD has no RGB666 format.
+		 * RGB888 truncated to 666 uses the whole ladder and is listed
+		 * first for that reason; RGB565 gives up a bit on red and blue
+		 * but halves the bandwidth. RGB332 is there for the tight
+		 * cases. There is no indexed format in GUD at all, so the 4bpp
+		 * palette idea does not map.
 		 */
-		uint8_t f[2] = { GUD_PIXEL_FORMAT_RGB565, GUD_PIXEL_FORMAT_RGB332 };
+		uint8_t f[3] = { GUD_PIXEL_FORMAT_RGB888,
+				 GUD_PIXEL_FORMAT_RGB565,
+				 GUD_PIXEL_FORMAT_RGB332 };
 		if (buflen < sizeof f) return -1;
 		memcpy(buf, f, sizeof f);
 		d->last_status = GUD_STATUS_OK;
@@ -305,7 +311,8 @@ int blitscrt_handle_ctrl(struct blitscrt_dev *d,
 			d->last_status = GUD_STATUS_INVALID_PARAMETER;
 			return -1;
 		}
-		if (r->format != GUD_PIXEL_FORMAT_RGB565 &&
+		if (r->format != GUD_PIXEL_FORMAT_RGB888 &&
+		    r->format != GUD_PIXEL_FORMAT_RGB565 &&
 		    r->format != GUD_PIXEL_FORMAT_RGB332) {
 			d->pending_valid = 0;
 			d->last_status = GUD_STATUS_INVALID_PARAMETER;

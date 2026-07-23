@@ -85,7 +85,11 @@ int blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 
 	if (!f || !t) return -1;
 
-	if (format == 0x30) fmt = BLITSCRT_FMT_RGB332;
+	switch (format) {
+	case 0x50: fmt = BLITSCRT_FMT_RGB888; break;   /* 3 bytes, full ladder */
+	case 0x30: fmt = BLITSCRT_FMT_RGB332; break;   /* 1 byte */
+	default:   fmt = BLITSCRT_FMT_RGB565; break;   /* 2 bytes */
+	}
 
 	blitscrt_fabric_write(f, BLITSCRT_REG_H_SY,  t->h_sy);
 	blitscrt_fabric_write(f, BLITSCRT_REG_H_BP,  t->h_bp);
@@ -105,7 +109,8 @@ int blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 
 	blitscrt_fabric_write(f, BLITSCRT_REG_FB_FORMAT, fmt);
 	blitscrt_fabric_write(f, BLITSCRT_REG_FB_STRIDE,
-			      t->h_act * (fmt == BLITSCRT_FMT_RGB332 ? 1 : 2));
+			      t->h_act * (fmt == BLITSCRT_FMT_RGB332 ? 1 :
+					  fmt == BLITSCRT_FMT_RGB888 ? 3 : 2));
 
 	/* latch everything together on the next vblank */
 	blitscrt_fabric_write(f, BLITSCRT_REG_APPLY, 1);

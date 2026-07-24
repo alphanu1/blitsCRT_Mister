@@ -4,7 +4,7 @@ IV      := iverilog -g2012
 RTL     := rtl/video_timing.v rtl/testcard.v rtl/overlay.v \
            rtl/char_ram.v rtl/font_rom.v
 
-.PHONY: all world manifest assets sim render render-i clean distclean tools bitstream quartus-path lint check-pins uboot-txt preview
+.PHONY: all world manifest assets sim render render-i clean distclean tools bitstream quartus-path lint check-pins check-decl uboot-txt preview
 
 # iverilog and Pillow are for verification only. Neither is needed to build the
 # bitstream -- Quartus consumes rtl/ and the generated .hex files, nothing else.
@@ -24,6 +24,7 @@ define need_iverilog
 endef
 
 all: assets
+	@$(MAKE) --no-print-directory check-decl
 	@if [ -n "$(HAVE_IVERILOG)" ]; then \
 	  $(MAKE) --no-print-directory sim; \
 	else \
@@ -39,6 +40,7 @@ all: assets
 # fatal, and the manifest at the end shows what actually got built.
 # ---------------------------------------------------------------------------
 world: assets
+	@$(MAKE) --no-print-directory check-decl
 	@$(MAKE) --no-print-directory check-pins
 	@if [ -n "$(HAVE_IVERILOG)" ]; then $(MAKE) --no-print-directory sim; \
 	  else echo "-- skipping testbenches, no iverilog"; fi
@@ -125,10 +127,18 @@ sim: assets
 	vvp sim/tb_i2c.vvp
 	$(IV) -o sim/tb_modes.vvp sim/tb_modes.v rtl/video_timing.v rtl/mode_table.v
 	vvp sim/tb_modes.vvp
+	$(IV) -o sim/tb_regs.vvp sim/tb_regs.v rtl/blitscrt_regs.v
+	vvp sim/tb_regs.vvp
 
 # Elaborate the real top level with stand-ins for the Quartus primitives.
 .PHONY: lint
-lint:
+# Icarus builds disagree about use before declaration; mine accepts it and
+# others reject it outright. Quartus never complains, so this only surfaces on
+# somebody else's machine. Checked here instead.
+check-decl:
+	@python3 tools/check_decl_order.py rtl/*.v sim/*.v
+
+lint: check-decl
 	$(need_iverilog)
 	$(IV) -o /dev/null -s blitscrt_top rtl/*.v sim/vendor_stubs.v && echo "top elaborates clean"
 

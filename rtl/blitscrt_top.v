@@ -69,6 +69,12 @@ module blitscrt_top #(
 );
 
 
+    /* Driven further down, referenced by the mode table just below. Declared
+     * here because some Icarus builds reject use before declaration. Quartus
+     * accepts either, so this only shows up on someone else's machine. */
+    wire hdmi_scl, hdmi_sda_o, hdmi_configured, hdmi_nack;
+    wire rst_n;                       // video-domain reset, driven below
+
     // ---------------- mode selection, in the 50 MHz domain ----------------
     reg [3:0] rst50_sr = 4'b0000;
     always @(posedge FPGA_CLK1_50) rst50_sr <= {rst50_sr[2:0], BTN_RESET};
@@ -145,7 +151,7 @@ module blitscrt_top #(
         if (!pll_locked) rst_sr <= 4'b0000;
         else             rst_sr <= {rst_sr[2:0], 1'b1};
     end
-    wire rst_n = rst_sr[3] & BTN_RESET & ~(|mode_hold);
+    assign rst_n = rst_sr[3] & BTN_RESET & ~(|mode_hold);
 
     // ---------------- timing ----------------
     wire        hs, vs, cs, de;
@@ -308,7 +314,6 @@ module blitscrt_top #(
     assign HDMI_TX_VS = vs_sr[PIPE-1];
 
     // I2C runs in the 50 MHz domain, sharing the reset with mode selection
-    wire hdmi_scl, hdmi_sda_o, hdmi_configured, hdmi_nack;
 
     adv7513_init #(.CLK_HZ(50_000_000)) u_hdmi_cfg (
         .clk(FPGA_CLK1_50), .rst_n(rst50_n),

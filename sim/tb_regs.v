@@ -1,0 +1,178 @@
+// Exercises the register slave the way the daemon drives it: identify, stage a
+// mode, apply it, and confirm the video side only sees the new timing at a
+// vblank and only as a complete set.
+`timescale 1ns/1ps
+
+module tb_regs;
+
+    reg clk = 0, rst_n = 0;             // 50 MHz bus
+    always #10 clk = ~clk;
+
+    reg clk_pix = 0, vid_rst_n = 0;     // 12.6 MHz video
+    always #39.68254 clk_pix = ~clk_pix;
+
+    reg [13:0] address = 0;
+    reg        read = 0, write = 0;
+    reg [31:0] writedata = 0;
+    wire [31:0] readdata;
+    wire waitrequest;
+
+    reg vblank = 0, field = 0, pll_locked = 1, hdmi_configured = 1;
+
+    wire [11:0] h_sy,h_bp,h_act,h_fp,v_sy,v_bp,v_act,v_fp;
+    wire interlace, scanout_en, testcard_en, overlay_en, csync_en, hdmi_en;
+    wire [31:0] pclk_khz, fb_base, fb_stride;
+    wire [2:0] fb_format;
+    wire fb_flip;
+    wire [8:0] pll_m, pll_n, pll_c;
+    wire pll_apply, char_we;
+    wire [12:0] char_addr;
+    wire [7:0] char_data;
+
+    blitscrt_regs dut (
+        .clk(clk), .rst_n(rst_n), .address(address), .read(read),
+        .write(write), .writedata(writedata), .readdata(readdata),
+        .waitrequest(waitrequest),
+        .clk_pix(clk_pix), .vid_rst_n(vid_rst_n), .vblank(vblank),
+        .field(field), .pll_locked(pll_locked),
+        .hdmi_configured(hdmi_configured),
+        .h_sy(h_sy),.h_bp(h_bp),.h_act(h_act),.h_fp(h_fp),
+        .v_sy(v_sy),.v_bp(v_bp),.v_act(v_act),.v_fp(v_fp),
+        .interlace(interlace), .pclk_khz(pclk_khz),
+        .scanout_en(scanout_en), .testcard_en(testcard_en),
+        .overlay_en(overlay_en), .csync_en(csync_en), .hdmi_en(hdmi_en),
+        .fb_base(fb_base), .fb_stride(fb_stride), .fb_format(fb_format),
+        .fb_flip(fb_flip),
+        .pll_m(pll_m), .pll_n(pll_n), .pll_c(pll_c), .pll_apply(pll_apply),
+        .char_we(char_we), .char_addr(char_addr), .char_data(char_data)
+    );
+
+    integer fails = 0;
+
+    task wr(input [13:0] a, input [31:0] d);
+    begin
+        @(posedge clk); address <= a; writedata <= d; write <= 1;
+        @(posedge clk); write <= 0;
+        @(posedge clk);            /* registered outputs settle */
+    end endtask
+
+    task rd(input [13:0] a);
+    begin
+        @(posedge clk); address <= a; read <= 1;
+        @(posedge clk); read <= 0;
+        @(posedge clk);
+    end endtask
+
+    task chk(input [55*8:1] what, input cond);
+    begin
+        $display("  %-0s %s", what, cond ? "ok" : "FAIL");
+        if (!cond) fails = fails + 1;
+    end endtask
+
+    integer i;
+    /* Blocking assignments: this is a monitor, and the checks read it in the
+     * same delta the write completes. */
+    reg cap_we; reg [12:0] cap_addr; reg [7:0] cap_data;
+    always @(posedge clk) if (char_we) begin
+        cap_we = 1'b1; cap_addr = char_addr; cap_data = char_data;
+    end
+
+    initial begin
+        #100 rst_n = 1; vid_rst_n = 1;
+        repeat (4) @(posedge clk);
+
+        $display("identify");
+        rd(14'h000); chk("ID reads BCRT", readdata == 32'h42435254);
+        rd(14'h004); chk("VERSION reads 2.0", readdata == 32'h0002_0000);
+        rd(14'h00C); chk("STATUS shows PLL locked and HDMI configured",
+                         readdata[0] == 1'b1 && readdata[1] == 1'b1);
+
+        $display("");
+        $display("staging a mode does not disturb the video side");
+        wr(14'h010, 32'd96);  wr(14'h014, 32'd48);
+        wr(14'h018, 32'd640); wr(14'h01C, 32'd16);
+        wr(14'h020, 32'd2);   wr(14'h024, 32'd33);
+        wr(14'h028, 32'd480); wr(14'h02C, 32'd10);
+        wr(14'h030, 32'd0);                    // progressive
+        wr(14'h040, 32'd25200);
+        repeat (20) @(posedge clk_pix);
+        chk("video still on the reset timing",
+            h_sy == 12'd60 && h_act == 12'd640 && v_act == 12'd240 &&
+            interlace == 1'b1 && pclk_khz == 32'd12600);
+
+        $display("");
+        $display("apply, then a vblank");
+        wr(14'h044, 32'd1);
+        rd(14'h00C); chk("STATUS reports a modeset pending", readdata[4] == 1'b1);
+        repeat (20) @(posedge clk_pix);
+        chk("still not latched without a vblank",
+            h_sy == 12'd60 && interlace == 1'b1);
+
+        @(posedge clk_pix); vblank = 1;
+        repeat (4) @(posedge clk_pix);
+        vblank = 0;
+        repeat (4) @(posedge clk_pix);
+
+        chk("whole set latched at the vblank",
+            h_sy == 12'd96 && h_bp == 12'd48 && h_act == 12'd640 &&
+            h_fp == 12'd16 && v_sy == 12'd2 && v_bp == 12'd33 &&
+            v_act == 12'd480 && v_fp == 12'd10 &&
+            interlace == 1'b0 && pclk_khz == 32'd25200);
+        repeat (10) @(posedge clk);
+        rd(14'h00C); chk("pending clears once acknowledged", readdata[4] == 1'b0);
+
+        $display("");
+        $display("PLL counters and the apply pulse");
+        wr(14'h034, 32'd126); wr(14'h038, 32'd5); wr(14'h03C, 32'd50);
+        @(posedge clk);
+        chk("counters staged", pll_m == 9'd126 && pll_n == 9'd5 && pll_c == 9'd50);
+        rd(14'h034); chk("M reads back", readdata == 32'd126);
+
+        $display("");
+        $display("control bits reach the video side");
+        wr(14'h008, 32'h1F);
+        repeat (6) @(posedge clk_pix);
+        chk("all five control bits set",
+            scanout_en && testcard_en && overlay_en && csync_en && hdmi_en);
+        wr(14'h008, 32'h00);
+        repeat (6) @(posedge clk_pix);
+        chk("and clear", !scanout_en && !testcard_en && !overlay_en);
+
+        $display("");
+        $display("character buffer window");
+        cap_we = 0;
+        wr(14'h2000 + 14'd5, 32'h41);
+        @(posedge clk);
+        chk("write lands at the right offset with the right byte",
+            cap_we && cap_addr == 13'd5 && cap_data == 8'h41);
+        cap_we = 0;
+        wr(14'h2000 + 14'd8191, 32'h5A);
+        @(posedge clk);
+        chk("top of the buffer reachable",
+            cap_we && cap_addr == 13'd8191 && cap_data == 8'h5A);
+        cap_we = 0;
+        wr(14'h010, 32'd96);
+        @(posedge clk);
+        chk("a register write does not touch the character buffer", !cap_we);
+
+        $display("");
+        $display("scanout memory registers");
+        wr(14'h050, 32'h0200_0000);
+        wr(14'h054, 32'd1920);
+        wr(14'h058, 32'd1);
+        wr(14'h044, 32'd1);
+        @(posedge clk_pix); vblank = 1;
+        repeat (4) @(posedge clk_pix); vblank = 0;
+        repeat (4) @(posedge clk_pix);
+        chk("base, stride and format latched",
+            fb_base == 32'h0200_0000 && fb_stride == 32'd1920 &&
+            fb_format == 3'd1);
+
+        $display("");
+        if (fails) $display("FAIL"); else $display("PASS");
+        $finish;
+    end
+
+    initial begin #500000; $display("TIMEOUT"); $finish; end
+
+endmodule

@@ -54,29 +54,47 @@ void blitscrt_modelist_defaults(struct blitscrt_dev *d)
 
 	blitscrt_modelist_reset(d);
 
-	/* 320x240p60 */
-	blitscrt_mode_from_modeline(&m, 6400, 320, 344, 374, 406,
-				    240, 243, 246, 262,
+	/*
+	 * Advertised first and flagged PREFERRED, which is what a host picks
+	 * on first connect. 480i is a standard SD format, so anything on the
+	 * other end recognises it, and a 15kHz CRT takes it happily.
+	 *
+	 * The 320-wide modes are exactly half their 640-wide partners, and the
+	 * counters fall out of the same VCO:
+	 *
+	 *   640x480i60  12.600 MHz  VCO 1575  C=125   NTSC pair
+	 *   320x240p60   6.300 MHz  VCO 1575  C=250
+	 *   640x576i50  12.500 MHz  VCO  800  C=64    PAL pair
+	 *   320x288p50   6.250 MHz  VCO  800  C=128
+	 *
+	 * Two VCOs cover all four, and within a VCO the 640 and 320 modes are
+	 * one counter apart. All four solve to 0 ppm.
+	 */
+
+	/* 640x480i60 -- 15.750 kHz, 60.00 Hz field, 525 lines */
+	blitscrt_mode_from_modeline(&m, 12600, 640, 664, 724, 800,
+				    480, 486, 492, 525,
+				    BLITSCRT_MF_INTERLACE |
 				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC |
 				    BLITSCRT_MF_PREFERRED);
 	blitscrt_modelist_add(d, &m);
 
-	/* 640x480i60 */
-	blitscrt_mode_from_modeline(&m, 12600, 640, 664, 724, 800,
-				    480, 486, 492, 525,
+	/* 640x576i50 -- PAL, 15.625 kHz, 50.00 Hz field, 625 lines */
+	blitscrt_mode_from_modeline(&m, 12500, 640, 664, 724, 800,
+				    576, 582, 588, 625,
 				    BLITSCRT_MF_INTERLACE |
 				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC);
 	blitscrt_modelist_add(d, &m);
 
-	/* 256x224p60, the common arcade and console geometry */
-	blitscrt_mode_from_modeline(&m, 5369, 256, 276, 306, 341,
-				    224, 227, 230, 262,
+	/* 320x240p60 -- 15.750 kHz, 60.11 Hz, 262 lines */
+	blitscrt_mode_from_modeline(&m, 6300, 320, 332, 362, 400,
+				    240, 243, 246, 262,
 				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC);
 	blitscrt_modelist_add(d, &m);
 
-	/* 320x256p50, PAL */
-	blitscrt_mode_from_modeline(&m, 6400, 320, 344, 374, 406,
-				    256, 259, 262, 312,
+	/* 320x288p50 -- PAL, 15.625 kHz, 50.08 Hz, 312 lines */
+	blitscrt_mode_from_modeline(&m, 6250, 320, 332, 362, 400,
+				    288, 291, 294, 312,
 				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC);
 	blitscrt_modelist_add(d, &m);
 }
@@ -107,12 +125,11 @@ void blitscrt_dev_refresh_overlay(struct blitscrt_dev *d)
 
 	snprintf(line, sizeof line, "USB    %s",
 		 d->host_attached ? (d->controller_enabled ? "STREAMING"
-						           : "ATTACHED")
+							   : "ATTACHED")
 				  : "NO HOST");
 	blitscrt_fabric_overlay_line(d->fabric, 8, 4, line);
-
-	snprintf(line, sizeof line, "OUT    VGA RGB666 + HDMI DV");
-	blitscrt_fabric_overlay_line(d->fabric, 9, 4, line);
+	blitscrt_fabric_overlay_line(d->fabric, 9, 4,
+				     "OUT    VGA RGB666 + HDMI DV");
 }
 
 void blitscrt_dev_on_host(struct blitscrt_dev *d, int attached)
@@ -120,8 +137,8 @@ void blitscrt_dev_on_host(struct blitscrt_dev *d, int attached)
 	d->host_attached = attached ? 1 : 0;
 
 	if (!attached) {
-		/* Nothing is writing the framebuffer any more. Show the card
-		 * rather than whatever was last left in memory. */
+		/* Nothing is writing scanout memory any more. Show the card
+		 * rather than whatever was last left there. */
 		d->controller_enabled = 0;
 		d->display_enabled    = 0;
 		d->active_valid       = 0;

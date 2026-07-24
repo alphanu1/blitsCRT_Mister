@@ -11,7 +11,7 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 LDFLAGS ?=
 LDLIBS  ?= -lm
 
-CORE := device.c modes.c pll.c fabric.c
+CORE := device.c modes.c pll.c pll_reconfig.c fabric.c
 OBJ  := $(CORE:.c=.o) gadget.o main.o
 
 .PHONY: all test clean
@@ -24,15 +24,20 @@ blitscrtd: $(OBJ)
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-test: test_pll test_modes test_device
+test: test_pll test_pll_reconfig test_modes test_device
 	@echo ""
 	@./test_pll
+	@echo ""
+	@./test_pll_reconfig
 	@echo ""
 	@./test_modes
 	@echo ""
 	@./test_device
 
 test_pll: tests/test_pll.c pll.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+test_pll_reconfig: tests/test_pll_reconfig.c pll_reconfig.c pll.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 test_modes: tests/test_modes.c modes.c pll.c
@@ -42,4 +47,4 @@ test_device: tests/test_device.c $(CORE)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 clean:
-	rm -f *.o blitscrtd test_pll test_modes test_device
+	rm -f *.o blitscrtd test_pll test_pll_reconfig test_modes test_device

@@ -53,7 +53,9 @@ hardware does.*
 
 ![blitsCRT_Mister runtime, work in progress](docs/images/runtime_m1.gif)
 
-*The same thing moving. Full clip at [`docs/video/runtime_m1.mp4`](docs/video/runtime_m1.mp4).*
+*The same thing moving.*
+
+[Full clip, 640x480i60 out of HDMI](docs/video/runtime_m1.mp4)
 
 Below is the same design rendered from simulation, one pixel at a time straight
 out of the datapath:
@@ -100,6 +102,37 @@ solves the PLL counters for the clock. Worst case across real console and
 arcade timings is 6 ppm. The mode list itself is dynamic too: modes can be
 added at runtime and the host re-reads them without re-enumerating the USB
 device.
+
+### What the daemon advertises
+
+Four modes, with 640x480i60 first and flagged `PREFERRED`, which is what a host
+picks on first connect.
+
+| mode | pixel clock | line | field | |
+|---|---|---|---|---|
+| **640x480i60** | 12.600 MHz | 15.750 kHz | 60.00 Hz | preferred, NTSC 480i |
+| 640x576i50 | 12.500 MHz | 15.625 kHz | 50.00 Hz | PAL 576i |
+| 320x240p60 | 6.300 MHz | 15.750 kHz | 60.11 Hz | NTSC 240p |
+| 320x288p50 | 6.250 MHz | 15.625 kHz | 50.08 Hz | PAL 288p |
+
+Each 320-wide mode is exactly half its 640-wide partner, and the counters fall
+out of the same VCO:
+
+```
+640x480i60   12.600 MHz   VCO 1575   C=125      NTSC pair
+320x240p60    6.300 MHz   VCO 1575   C=250
+640x576i50   12.500 MHz   VCO  800   C=64       PAL pair
+320x288p50    6.250 MHz   VCO  800   C=128
+```
+
+Two VCOs cover all four, and within a VCO the 640 and 320 modes are one counter
+apart. All four solve to 0 ppm. That shapes the M2 PLL work: reconfigure M and N
+to swap VCO between NTSC and PAL, and take the two C outputs into the clock mux
+for 640-wide against 320-wide. Two muxed PLL outputs is exactly what
+`altclkctrl` allows.
+
+This is the advertised list, not a limit. A host can set a timing that was never
+in it, which is the Switchres case.
 
 What the fabric ships with today is three built-in modes, because it has two
 fixed pixel clocks until `altera_pll_reconfig` lands:
@@ -279,6 +312,7 @@ rtl/        the design
   char_ram.v        overlay character buffer (HPS write port lands here in M2)
   font_rom.v        8x8 font
   mode_table.v      the three modes, detection and button cycling
+  blitscrt_regs.v   Avalon-MM register file and the bus/video clock crossing
   pll_modes.v       one PLL, two outputs, glitch-free mux
   adv7513_init.v    HDMI transmitter setup, Direct Video register table
   i2c_master.v      write-only I2C master feeding it
@@ -366,6 +400,7 @@ make assets       # just the generated .hex files Quartus reads
 make sim          # timing and I2C testbenches
 make lint         # elaborate the real top level against primitive stubs
 make check-pins   # every port has a pin, and the pins match MiSTer
+make check-decl   # no identifier used before it is declared
 make render       # render a 640x240p60 frame from the RTL to PNG
 make render-i     # same for 640x480i60
 make bitstream    # find quartus_sh and compile, and generate the u-boot override
@@ -379,6 +414,10 @@ make clean        # remove testbench binaries and the pixel dump
 make distclean    # also remove the generated .hex files
 ```
 
+`make check-decl` catches identifiers used before they are declared. Icarus
+builds disagree about whether that is legal and Quartus never objects, so it
+surfaces as a build failure on someone else's machine. It has caught this twice.
+
 `make check-pins` is the one worth running after any change to the top-level
 port list. A port with no location assignment gets auto-placed by the Fitter
 onto an arbitrary ball. `make world` runs it first for that reason.
@@ -387,6 +426,12 @@ onto an arbitrary ball. `make world` runs it first for that reason.
 make check-pins MISTER=/path/to/Template_MiSTer   # also cross-check the pins
 make bitstream QUARTUS_SH=/path/to/quartus_sh     # force a Quartus install
 ```
+
+`make preview` renders this file to a single HTML with every image, GIF and
+video inlined as a data URI. It also turns the `.mp4` link below the runtime
+clip into a real `<video>` element. GitHub strips `<video>` out of markdown. On
+GitHub that line is a download link and the GIF is what moves; the preview plays
+it properly.
 
 Only the generated assets are required before Quartus. Icarus Verilog and
 Pillow are verification tools; the bitstream does not depend on either.
@@ -685,9 +730,27 @@ test:
 
 ```
 worst error 6 ppm, worst search 3026 candidate evaluations     test_pll
+counter encoding round-trips across every divide to 510        test_pll_reconfig
 12 modelines validated or correctly refused                    test_modes
-full host enumeration, modeset, flush, dynamic modes           test_device
+33 assertions: enumeration, modeset, flush, dynamic modes      test_device
 ```
+
+### PLL reconfiguration
+
+Counters are not written as divide values. Each splits into a high and a low
+half-period so an odd divide can hold one phase a cycle longer:
+
+```
+divide 1     bypass the counter
+divide even  high = low = D/2,          odd_duty = 0
+divide odd   high = (D+1)/2, low = D/2, odd_duty = 1
+```
+
+Both halves are eight-bit fields, which caps any divide at 510 rather than the
+512 the datasheet quotes for the counters themselves. `pll_cyclonev` in
+`sw/pll.c` carries the same ceiling, because solving for a divide the hardware
+cannot be told about is worse than not solving. The test found that: 511
+encoded as high=255+1 and wrapped silently.
 
 ### Dynamic resolutions
 
@@ -706,6 +769,27 @@ paths are covered:
 Refusing matters as much as accepting. A 640x480p60 mode at 31.5kHz gets
 stalled with `GUD_STATUS_INVALID_PARAMETER` and the previous mode stays live.
 Sending 31kHz to a 15kHz set is a repair bill.
+
+### Register file
+
+`rtl/blitscrt_regs.v` implements the map in `sw/blitscrt_regs.h` as an
+Avalon-MM slave in the 50 MHz bus domain, with the video side on whatever the
+pixel clock currently is. Two crossings live in it.
+
+Timing moves as a **block**, not register by register. Writing `APPLY` toggles a
+request; the video side latches all nine values at the next vblank and
+acknowledges. A modeset therefore cannot land half-applied, and cannot tear.
+`STATUS` carries an `APPLYING` bit so software can tell the difference between
+"queued" and "live".
+
+Status comes back through two-flop synchronisers, which is enough for bits
+nothing sequences on.
+
+```
+0x0000..0x0FFF  registers
+0x1000..0x1FFF  altera_pll_reconfig
+0x2000..0x3FFF  character buffer, one byte per word
+```
 
 ### Register contract
 
@@ -747,8 +831,11 @@ None of the fabric side exists.
 | done | test card fallback when no host is attached |
 | done | overlay driven from live state rather than a compile-time string |
 | **open** | Platform Designer system with the HPS component |
-| **open** | the Avalon-MM slave that `blitscrt_regs.h` describes |
-| **open** | `altera_pll_reconfig`, without which the fabric has two fixed clocks |
+| done | Avalon-MM register slave, `rtl/blitscrt_regs.v`, 16 assertions |
+| done | clock crossing: timing latched as a block on vblank, status resynced |
+| done | four-mode default list: 480i60, 576i50, 240p60, 288p50, all 0 ppm |
+| done | PLL reconfiguration: counter encoding, write sequence, fabric calls |
+| **open** | generating the `altera_pll_reconfig` IP and wiring it to the PLL |
 | **open** | kernel config and device tree |
 
 Two things follow from the fabric half being missing.
@@ -757,11 +844,11 @@ Two things follow from the fabric half being missing.
 Enough to enumerate against a real host and prove the USB side, but it drives
 nothing.
 
-The PLL solver is stranded. It answers correctly for any clock a host asks for,
-but the fabric has two fixed clocks and no way to take M/N/C.
-`BLITSCRT_REG_PLL_M`, `_N` and `_C` are defined and do nothing. Until
-`altera_pll_reconfig` lands I can validate a mode outside the table and then
-fail to produce it.
+The PLL path is written but has nothing to write to. `sw/pll_reconfig.c` turns
+a solved M/N/C into the counter words and the register sequence, and
+`blitscrt_fabric_set_mode()` calls it before latching timing. What is missing is
+the `altera_pll_reconfig` IP itself, which has to come out of the IP Catalog.
+`rtl/pll_reconfig_notes.md` covers that wiring.
 
 Next up is the Platform Designer system. Everything else in M2 is waiting on
 it.

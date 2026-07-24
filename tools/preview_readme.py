@@ -85,17 +85,19 @@ def main():
 
     text = re.sub(r"!\[([^\]]*)\]\(([^)\s]+)\)", img_sub, text)
 
-    # a link to a video becomes a player
+    # A link to a video becomes a player, but only where the link is the whole
+    # line. Substituting mid-sentence leaves the prose around it dangling.
     def vid_sub(m):
-        rel = m.group(2)
+        label, rel = m.group(1), m.group(2)
         p = os.path.join(ROOT, rel.strip("`"))
-        if not (rel.endswith(".mp4") and os.path.exists(p)):
+        if not os.path.exists(p):
             return m.group(0)
         inlined.append(rel)
-        return ('<video controls loop muted playsinline src="%s"></video>'
-                % data_uri(p))
+        return ('<video controls loop muted playsinline src="%s"></video>\n'
+                '<p><em>%s</em></p>' % (data_uri(p), label))
 
-    text = re.sub(r"\[([^\]]*)\]\(([^)\s]+\.mp4)\)", vid_sub, text)
+    text = re.sub(r"^\[([^\]]*)\]\(([^)\s]+\.mp4)\)\s*$", vid_sub,
+                  text, flags=re.M)
 
     body = markdown.markdown(
         text, extensions=["tables", "fenced_code", "toc", "sane_lists"]

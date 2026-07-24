@@ -77,6 +77,34 @@ void blitscrt_fabric_write(struct blitscrt_fabric *f, uint32_t off, uint32_t v)
 	*(volatile uint32_t *)(f->base + off) = v;
 }
 
+int blitscrt_fabric_pll_reconfig(struct blitscrt_fabric *f,
+				 const struct pll_config *p)
+{
+	struct pll_reconfig_seq q;
+	unsigned int i;
+	int spin;
+
+	if (!f || !p)
+		return -1;
+	if (pll_reconfig_build(p, 0, &q) < 0)
+		return -1;
+
+	for (i = 0; i < q.count; i++)
+		blitscrt_fabric_write(f, BLITSCRT_PLLRECFG_OFFSET +
+					 (q.w[i].addr * 4), q.w[i].data);
+
+	/* Busy clears when the counters are shifted in, lock returns some
+	 * microseconds later. The pixel clock is unusable in between, which is
+	 * why the caller holds the video pipeline in reset. */
+	for (spin = 0; spin < 1000000; spin++) {
+		uint32_t st = blitscrt_fabric_read(f, BLITSCRT_PLLRECFG_OFFSET +
+						      (PLL_RECONFIG_STATUS * 4));
+		if (!(st & PLL_STATUS_BUSY) && (st & PLL_STATUS_LOCKED))
+			return 0;
+	}
+	return -1;
+}
+
 int blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 			     const struct blitscrt_timing *t, uint8_t format)
 {
@@ -104,6 +132,10 @@ int blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 	blitscrt_fabric_write(f, BLITSCRT_REG_PLL_M, t->pll.m);
 	blitscrt_fabric_write(f, BLITSCRT_REG_PLL_N, t->pll.n);
 	blitscrt_fabric_write(f, BLITSCRT_REG_PLL_C, t->pll.c);
+
+	/* Reprogram the clock before latching the timing that assumes it. */
+	if (blitscrt_fabric_pll_reconfig(f, &t->pll) < 0)
+		return -1;
 	blitscrt_fabric_write(f, BLITSCRT_REG_PCLK_KHZ,
 			      (uint32_t)(t->pll.actual_hz / 1000));
 

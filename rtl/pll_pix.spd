@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<simPackage>
+ <file path="pll_pix_sim/pll_pix.vo" type="VERILOG" />
+ <topLevel name="pll_pix" />
+ <deviceFamily name="cyclonev" />
+</simPackage>

@@ -37,9 +37,13 @@ const struct pll_limits pll_cyclonev = {
 	.vco_max_hz =  1600000000ull,
 	.pfd_min_hz =     5000000ull,
 	.pfd_max_hz =   325000000ull,
-	.m_min = 1,   .m_max = 512,
-	.n_min = 1,   .n_max = 512,
-	.c_min = 1,   .c_max = 512,
+	/* 510, not 512. The reconfiguration encoding splits each counter into
+	 * two eight-bit half-periods, so 255 + 255 is the ceiling. Solving for
+	 * a divide the hardware cannot be told about is worse than not solving
+	 * at all. */
+	.m_min = 1,   .m_max = 510,
+	.n_min = 1,   .n_max = 510,
+	.c_min = 1,   .c_max = 510,
 };
 
 static unsigned long long absdiff(unsigned long long a, unsigned long long b)

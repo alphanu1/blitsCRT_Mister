@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include "modes.h"
+#include "pll_reconfig.h"
 
 struct blitscrt_fabric;
 
@@ -13,6 +14,10 @@ void blitscrt_fabric_close(struct blitscrt_fabric *f);
 
 uint32_t blitscrt_fabric_read(struct blitscrt_fabric *f, uint32_t off);
 void     blitscrt_fabric_write(struct blitscrt_fabric *f, uint32_t off, uint32_t v);
+
+/* Reprogram the pixel clock. Returns 0 once the PLL reports lock again. */
+int blitscrt_fabric_pll_reconfig(struct blitscrt_fabric *f,
+				 const struct pll_config *p);
 
 /* Push timing and PLL counters, then latch on the next vblank. */
 int  blitscrt_fabric_set_mode(struct blitscrt_fabric *f,

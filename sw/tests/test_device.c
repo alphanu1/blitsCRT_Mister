@@ -68,22 +68,31 @@ int main(void)
 		struct gud_display_mode_req m[BLITSCRT_MAX_MODES];
 		unsigned i;
 		memcpy(m, buf, n);
-		check("mode list is non-empty", count > 0);
+		check("four modes advertised", count == 4);
+		check("640x480i60 is first and PREFERRED, the first-connect mode",
+		      m[0].hdisplay == 640 && m[0].vdisplay == 480 &&
+		      (m[0].flags & GUD_DISPLAY_MODE_FLAG_INTERLACE) &&
+		      (m[0].flags & GUD_DISPLAY_MODE_FLAG_PREFERRED));
 		printf("        %u modes advertised:\n", count);
-		for (i = 0; i < count; i++)
-			printf("          %4ux%-4u %6u kHz  htotal %4u vtotal %4u %s\n",
+		for (i = 0; i < count; i++) {
+			double line = m[i].clock * 1000.0 / m[i].htotal;
+			int il = (m[i].flags & GUD_DISPLAY_MODE_FLAG_INTERLACE) ? 1 : 0;
+			printf("          %4ux%-4u %6u kHz  %.3f kHz  %.2f Hz %-10s%s\n",
 			       m[i].hdisplay, m[i].vdisplay, m[i].clock,
-			       m[i].htotal, m[i].vtotal,
-			       (m[i].flags & GUD_DISPLAY_MODE_FLAG_INTERLACE) ? "interlaced" : "");
+			       line / 1000.0,
+			       il ? line / (m[i].vtotal / 2.0) : line / m[i].vtotal,
+			       il ? "interlaced" : "progressive",
+			       (m[i].flags & GUD_DISPLAY_MODE_FLAG_PREFERRED) ? "  <- preferred" : "");
+		}
 	}
 
 	printf("\nmodeset to an advertised mode\n");
 	{
 		struct gud_state_req s;
 		memset(&s, 0, sizeof s);
-		s.mode.clock = 6400;
-		s.mode.hdisplay = 320; s.mode.hsync_start = 344;
-		s.mode.hsync_end = 374; s.mode.htotal = 406;
+		s.mode.clock = 6300;
+		s.mode.hdisplay = 320; s.mode.hsync_start = 332;
+		s.mode.hsync_end = 362; s.mode.htotal = 400;
 		s.mode.vdisplay = 240; s.mode.vsync_start = 243;
 		s.mode.vsync_end = 246; s.mode.vtotal = 262;
 		s.format = GUD_PIXEL_FORMAT_RGB565;
@@ -99,11 +108,13 @@ int main(void)
 		       dev.active_timing.pll.m, dev.active_timing.pll.n,
 		       dev.active_timing.pll.c, dev.active_timing.pll.actual_hz,
 		       dev.active_timing.pll.error_ppm);
-		check("fabric timing matches the RTL parameters",
-		      dev.active_timing.h_sy == 30 && dev.active_timing.h_bp == 32 &&
-		      dev.active_timing.h_act == 320 && dev.active_timing.h_fp == 24 &&
-		      dev.active_timing.v_sy == 3  && dev.active_timing.v_bp == 16 &&
-		      dev.active_timing.v_act == 240 && dev.active_timing.v_fp == 3);
+		check("timing decomposes back to the same totals",
+		      dev.active_timing.h_sy + dev.active_timing.h_bp +
+		      dev.active_timing.h_act + dev.active_timing.h_fp == 400 &&
+		      dev.active_timing.v_total_field == 262);
+		check("line rate lands on 15.750 kHz",
+		      dev.active_timing.line_hz > 15740.0 &&
+		      dev.active_timing.line_hz < 15760.0);
 	}
 
 	{

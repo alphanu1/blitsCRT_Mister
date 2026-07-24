@@ -19,7 +19,7 @@
 #define BLITSCRT_REGS_H
 
 #define BLITSCRT_LWBRIDGE_BASE   0xFF200000u
-#define BLITSCRT_REG_SPAN        0x4000u
+#define BLITSCRT_REG_SPAN        0x4000u   /* regs, PLL window, char buffer */
 
 /* ---- identity ---- */
 #define BLITSCRT_REG_ID          0x0000u   /* RO, 'B''C''R''T' */
@@ -76,8 +76,20 @@
 #define BLITSCRT_REG_FB_FLIP     0x005Cu   /* W1, swap buffers on next vblank */
 #define BLITSCRT_REG_FRAME_COUNT 0x0060u   /* RO, increments per field */
 
+/* ---- PLL reconfiguration ---- */
+/*
+ * altera_pll_reconfig hangs off the same lightweight bridge. Writing the
+ * counters here and then BLITSCRT_REG_APPLY reprograms the pixel clock, which
+ * is what turns a validated arbitrary modeline into one the fabric can produce.
+ */
+#define BLITSCRT_PLLRECFG_OFFSET 0x1000u
+#define BLITSCRT_PLLRECFG_SPAN   0x0040u
+
 /* ---- overlay character buffer ---- */
-/* 128 cols x 64 rows of 8-bit codes, addressed {row[5:0], col[6:0]} */
+/*
+ * 128 cols x 64 rows of 8-bit codes, addressed {row[5:0], col[6:0]}.
+ * One byte per 32-bit word, so the 8192 entries occupy 0x2000..0x3FFF.
+ */
 #define BLITSCRT_CHARRAM_OFFSET  0x2000u
 #define BLITSCRT_CHARRAM_COLS    128u
 #define BLITSCRT_CHARRAM_ROWS    64u

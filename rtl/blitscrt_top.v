@@ -37,7 +37,8 @@ module blitscrt_top #(
     parameter integer CSYNC        = 0,
     parameter integer DEFAULT_VGA  = 1,   // analog board fitted
     parameter integer DEFAULT_HDMI = 1,   // HDMI only; 2 for 31kHz VGA timing
-    parameter integer FORCE_MODE   = -1   // >= 0 pins the mode and ignores detect
+    parameter integer FORCE_MODE   = -1,  // >= 0 pins the mode and ignores detect
+    parameter integer WITH_HPS     = 1    // 0 builds a bare fabric, no HPS
 ) (
     input  wire        FPGA_CLK1_50,
 
@@ -123,12 +124,49 @@ module blitscrt_top #(
     // ---------------- clocking and reset ----------------
     wire clk_pix, pll_locked;
 
+    wire [63:0] reconfig_to_pll, reconfig_from_pll;
+
+    /* Avalon master stubs for the reconfig slave. Held idle until the HPS
+     * bridge decode at 0x1000 replaces them, so the PLL free-runs at its
+     * power-on frequencies. Declared before use; check-decl enforces it. */
+    wire [5:0]  pll_avs_address    = 6'd0;
+    wire        pll_avs_read       = 1'b0;
+    wire        pll_avs_write      = 1'b0;
+    wire [31:0] pll_avs_writedata  = 32'd0;
+    wire [31:0] pll_avs_readdata;
+    wire        pll_avs_waitrequest;
+
+
     pll_modes u_pll (
         .refclk  (FPGA_CLK1_50),
-        .rst     (~rst50_n),          // Quartus warns if this is tied off
+        .rst     (~rst50_n),
         .sel     (clk_sel),
+        .reconfig_to_pll   (reconfig_to_pll),
+        .reconfig_from_pll (reconfig_from_pll),
         .clk_pix (clk_pix),
         .locked  (pll_locked)
+    );
+
+    /*
+     * altera_pll_reconfig on the lightweight bridge at the 0x1000 window. The
+     * register slave decodes 0x0000 and 0x2000 and leaves this range alone;
+     * software drives it directly through sw/pll_reconfig.c.
+     *
+     * The Avalon master side is wired when the HPS bridge lands. Until then the
+     * reconfig block sits idle and the PLL runs at its power-on frequencies,
+     * which is exactly M1/early-M2 behaviour.
+     */
+    pll_reconfig u_pll_reconfig (
+        .mgmt_clk         (FPGA_CLK1_50),
+        .mgmt_reset       (~rst50_n),
+        .mgmt_address     (pll_avs_address),
+        .mgmt_read        (pll_avs_read),
+        .mgmt_readdata    (pll_avs_readdata),
+        .mgmt_write       (pll_avs_write),
+        .mgmt_writedata   (pll_avs_writedata),
+        .mgmt_waitrequest (pll_avs_waitrequest),
+        .reconfig_to_pll  (reconfig_to_pll),
+        .reconfig_from_pll(reconfig_from_pll)
     );
 
     // Hold the video pipeline in reset across a mode change. The clock is
@@ -198,10 +236,23 @@ module blitscrt_top #(
     wire [9:0]  font_addr;
     wire [7:0]  font_data;
 
+    /*
+     * The daemon writes overlay text through the register slave's character
+     * window; those writes land here. When the daemon is quiet the buffer keeps
+     * whatever it last held, and the overlay banking below shows the fabric's
+     * own baked banner instead, so a dead HPS reads differently from a live one.
+     */
+    /*
+     * The daemon writes overlay text through the register slave's character
+     * window (bus clock); the overlay reads it in the pixel domain. When the
+     * daemon is quiet the buffer keeps its baked banner, and hps_alive below
+     * selects which the viewer sees, so a dead HPS reads differently from a
+     * live one.
+     */
     char_ram u_chars (
-        .clk(clk_pix),
-        .we(1'b0), .waddr(13'd0), .wdata(8'd0),     // HPS write port lands here in M2
-        .raddr(char_addr), .rdata(char_data)
+        .wclk(FPGA_CLK1_50), .we(r_char_we),
+        .waddr(r_char_addr), .wdata(r_char_data),
+        .rclk(clk_pix), .raddr(char_addr), .rdata(char_data)
     );
 
     font_rom u_font (
@@ -227,6 +278,7 @@ module blitscrt_top #(
     overlay u_overlay (
         .double_h(t_ilace),
         .bank(cur_mode),
+        .hps_alive(hps_alive),
         .clk(clk_pix), .rst_n(rst_n),
         .de_in(de_card), .xpos(x_card), .ypos(y_card),
         .r_in(tc_r), .g_in(tc_g), .b_in(tc_b),
@@ -234,6 +286,89 @@ module blitscrt_top #(
         .char_addr(char_addr), .char_data(char_data),
         .font_addr(font_addr), .font_data(font_data),
         .de_out(de_px), .r_out(px_r), .g_out(px_g), .b_out(px_b)
+    );
+
+    // ---------------- HPS bridge and register file ----------------
+    //
+    // The bridge is the one module that knows how the HPS reaches the fabric.
+    // BRIDGE = "LWH2F" is the lightweight-bridge pass-through the software
+    // targets today; "GP" marshals MiSTer's gp_in/gp_out. Changing it is a
+    // parameter, not a rewrite -- see rtl/blitscrt_bridge.v.
+    //
+    // The HPS side is stubbed idle. M1 stands on its own: the runtime mode
+    // table drives the video timing, and the register slave is present and
+    // addressable but not yet the source of truth. Handing timing over to the
+    // HPS is the step that comes with a real bridge master, and it is a
+    // deliberate one because the two must not drive the timing at once.
+    wire [13:0] hps_lw_address   = 14'd0;
+    wire        hps_lw_read      = 1'b0;
+    wire        hps_lw_write     = 1'b0;
+    wire [31:0] hps_lw_writedata = 32'd0;
+    wire [31:0] hps_lw_readdata;
+    wire        hps_lw_waitrequest;
+    wire [31:0] hps_gp_out;
+    wire [31:0] hps_gp_in;
+
+    // The one module that touches HPS primitives. WITH_HPS=0 stubs it for a
+    // bare-fabric build. gp_out is the ARM's writes; gp_in is the response the
+    // bridge assembles.
+    blitscrt_hps #(.WITH_HPS(WITH_HPS)) u_hps (
+        .gp_out(hps_gp_out),
+        .gp_in (hps_gp_in)
+    );
+
+    wire [13:0] reg_address;
+    wire        reg_read, reg_write;
+    wire [31:0] reg_writedata, reg_readdata;
+    wire        reg_waitrequest;
+
+    // GP is MiSTer's proven interface: the gp primitive is already on this
+    // silicon, no Platform Designer, no extra HPS blocks. The seam means
+    // flipping to "LWH2F" later is a parameter plus the bridge primitive.
+    blitscrt_bridge #(.BRIDGE("GP")) u_bridge (
+        .clk(FPGA_CLK1_50), .rst_n(rst50_n),
+        .lw_address(hps_lw_address), .lw_read(hps_lw_read),
+        .lw_write(hps_lw_write), .lw_writedata(hps_lw_writedata),
+        .lw_readdata(hps_lw_readdata), .lw_waitrequest(hps_lw_waitrequest),
+        .gp_out(hps_gp_out), .gp_in(hps_gp_in),
+        .avm_address(reg_address), .avm_read(reg_read),
+        .avm_write(reg_write), .avm_writedata(reg_writedata),
+        .avm_readdata(reg_readdata), .avm_waitrequest(reg_waitrequest)
+    );
+
+    // Register-slave outputs, observed but not yet wired to the video path.
+    wire [11:0] r_hsy, r_hbp, r_hact, r_hfp, r_vsy, r_vbp, r_vact, r_vfp;
+    wire        r_interlace;
+    wire [31:0] r_pclk_khz, r_fb_base, r_fb_stride;
+    wire [2:0]  r_fb_format;
+    wire        r_fb_flip;
+    wire [4:0]  r_ctrl_unused;
+    wire [8:0]  r_pll_m, r_pll_n, r_pll_c;
+    wire        r_pll_apply, r_char_we;
+    wire [12:0] r_char_addr;
+    wire [7:0]  r_char_data;
+    wire        hps_alive;
+    wire [1:0]  host_state;
+
+    blitscrt_regs u_regs (
+        .clk(FPGA_CLK1_50), .rst_n(rst50_n),
+        .address(reg_address), .read(reg_read), .write(reg_write),
+        .writedata(reg_writedata), .readdata(reg_readdata),
+        .waitrequest(reg_waitrequest),
+        .clk_pix(clk_pix), .vid_rst_n(rst_n),
+        .vblank(vblank), .field(field),
+        .pll_locked(pll_locked), .hdmi_configured(hdmi_configured),
+        .h_sy(r_hsy), .h_bp(r_hbp), .h_act(r_hact), .h_fp(r_hfp),
+        .v_sy(r_vsy), .v_bp(r_vbp), .v_act(r_vact), .v_fp(r_vfp),
+        .interlace(r_interlace), .pclk_khz(r_pclk_khz),
+        .scanout_en(), .testcard_en(), .overlay_en(),
+        .csync_en(), .hdmi_en(),
+        .fb_base(r_fb_base), .fb_stride(r_fb_stride),
+        .fb_format(r_fb_format), .fb_flip(r_fb_flip),
+        .pll_m(r_pll_m), .pll_n(r_pll_n), .pll_c(r_pll_c),
+        .pll_apply(r_pll_apply),
+        .char_we(r_char_we), .char_addr(r_char_addr), .char_data(r_char_data),
+        .hps_alive(hps_alive), .host_state(host_state)
     );
 
     // ---------------- sync alignment ----------------

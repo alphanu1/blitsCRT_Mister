@@ -22,6 +22,7 @@ struct blitscrt_dev {
 	uint8_t  format;
 	int      host_attached;
 	int      controller_enabled;
+	uint32_t heartbeat;
 	int      display_enabled;
 
 	struct blitscrt_mode    pending_mode; /* from SET_STATE_CHECK */
@@ -54,6 +55,10 @@ void blitscrt_dev_on_host(struct blitscrt_dev *d, int attached);
 
 /* Refresh the overlay from current state. Safe with no fabric. */
 void blitscrt_dev_refresh_overlay(struct blitscrt_dev *d);
+
+/* Call periodically from the main loop; keeps the fabric's HPS-alive watchdog
+ * fed and pushes USB host state to the fabric banner. */
+void blitscrt_dev_heartbeat(struct blitscrt_dev *d);
 
 /*
  * Handle one control request.

@@ -42,6 +42,23 @@
 #define BLITSCRT_STAT_VBLANK     (1u << 3)
 #define BLITSCRT_STAT_APPLYING   (1u << 4) /* a modeset is pending vblank */
 
+/*
+ * Heartbeat. The daemon bumps this register on a timer. The fabric watches it
+ * in the video domain: if it stops changing for about a second, the HPS is
+ * assumed down and the overlay falls back to the fabric's own baked banner.
+ * This is what lets the screen tell "Linux not up" from "up, no USB host".
+ */
+#define BLITSCRT_REG_HEARTBEAT   0x0064u   /* WO, daemon writes an incrementing value */
+
+/*
+ * Host-status hint, written by the daemon so the fabric banner can reflect it
+ * even though only the daemon knows the USB state.
+ */
+#define BLITSCRT_REG_HOSTSTATE   0x0068u   /* WO */
+#define BLITSCRT_HOST_NONE       0u
+#define BLITSCRT_HOST_ATTACHED   1u
+#define BLITSCRT_HOST_STREAMING  2u
+
 /* ---- timing, per field vertically ---- */
 #define BLITSCRT_REG_H_SY        0x0010u
 #define BLITSCRT_REG_H_BP        0x0014u

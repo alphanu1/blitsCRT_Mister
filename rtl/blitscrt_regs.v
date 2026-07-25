@@ -24,7 +24,7 @@
 `default_nettype none
 
 module blitscrt_regs #(
-    parameter [31:0] VERSION = 32'h0002_0000     // major 2, minor 0
+    parameter [31:0] VERSION = 32'h0002_0001     // major 2, minor 1 (gp handshake fix)
 ) (
     // ---- Avalon-MM slave, 50 MHz domain ----
     input  wire        clk,
@@ -70,7 +70,11 @@ module blitscrt_regs #(
     // overlay character buffer write port, bus domain
     output reg         char_we,
     output reg  [12:0] char_addr,
-    output reg  [7:0]  char_data
+    output reg  [7:0]  char_data,
+
+    // liveness, video domain: high when the daemon's heartbeat is fresh
+    output reg         hps_alive,
+    output reg  [1:0]  host_state
 );
 
     localparam [31:0] ID_MAGIC = 32'h42435254;   // "BCRT"
@@ -90,6 +94,8 @@ module blitscrt_regs #(
 
     reg        apply_req;                 // toggles to request a latch
     reg        flip_req;
+    reg [31:0] hb_count;                  // last heartbeat value written
+    reg [1:0]  s_host;                    // last host state written
 
     /* Driven in the video domain further down, read by the synchronisers just
      * below. Declared here because some Icarus builds reject use before
@@ -153,6 +159,8 @@ module blitscrt_regs #(
             pll_m <= 9'd63; pll_n <= 9'd2; pll_c <= 9'd125;
             apply_req <= 1'b0;
             flip_req  <= 1'b0;
+            hb_count  <= 32'd0;
+            s_host    <= 2'd0;
             pll_apply <= 1'b0;
             char_we   <= 1'b0;
             char_addr <= 13'd0;
@@ -185,6 +193,8 @@ module blitscrt_regs #(
                         8'h38: pll_n       <= writedata[8:0];
                         8'h3C: pll_c       <= writedata[8:0];
                         8'h40: s_khz       <= writedata;
+                        8'h64: hb_count    <= writedata;       // heartbeat
+                        8'h68: s_host      <= writedata[1:0];  // host state
                         8'h44: begin
                             /* APPLY. Toggle the request; the video side
                              * latches at the next vblank. */
@@ -231,6 +241,7 @@ module blitscrt_regs #(
                 8'h54: readdata <= s_fb_stride;
                 8'h58: readdata <= {29'd0, s_fb_format};
                 8'h60: readdata <= frame_count_bus;
+                8'h68: readdata <= {30'd0, s_host};
                 default: readdata <= 32'd0;
             endcase
         end
@@ -243,6 +254,18 @@ module blitscrt_regs #(
     reg [1:0] sync_flip;
     reg       field_d;
 
+    /*
+     * Heartbeat watchdog. Bring the bus-domain count across, watch it for
+     * change, and count fields since it last moved. Past the timeout the HPS
+     * is declared down. host_state crosses the same way; it only means anything
+     * while hps_alive holds.
+     */
+    reg [31:0] hb_vid;                   // heartbeat resynced to pixel clock
+    reg [31:0] hb_at_field;              // its value at the last field edge
+    reg [1:0]  host_meta;                // host_state synchroniser
+    reg [7:0]  hb_stale;                 // fields since it last changed
+    localparam [7:0] HB_TIMEOUT = 8'd90; // ~1.5 s of 60 Hz fields
+
     always @(posedge clk_pix or negedge vid_rst_n) begin
         if (!vid_rst_n) begin
             sync_req  <= 2'b00;
@@ -252,6 +275,9 @@ module blitscrt_regs #(
             fb_flip   <= 1'b0;
             field_toggle <= 1'b0;
             field_d   <= 1'b0;
+            hb_vid <= 32'd0; hb_at_field <= 32'd0;
+            hb_stale <= HB_TIMEOUT; hps_alive <= 1'b0;
+            host_meta <= 2'd0; host_state <= 2'd0;
 
             h_sy <= 12'd60; h_bp <= 12'd76; h_act <= 12'd640; h_fp <= 12'd24;
             v_sy <= 12'd3;  v_bp <= 12'd16; v_act <= 12'd240; v_fp <= 12'd3;
@@ -268,6 +294,24 @@ module blitscrt_regs #(
             /* count fields for the bus-side frame counter */
             field_d <= field;
             if (field != field_d) field_toggle <= ~field_toggle;
+
+            /* Resync every cycle, but only compare across field boundaries:
+             * snapshot the value at each field edge and see if it moved since
+             * the previous field. */
+            hb_vid <= hb_count;
+            host_meta  <= s_host;
+            host_state <= host_meta;
+            if (field != field_d) begin           // once per field
+                hb_at_field <= hb_vid;
+                if (hb_vid != hb_at_field) begin
+                    hb_stale  <= 8'd0;
+                    hps_alive <= 1'b1;
+                end else if (hb_stale < HB_TIMEOUT) begin
+                    hb_stale <= hb_stale + 8'd1;
+                end else begin
+                    hps_alive <= 1'b0;            // heartbeat lost
+                end
+            end
 
             if (vblank) begin
                 if (sync_req[1] != apply_ack) begin

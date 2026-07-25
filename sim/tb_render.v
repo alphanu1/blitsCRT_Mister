@@ -54,13 +54,14 @@ module tb_render;
     wire [12:0] char_addr; wire [7:0] char_data;
     wire [9:0]  font_addr; wire [7:0] font_data;
 
-    char_ram u_chars (.clk(clk), .we(1'b0), .waddr(13'd0), .wdata(8'd0),
-                      .raddr(char_addr), .rdata(char_data));
+    char_ram u_chars (.wclk(clk), .we(1'b0), .waddr(13'd0), .wdata(8'd0),
+                      .rclk(clk), .raddr(char_addr), .rdata(char_data));
     font_rom u_font  (.clk(clk), .addr(font_addr), .data(font_data));
 
     wire de_px; wire [5:0] px_r, px_g, px_b;
     overlay u_overlay (
         .clk(clk), .rst_n(rst_n), .double_h(ILACE[0]), .bank(BANK[1:0]),
+        .hps_alive(1'b1),
         .de_in(de_card), .xpos(x_card), .ypos(y_card),
         .r_in(tc_r), .g_in(tc_g), .b_in(tc_b), .enable(1'b1),
         .char_addr(char_addr), .char_data(char_data),

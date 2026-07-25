@@ -60,9 +60,18 @@ def check(path):
             if PORT.match(line):
                 ports.add(name)
 
+    # Instance port maps resolve at elaboration, so a signal passed into a
+    # port is not a textual forward reference the way a combinational use is.
+    # Icarus accepts  .a(sig)  with sig declared later; it is only procedural
+    # and continuous-assignment uses that the strict builds reject. Detect a
+    # port-map line by its leading  .name(  and skip it wholesale.
+    port_line = re.compile(r'^\s*\.\s*[A-Za-z_][\w$]*\s*\(')
+
     problems = []
     for i, line in enumerate(lines, 1):
         if DECL.match(line):
+            continue
+        if port_line.match(line):
             continue
         for name in re.findall(r'\b([A-Za-z_][\w$]*)\b', line):
             if name in KEYWORDS or name in ports:

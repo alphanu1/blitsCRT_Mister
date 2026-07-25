@@ -1,32 +1,38 @@
-// -----------------------------------------------------------------------------
-// char_ram.v -- overlay character buffer, 64 rows x 128 cols, 8 KB
-//
-// Sized for the largest grid we need (80x60 at 640x480 with an 8x8 cell) and
-// addressed as {row[5:0], col[6:0]}. Port A is the write side, which the HPS
-// bridge attaches to in M2; port B is the scanout read. Contents come up from
-// banner.hex so a picture appears with no software running at all.
-// -----------------------------------------------------------------------------
-
 `timescale 1ns/1ps
+// char_ram.v -- overlay character buffer, 64 rows x 128 cols, 8 KB.
+//
+// True dual-clock: written from the bus domain by the register slave, read in
+// the pixel domain by the overlay. Cyclone V M10K supports this directly.
+//
+// The banked layout: rows 0..15 are the fabric's baked banner (three mode
+// blocks live in the low rows via the bank select in overlay.v). The daemon
+// writes its live text into the same space. When the daemon is quiet the baked
+// contents remain, which is what the overlay uses to show a distinct
+// "fabric only" screen.
+
 `default_nettype none
 
 module char_ram (
-    input  wire        clk,
-
+    // write port, bus clock
+    input  wire        wclk,
     input  wire        we,
     input  wire [12:0] waddr,
     input  wire [7:0]  wdata,
 
+    // read port, pixel clock
+    input  wire        rclk,
     input  wire [12:0] raddr,
     output reg  [7:0]  rdata
 );
-    reg [7:0] mem [0:8191];
+    (* ramstyle = "M10K" *) reg [7:0] mem [0:8191];
     initial $readmemh("banner.hex", mem);
 
-    always @(posedge clk) begin
+    always @(posedge wclk)
         if (we) mem[waddr] <= wdata;
+
+    always @(posedge rclk)
         rdata <= mem[raddr];
-    end
+
 endmodule
 
 `default_nettype wire

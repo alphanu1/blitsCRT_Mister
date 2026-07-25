@@ -15,6 +15,7 @@
 #include "device.h"
 
 #include <errno.h>
+#include <poll.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -270,10 +271,28 @@ void blitscrt_gadget_close(struct blitscrt_gadget *g)
 int blitscrt_gadget_run(struct blitscrt_gadget *g)
 {
 	struct usb_functionfs_event ev[8];
+	struct pollfd pfd = { .fd = g->ep0, .events = POLLIN };
 	ssize_t n;
 	int i;
 
 	while (g->running) {
+		/*
+		 * Wake at least a few times a second even with no USB activity,
+		 * so the fabric heartbeat keeps ticking while idle. Without the
+		 * timeout the read blocks until a host does something, and the
+		 * fabric would decide the daemon had died.
+		 */
+		int pr = poll(&pfd, 1, 250);
+		if (pr == 0) {
+			blitscrt_dev_heartbeat(g->dev);
+			continue;
+		}
+		if (pr < 0) {
+			if (errno == EINTR) continue;
+			perror("ep0 poll");
+			return -1;
+		}
+
 		n = read(g->ep0, ev, sizeof ev);
 		if (n < 0) {
 			if (errno == EINTR) continue;
@@ -304,6 +323,8 @@ int blitscrt_gadget_run(struct blitscrt_gadget *g)
 
 		if (g->dev->buffer_valid)
 			handle_bulk(g);
+
+		blitscrt_dev_heartbeat(g->dev);
 	}
 	return 0;
 }

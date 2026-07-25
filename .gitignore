@@ -78,3 +78,9 @@ sw/blitscrtd
 sw/test_pll
 sw/test_modes
 sw/test_device
+
+# ---------------------------------------------------------------------------
+# Staged bootable set from `make build`. Collected from tracked sources and
+# build products; never committed.
+# ---------------------------------------------------------------------------
+build/

@@ -18,6 +18,7 @@ module overlay (
     input  wire        rst_n,
     input  wire        double_h,    // render each font row across two lines
     input  wire [1:0]  bank,        // which mode's text block to show
+    input  wire        hps_alive,   // daemon writing text? if not, show bank 3
 
     input  wire        de_in,
     input  wire [11:0] xpos,
@@ -50,8 +51,15 @@ module overlay (
     /* The character buffer holds one text block per mode, 16 rows each. The
      * fabric picks modes at runtime, so a single baked block would report
      * whichever mode it was generated for whatever is actually on screen. */
+    /*
+     * Banks 0..2 are the three modes' text, written by the daemon when it is
+     * alive. Bank 3 is the fabric's own baked "no HPS" banner, shown when the
+     * heartbeat is stale. So the screen distinguishes a running daemon from a
+     * board that powered up the fabric but never brought Linux up.
+     */
     wire        row_in_bank = (row[5:4] == 2'b00);
-    wire [5:0]  banked_row  = {bank, row[3:0]};
+    wire [1:0]  active_bank = hps_alive ? bank : 2'd3;
+    wire [5:0]  banked_row  = {active_bank, row[3:0]};
 
     assign char_addr = {banked_row, col};
 

@@ -8,10 +8,9 @@
 /*
  * altera_pll_reconfig Avalon-MM register map, word addressed.
  *
- * VERIFY against the Cyclone V "Reconfiguring PLLs" guide for the IP version
- * actually generated. The addresses below are the standard map, but the IP has
- * options that move things, and a wrong write here mis-clocks the video rather
- * than failing loudly.
+ * Confirmed against the generated pll_reconfig: mgmt_address is [5:0] and
+ * word-addressed, which is the standard map below. The Avalon interface exposes
+ * these directly.
  */
 #define PLL_RECONFIG_MODE       0x0     /* 0 = poll busy, 1 = interrupt        */
 #define PLL_RECONFIG_STATUS     0x1     /* bit0 busy, bit1 locked              */
@@ -31,8 +30,9 @@
  * device datasheet quotes for the counters themselves. Programming 511 or 512
  * would wrap the high field and silently mis-clock the video.
  *
- * VERIFY the field width against the guide for the generated IP. Some variants
- * carry nine-bit halves, which would lift the ceiling to 1022.
+ * Eight bits is the Cyclone V counter half-period width; it is fixed by the
+ * device, not the IP options, so the generated pll_pix does not change it. The
+ * ceiling is 510.
  */
 #define PLL_CNT_FIELD_BITS      8
 #define PLL_CNT_MAX             ((1u << PLL_CNT_FIELD_BITS) - 1u)

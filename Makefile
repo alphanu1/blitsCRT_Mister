@@ -4,7 +4,7 @@ IV      := iverilog -g2012
 RTL     := rtl/video_timing.v rtl/testcard.v rtl/overlay.v \
            rtl/char_ram.v rtl/font_rom.v
 
-.PHONY: all world manifest assets sim render render-i clean distclean tools bitstream quartus-path lint check-pins check-decl uboot-txt preview
+.PHONY: all world manifest assets sim render render-i clean distclean tools setup setup-dry get-toolchain kernel-clone daemon bitstream bitstream-force quartus-path lint check-pins check-decl check-ip uboot-txt preview linux build kernel-check kernel-config
 
 # iverilog and Pillow are for verification only. Neither is needed to build the
 # bitstream -- Quartus consumes rtl/ and the generated .hex files, nothing else.
@@ -47,8 +47,27 @@ world: assets
 	@if [ -n "$(HAVE_IVERILOG)" ] && [ -n "$(HAVE_PILLOW)" ]; then \
 	  $(MAKE) --no-print-directory render render-i; \
 	  else echo "-- skipping renders, needs iverilog and Pillow"; fi
-	@if [ -n "$(QUARTUS_SH)" ]; then $(MAKE) --no-print-directory bitstream; \
-	  else echo "-- skipping bitstream, quartus_sh not found (try: make quartus-path)"; fi
+	@$(MAKE) --no-print-directory check-ip
+	@if [ -n "$(QUARTUS_SH)" ]; then \
+	  $(MAKE) --no-print-directory bitstream; \
+	else \
+	  echo "-- skipping bitstream, quartus_sh not found (try: make quartus-path)"; \
+	fi
+	@if [ -z "$(KERNEL_SRC)" ]; then \
+	  echo "-- no kernel tree found, skipping the kernel image."; \
+	  echo "   looked in: ~/source/linux-socfpga, ~/source/Linux-Kernel_MiSTer,"; \
+	  echo "              ~/linux-socfpga, ~/Linux-Kernel_MiSTer, ../linux-socfpga"; \
+	  echo "   point at yours with:  make world KERNEL_SRC=/path/to/kernel"; \
+	  echo "   you also need an ARM cross-compiler; see 'The kernel' in the README."; \
+	elif [ ! -d "$(KERNEL_SRC)" ]; then \
+	  echo "-- skipping kernel, KERNEL_SRC=$(KERNEL_SRC) is not a directory"; \
+	else \
+	  echo "-- building kernel from $(KERNEL_SRC)"; \
+	  $(MAKE) --no-print-directory linux KERNEL_SRC="$(KERNEL_SRC)" || \
+	    echo "-- kernel build failed; staging the rest anyway"; \
+	fi
+	@$(MAKE) --no-print-directory daemon CROSS_COMPILE="$(CROSS_COMPILE)" STATIC="$(STATIC)" || echo "-- daemon build skipped"
+	@$(MAKE) --no-print-directory build   # build is idempotent (cp -f); safe
 	@$(MAKE) --no-print-directory manifest
 
 # Every output this project can produce, and whether it is there.
@@ -68,7 +87,11 @@ MANIFEST := \
   quartus/output_files/blitscrt.sof \
   quartus/output_files/blitscrt.fit.rpt \
   quartus/output_files/blitscrt.map.rpt \
-  quartus/output_files/blitscrt.sta.rpt
+  quartus/output_files/blitscrt.sta.rpt \
+  build/blitscrt.rbf \
+  build/blitscrt.txt \
+  build/blitscrt/zImage \
+  build/blitscrt/blitscrt.dtb
 
 manifest:
 	@echo ""
@@ -86,6 +109,13 @@ manifest:
 	else \
 	  echo "  No bitstream yet. Run 'make bitstream', or 'make quartus-path' first."; \
 	fi
+	@if [ -f build/blitscrt/zImage ]; then \
+	  echo "  Kernel image staged at build/blitscrt/zImage."; \
+	else \
+	  echo "  No kernel image. Needs a kernel tree AND an ARM cross-compiler:"; \
+	  echo "    cross-compiler: $(if $(CROSS_COMPILE),found ($(CROSS_COMPILE)gcc),MISSING -- prebuilt toolchain, see 'The kernel' in the README)"; \
+	  echo "    kernel tree:    $(if $(KERNEL_SRC),$(KERNEL_SRC),MISSING -- run 'make setup' to clone one, or set KERNEL_SRC=)"; \
+	fi
 	@echo ""
 
 # Self-contained HTML preview of the README, with the photo, the runtime clip
@@ -102,11 +132,46 @@ check-pins:
 	@python3 tools/check_pins.py $(MISTER)
 
 # Report what is and is not available.
+# Install the build dependencies (testbench and render toolchain, ARM
+# cross-compiler, dtc, git) via the system package manager, and optionally clone
+# a kernel tree. Does not install Quartus, which needs a manual licensed setup.
+setup:
+	./tools/setup-deps.sh
+
+# Same, but only print what it would install.
+setup-dry:
+	./tools/setup-deps.sh --dry-run
+
+# Download and extract a prebuilt ARM cross-compiler (Bootlin). Opt-in and
+# separate from setup because it pulls a large binary from a third party.
+get-toolchain:
+	./tools/get-toolchain.sh
+
+# Clone the MiSTer kernel tree, non-interactively, where the build auto-detects
+# it. Use this instead of the setup prompt if you skipped it. The tree is large;
+# --depth 1 keeps it to one revision. Override the destination with
+# KERNEL_CLONE_DIR=.
+KERNEL_CLONE_DIR ?= $(HOME)/source/Linux-Kernel_MiSTer
+kernel-clone:
+	@if [ -f "$(KERNEL_CLONE_DIR)/Makefile" ]; then \
+	  echo "kernel tree already at $(KERNEL_CLONE_DIR)"; \
+	else \
+	  echo "cloning MiSTer kernel into $(KERNEL_CLONE_DIR) (large, one revision)..."; \
+	  mkdir -p "$$(dirname $(KERNEL_CLONE_DIR))"; \
+	  git clone --depth 1 \
+	    https://github.com/MiSTer-devel/Linux-Kernel_MiSTer.git \
+	    "$(KERNEL_CLONE_DIR)" && \
+	  echo "done. 'make world' will auto-detect it."; \
+	fi
+
 tools:
 	@echo "python3    $$(python3 --version 2>&1)"
 	@echo "iverilog   $${IV:-$(if $(HAVE_IVERILOG),$(HAVE_IVERILOG),NOT FOUND -- testbenches unavailable)}"
 	@echo "Pillow     $(if $(HAVE_PILLOW),present,NOT FOUND -- make render unavailable)"
 	@echo "quartus_sh $$(command -v quartus_sh || echo 'NOT FOUND -- cannot build the bitstream')"
+	@echo "cross-gcc  $(if $(CROSS_COMPILE),$(CROSS_COMPILE)gcc,NOT FOUND -- cannot build the kernel)"
+	@echo "dtc        $$(command -v dtc || echo 'NOT FOUND -- kernel device tree')"
+	@echo "kerneltree $(if $(KERNEL_SRC),$(KERNEL_SRC),NOT FOUND -- set KERNEL_SRC or run make setup)"
 
 # Proper dependencies so 'make all' does not regenerate these for every
 # downstream target.
@@ -129,9 +194,17 @@ sim: assets
 	vvp sim/tb_modes.vvp
 	$(IV) -o sim/tb_regs.vvp sim/tb_regs.v rtl/blitscrt_regs.v
 	vvp sim/tb_regs.vvp
+	$(IV) -o sim/tb_bridge.vvp sim/tb_bridge.v rtl/blitscrt_bridge.v
+	vvp sim/tb_bridge.vvp
 
 # Elaborate the real top level with stand-ins for the Quartus primitives.
 .PHONY: lint
+# Verify the generated PLL megafunctions carry the settings the design needs.
+# Reads what came out rather than trusting what was ticked, since GUI labels
+# move between Quartus releases. See docs/MEGAFUNCTIONS.md.
+check-ip:
+	@python3 tools/check_ip.py
+
 # Icarus builds disagree about use before declaration; mine accepts it and
 # others reject it outright. Quartus never complains, so this only surfaces on
 # somebody else's machine. Checked here instead.
@@ -158,12 +231,23 @@ render-i: assets
 	cd rtl && vvp ../sim/tb_render_i.vvp
 	python3 tools/render_png.py 640x480i60
 
+# Remove transient build products. Every rm uses -f / -rf, so a missing file is
+# never an error -- clean works whether or not a full build ran. The tracked
+# sim/*.png renders are left alone; the README embeds them.
 clean:
-	rm -f sim/*.vvp rtl/render.txt $(UBOOT_TXT) README_preview.html
+	rm -f  sim/*.vvp sim/*.vcd sim/*.fst sim/*.lxt
+	rm -f  rtl/render.txt $(UBOOT_TXT) README_preview.html
+	rm -f  sw/*.o sw/blitscrtd sw/test_pll sw/test_pll_reconfig sw/test_modes sw/test_device
+	rm -rf build/
+	rm -rf __pycache__ tools/__pycache__ sw/__pycache__
+	find . -name '*.pyc' -delete 2>/dev/null || true
 
-# Regenerate the assets from scratch as well.
+# Also remove generated assets and the Quartus output. Leaves only tracked
+# sources.
 distclean: clean
-	rm -f rtl/font8x8.hex rtl/banner.hex
+	rm -f  rtl/font8x8.hex rtl/banner.hex rtl/banner_i.hex
+	rm -rf quartus/output_files quartus/db quartus/incremental_db
+	rm -rf quartus/greybox_tmp quartus/.qsys_edit quartus/hps_isw_handoff
 
 # ---------------------------------------------------------------------------
 # Bitstream. Quartus rarely ends up on PATH after an install, so look in the
@@ -211,28 +295,248 @@ quartus-path:
 	fi
 
 UBOOT_TXT := quartus/output_files/blitscrt.txt
+RBF       := quartus/output_files/blitscrt.rbf
+
+# The override either halts after loading the FPGA (M1 fabric-only) or boots the
+# kernel (M2 onward). Pick the kernel form automatically once a zImage has been
+# staged, so a full build produces a bootable card. Force either way with
+# BOOT_LINUX=1 or BOOT_LINUX=0.
+BOOT_LINUX ?= $(shell [ -f build/blitscrt/zImage ] && echo 1 || echo 0)
+UBOOT_FLAG := $(if $(filter 1,$(BOOT_LINUX)),--linux,)
+
+# Where a bootable set is staged. Everything the board needs at power-on lands
+# here so it can be copied to an SD card in one step.
+STATIC ?= 1   # daemon: static by default, it runs on the board
+BUILD_DIR ?= build
+
+# Kernel build. KERNEL_SRC points at a configured kernel tree; the image and
+# device tree are built there and copied into BUILD_DIR. Left unset, the linux
+# target explains what to set rather than failing cryptically.
+# Auto-detected like QUARTUS_SH: if a configured kernel tree sits in one of the
+# usual places, plain `make` / `make world` builds it with no flag. A tree
+# counts only if it has a top-level Makefile (so an empty dir is not picked).
+# Override with:  make world KERNEL_SRC=/path/to/linux-socfpga
+KERNEL_SRC ?= $(shell for d in \
+    $(HOME)/source/linux-socfpga $(HOME)/source/Linux-Kernel_MiSTer \
+    $(HOME)/source/Linux-Kernel_MiSTer-master $(HOME)/source/linux \
+    $(HOME)/linux-socfpga $(HOME)/Linux-Kernel_MiSTer \
+    $(HOME)/Linux-Kernel_MiSTer-master \
+    ../linux-socfpga ../Linux-Kernel_MiSTer; do \
+      [ -f "$$d/Makefile" ] && { echo "$$d"; break; }; \
+    done 2>/dev/null)
+# Kernel files stage into build/blitscrt/, mirroring the card layout the u-boot
+# override loads: /blitscrt/zImage and /blitscrt/blitscrt.dtb.
+CARD_SUB     := $(BUILD_DIR)/blitscrt
+KERNEL_IMAGE := $(CARD_SUB)/zImage
+KERNEL_DTB   := $(CARD_SUB)/blitscrt.dtb
+
+# Cross-compiler for the ARM kernel. Auto-detected from the usual triplets;
+# override with CROSS_COMPILE=... if yours differs. The trailing dash is part
+# of the kernel's convention (it prepends this to gcc, ld, and so on).
+CROSS_COMPILE ?= $(shell \
+  for c in arm-linux-gnueabihf- arm-none-linux-gnueabihf- \
+           arm-buildroot-linux-gnueabihf- \
+           arm-linux-gnueabi- armv7l-linux-gnueabihf-; do \
+    command -v $${c}gcc >/dev/null 2>&1 && { echo $$c; exit 0; }; \
+  done; \
+  for g in $(HOME)/toolchains/*/bin/*gcc; do \
+    [ -x "$$g" ] || continue; \
+    b=$$(basename $$g); echo $${b%gcc}; exit 0; \
+  done 2>/dev/null)
+
+# If the cross-compiler is not on PATH but lives under ~/toolchains, capture its
+# bin/ so the kernel build can find it. The kernel invokes $(CROSS_COMPILE)gcc as
+# a bare command, so the directory must be on PATH -- resolving the triplet name
+# alone is not enough. Empty when the compiler is already on PATH.
+CROSS_BIN := $(shell \
+  command -v $(CROSS_COMPILE)gcc >/dev/null 2>&1 || { \
+    for g in $(HOME)/toolchains/*/bin/$(CROSS_COMPILE)gcc; do \
+      [ -x "$$g" ] && { dirname "$$g"; exit 0; }; \
+    done; \
+  } 2>/dev/null)
+
+# PATH prefix for kernel recipes: prepend CROSS_BIN when it is set.
+KPATH := $(if $(CROSS_BIN),PATH="$(CROSS_BIN):$$PATH",)
+
+# Kernel defconfig. MiSTer's tree ships MiSTer_defconfig; a mainline socfpga
+# tree uses multi_v7_defconfig. Auto-picked from the tree, override with
+# KERNEL_DEFCONFIG=... if needed.
+KERNEL_DEFCONFIG ?= $(shell \
+  if [ -f "$(KERNEL_SRC)/arch/arm/configs/MiSTer_defconfig" ]; then \
+    echo MiSTer_defconfig; \
+  else echo multi_v7_defconfig; fi 2>/dev/null)
+KERNEL_DEFCONFIG := $(if $(KERNEL_DEFCONFIG),$(KERNEL_DEFCONFIG),multi_v7_defconfig)
+
+# Which board dtb the build produces. MiSTer boards use the de10_nano dtb;
+# a mainline socfpga tree uses socdk. Auto-picked, override to match hardware.
+KERNEL_DTB_NAME ?= $(shell \
+  if [ -f "$(KERNEL_SRC)/arch/arm/configs/MiSTer_defconfig" ]; then \
+    echo socfpga_cyclone5_de10_nano.dtb; \
+  else echo socfpga_cyclone5_socdk.dtb; fi 2>/dev/null)
+KERNEL_DTB_NAME := $(if $(KERNEL_DTB_NAME),$(KERNEL_DTB_NAME),socfpga_cyclone5_socdk.dtb)
 
 # The override names the bitstream inside it. Generating both together stops
 # the two drifting apart if the project is ever renamed.
 uboot-txt: $(UBOOT_TXT)
 
 $(UBOOT_TXT): tools/gen_uboot_txt.py
-	@python3 tools/gen_uboot_txt.py $@
+	@python3 tools/gen_uboot_txt.py $@ $(UBOOT_FLAG)
+
+# The .rbf depends on every RTL source and generated .hex. If it is already
+# newer than all of them, the fabric has not changed and a full Quartus compile
+# (minutes) would be wasted -- skip it. Force a rebuild with FORCE_BITSTREAM=1
+# or 'make bitstream-force'.
+RTL_SRCS := $(wildcard rtl/*.v rtl/*/*.v rtl/*.hex) quartus/blitscrt.qsf quartus/blitscrt.sdc
 
 bitstream: assets
 	@if [ -z "$(QUARTUS_SH)" ]; then \
 	  $(MAKE) --no-print-directory quartus-path; exit 1; \
 	fi
-	@echo "using $(QUARTUS_SH)"
-	cd quartus && $(QUARTUS_SH) --flow compile blitscrt
-	@python3 tools/gen_uboot_txt.py $(UBOOT_TXT)
+	@if [ -z "$(FORCE_BITSTREAM)" ] && [ -f $(RBF) ] && \
+	   [ -z "$$(find $(RTL_SRCS) -newer $(RBF) 2>/dev/null)" ]; then \
+	  echo "bitstream up to date ($(RBF) newer than all RTL); skipping Quartus."; \
+	  echo "  force a rebuild with: make bitstream FORCE_BITSTREAM=1"; \
+	else \
+	  echo "using $(QUARTUS_SH)"; \
+	  ( cd quartus && $(QUARTUS_SH) --flow compile blitscrt ); \
+	fi
+	@python3 tools/gen_uboot_txt.py $(UBOOT_TXT) $(UBOOT_FLAG)
+
+# Always recompile, ignoring the up-to-date check.
+bitstream-force:
+	@$(MAKE) --no-print-directory bitstream FORCE_BITSTREAM=1
 	@echo ""
-	@ls -l quartus/output_files/blitscrt.rbf 2>/dev/null && \
-	  echo "Next: check the Fitter pin report, then 'make sd DEST=...'" || \
-	  echo "No .rbf produced. Check quartus/output_files/blitscrt.*.rpt"
+	@if [ -f $(RBF) ]; then \
+	  ls -l $(RBF); \
+	  $(MAKE) --no-print-directory build; \
+	else \
+	  echo "No .rbf produced. Check quartus/output_files/blitscrt.*.rpt"; \
+	fi
 
 # Install the bitstream and its u-boot override onto a mounted MiSTer SD card.
 .PHONY: sd
 sd:
 	@test -n "$(DEST)" || { echo "usage: make sd DEST=/path/to/mounted/sd"; exit 1; }
 	./tools/install_sd.sh "$(DEST)"
+
+# ---- Linux kernel image and device tree ----
+#
+# Builds the custom GUD kernel and the device tree, then stages them. Needs a
+# configured kernel tree; point KERNEL_SRC at it. The device tree overlay in
+# linux/ is applied on top of the board's base tree by the kernel build.
+# Prerequisites checked in one place, with actionable messages. Kernel builds
+# are heavy and fail obscurely when a piece is missing; catch it up front.
+kernel-check:
+	@test -n "$(KERNEL_SRC)" || { \
+	  echo "no kernel tree. set KERNEL_SRC=/path, or put one where make looks"; \
+	  echo "(see 'The kernel' in the README for the checkout and prereqs)."; \
+	  exit 1; }
+	@test -d "$(KERNEL_SRC)" || { echo "KERNEL_SRC=$(KERNEL_SRC) is not a directory"; exit 1; }
+	@test -f "$(KERNEL_SRC)/Makefile" || { \
+	  echo "$(KERNEL_SRC) has no top-level Makefile -- not a kernel tree"; exit 1; }
+	@test -n "$(CROSS_COMPILE)" || { \
+	  echo "no ARM cross-compiler found. get one with 'make get-toolchain',"; \
+	  echo "or set CROSS_COMPILE=your-triplet- explicitly."; exit 1; }
+	@$(KPATH) command -v $(CROSS_COMPILE)gcc >/dev/null 2>&1 || { \
+	  echo "$(CROSS_COMPILE)gcc is named but not runnable."; \
+	  echo "if you used 'make get-toolchain', its bin/ should be auto-added;"; \
+	  echo "otherwise add the toolchain's bin/ to PATH."; exit 1; }
+	@echo "kernel tree:    $(KERNEL_SRC)"
+	@echo "cross-compiler: $(CROSS_COMPILE)gcc$(if $(CROSS_BIN), (from $(CROSS_BIN)),)"
+
+# Apply the base defconfig and merge our gadget fragment on top. Safe to re-run.
+kernel-config: kernel-check
+	@echo "configuring: $(KERNEL_DEFCONFIG) + linux/blitscrt_gadget.config"
+	@# MiSTer's tree needs an empty .scmversion so the kernel version string has
+	@# no trailing '+', or its modules will not load. Harmless on other trees.
+	@if [ -f "$(KERNEL_SRC)/arch/arm/configs/MiSTer_defconfig" ]; then \
+	  touch "$(KERNEL_SRC)/.scmversion"; \
+	  echo "MiSTer tree: created .scmversion for a clean version string"; \
+	fi
+	$(KPATH) $(MAKE) -C $(KERNEL_SRC) ARCH=arm $(KERNEL_DEFCONFIG)
+	$(KERNEL_SRC)/scripts/kconfig/merge_config.sh -m -O $(KERNEL_SRC) \
+	  $(KERNEL_SRC)/.config $(CURDIR)/linux/blitscrt_gadget.config
+	$(KPATH) $(MAKE) -C $(KERNEL_SRC) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) olddefconfig
+
+# Build the image and device tree, then stage into build/blitscrt/. Runs
+# kernel-config first so a fresh tree just works. Set SKIP_CONFIG=1 to reuse an
+# existing .config (faster rebuilds).
+linux: kernel-check
+	@if [ -z "$(SKIP_CONFIG)" ]; then $(MAKE) --no-print-directory kernel-config; \
+	  else echo "reusing existing .config (SKIP_CONFIG set)"; fi
+	@mkdir -p $(CARD_SUB)
+	$(KPATH) $(MAKE) -C $(KERNEL_SRC) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) \
+	  LOCALVERSION=-MiSTer -j$$(nproc) zImage dtbs
+	@cp $(KERNEL_SRC)/arch/arm/boot/zImage $(KERNEL_IMAGE) && \
+	  echo "staged blitscrt/zImage"
+	@if cp $(KERNEL_SRC)/arch/arm/boot/dts/$(KERNEL_DTB_NAME) $(KERNEL_DTB) 2>/dev/null || \
+	     cp $(KERNEL_SRC)/arch/arm/boot/dts/*/$(KERNEL_DTB_NAME) $(KERNEL_DTB) 2>/dev/null; then \
+	  echo "staged blitscrt/blitscrt.dtb ($(KERNEL_DTB_NAME))"; \
+	else \
+	  echo "note: $(KERNEL_DTB_NAME) not found; set KERNEL_DTB_NAME= to your board's dtb"; \
+	fi
+	@echo "kernel staged in $(CARD_SUB)/"
+
+# Build the userspace daemon (blitscrtd) that runs on the board. Needed for the
+# heartbeat path -- the stock-kernel route in the README runs this directly.
+daemon:
+	@if [ -z "$(CROSS_COMPILE)" ]; then \
+	  echo "-- no ARM cross-compiler; building a host daemon that will NOT run"; \
+	  echo "   on the board. get one with 'make get-toolchain' for a real build."; \
+	  $(MAKE) --no-print-directory -C sw STATIC=$(STATIC) blitscrtd; \
+	else \
+	  echo "building blitscrtd for ARM ($(CROSS_COMPILE)gcc)"; \
+	  $(KPATH) $(MAKE) --no-print-directory -C sw \
+	    CROSS_COMPILE=$(CROSS_COMPILE) STATIC=$(STATIC) blitscrtd; \
+	fi
+	@if [ -f sw/blitscrtd ]; then \
+	  file sw/blitscrtd 2>/dev/null | grep -q ARM && \
+	    echo "built sw/blitscrtd (ARM)" || \
+	    echo "built sw/blitscrtd ($$(file sw/blitscrtd 2>/dev/null | grep -o 'x86-64\|ARM\|aarch64' | head -1))"; \
+	fi
+
+# ---- Stage a complete bootable set ----
+#
+# Collects everything the board loads at power-on into BUILD_DIR: the FPGA
+# bitstream, the u-boot override that names it, and the kernel image plus
+# device tree if they have been built. The result is what gets copied to an SD
+# card. Pieces that need a toolchain not present are reported, not faked.
+build: assets $(UBOOT_TXT) daemon
+	@mkdir -p $(BUILD_DIR)
+	@# Regenerate the override to match reality: boot the kernel if one is
+	@# staged, else halt after the FPGA. Handles the same-run case where the
+	@# kernel was just built.
+	@if [ -f $(CARD_SUB)/zImage ]; then \
+	  python3 tools/gen_uboot_txt.py $(UBOOT_TXT) --linux; \
+	  echo "override: boots the staged kernel"; \
+	else \
+	  python3 tools/gen_uboot_txt.py $(UBOOT_TXT); \
+	  echo "override: halts after FPGA (no kernel staged)"; \
+	fi
+	@cp $(UBOOT_TXT) $(BUILD_DIR)/ && echo "staged $(notdir $(UBOOT_TXT))"
+	@if [ -f $(RBF) ]; then \
+	  cp $(RBF) $(BUILD_DIR)/ && echo "staged $(notdir $(RBF))"; \
+	else \
+	  echo "no $(RBF) yet -- run 'make bitstream' (needs Quartus)"; \
+	fi
+	@if [ -f $(KERNEL_IMAGE) ]; then \
+	  echo "kernel image present at blitscrt/zImage"; \
+	else \
+	  echo "no kernel image yet -- run 'make linux KERNEL_SRC=...'"; \
+	fi
+	@mkdir -p $(CARD_SUB)
+	@cp tools/gadget-setup.sh $(CARD_SUB)/ && echo "staged blitscrt/gadget-setup.sh"
+	@cp tools/blitscrt-startup.sh $(CARD_SUB)/ && echo "staged blitscrt/blitscrt-startup.sh"
+	@cp linux/blitscrt_gadget.config $(CARD_SUB)/ 2>/dev/null || true
+	@if [ -f sw/blitscrtd ]; then \
+	  cp sw/blitscrtd $(CARD_SUB)/ && echo "staged blitscrt/blitscrtd"; \
+	else \
+	  echo "note: sw/blitscrtd not built (run: make -C sw); needed to run on the board"; \
+	fi
+	@echo ""
+	@echo "build set in $(BUILD_DIR)/ (mirrors the SD card):"
+	@find $(BUILD_DIR) -type f | sed "s|$(BUILD_DIR)|  |" | sort
+	@echo ""
+	@echo "copy the contents of $(BUILD_DIR)/ to the SD card root. the layout"
+	@echo "already matches what blitscrt.txt loads: .rbf and .txt at the root,"
+	@echo "the kernel and gadget files under blitscrt/."

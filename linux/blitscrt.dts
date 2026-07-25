@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Device tree overlay for blitsCRT_Mister on a MiSTer Pi or DE10-Nano.
+ *
+ * The fabric is reached two ways depending on the bridge fitted in RTL:
+ *
+ *   GP     the daemon talks to the fabric through the h2f general-purpose
+ *          port via /dev/mem. Nothing in the device tree is required for that;
+ *          this overlay only documents the reservation.
+ *
+ *   LWH2F  the lightweight bridge is mapped at 0xFF200000. The reg block below
+ *          describes it for a kernel driver, though the userspace daemon uses
+ *          /dev/mem and does not need it.
+ *
+ * The USB gadget side is configured from userspace through configfs and needs
+ * no nodes here beyond the controller being in peripheral mode, which the base
+ * MiSTer/DE10 device tree already provides on the OTG port.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/soc";
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <1>;
+			blitscrt: blitscrt@ff200000 {
+				compatible = "blitscrt,fabric-1.0";
+				/* lightweight bridge window; unused under GP */
+				reg = <0xff200000 0x4000>;
+				status = "okay";
+			};
+		};
+	};
+};

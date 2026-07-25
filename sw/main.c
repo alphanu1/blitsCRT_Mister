@@ -12,6 +12,7 @@
 #include "device.h"
 #include "fabric.h"
 #include "gadget.h"
+#include <unistd.h>
 #include "blitscrt_regs.h"
 
 #include <signal.h>
@@ -28,11 +29,38 @@ static void on_signal(int sig)
 	blitscrt_gadget_stop(g_gadget);
 }
 
+/* Fabric-only loop: no USB gadget, just keep the heartbeat ticking and the
+ * overlay live. This is the M2 proof on a stock MiSTer kernel, which has
+ * /dev/mem but not the dwc2/FunctionFS the gadget needs. */
+static volatile int g_run = 1;
+static void on_stop(int sig) { (void)sig; g_run = 0; }
+
+static int run_no_gadget(struct blitscrt_dev *dev)
+{
+	signal(SIGINT,  on_stop);
+	signal(SIGTERM, on_stop);
+	fprintf(stderr, "blitscrtd: fabric-only mode, heartbeat running\n");
+	blitscrt_dev_on_host(dev, 0);            /* test card, no host */
+	while (g_run) {
+		blitscrt_dev_heartbeat(dev);     /* bump the fabric watchdog */
+		usleep(200000);                  /* ~5 Hz, well inside the timeout */
+	}
+	fprintf(stderr, "blitscrtd: stopping\n");
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
-	const char *ffs = (argc > 1) ? argv[1] : "/dev/ffs-blitscrt";
+	const char *ffs = "/dev/ffs-blitscrt";
+	int no_gadget = 0;
+	int i;
 	struct blitscrt_dev dev;
 	struct blitscrt_fabric *fab;
+
+	for (i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--no-gadget")) no_gadget = 1;
+		else ffs = argv[i];
+	}
 
 	fab = blitscrt_fabric_open();
 	if (!fab)
@@ -46,6 +74,21 @@ int main(int argc, char **argv)
 	blitscrt_dev_on_host(&dev, 0);   /* test card until a host turns up */
 
 	fprintf(stderr, "blitscrtd: advertising %u modes\n", dev.n_modes);
+
+	if (no_gadget) {
+		int rc;
+		if (!fab) {
+			/* Our core is not loaded (no BCRT ID over the bridge), so
+			 * there is no fabric to drive. Exit quietly -- this runs
+			 * from user-startup on every MiSTer boot, including when a
+			 * different core or the menu is active. */
+			fprintf(stderr, "blitscrtd: blitsCRT core not loaded, nothing to do\n");
+			return 0;
+		}
+		rc = run_no_gadget(&dev);
+		blitscrt_fabric_close(fab);
+		return rc;
+	}
 
 	g_gadget = blitscrt_gadget_open(ffs, &dev);
 	if (!g_gadget) {

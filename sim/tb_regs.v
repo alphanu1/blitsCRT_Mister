@@ -28,6 +28,8 @@ module tb_regs;
     wire pll_apply, char_we;
     wire [12:0] char_addr;
     wire [7:0] char_data;
+    wire       hps_alive;
+    wire [1:0] host_state;
 
     blitscrt_regs dut (
         .clk(clk), .rst_n(rst_n), .address(address), .read(read),
@@ -44,7 +46,8 @@ module tb_regs;
         .fb_base(fb_base), .fb_stride(fb_stride), .fb_format(fb_format),
         .fb_flip(fb_flip),
         .pll_m(pll_m), .pll_n(pll_n), .pll_c(pll_c), .pll_apply(pll_apply),
-        .char_we(char_we), .char_addr(char_addr), .char_data(char_data)
+        .char_we(char_we), .char_addr(char_addr), .char_data(char_data),
+        .hps_alive(hps_alive), .host_state(host_state)
     );
 
     integer fails = 0;
@@ -83,7 +86,7 @@ module tb_regs;
 
         $display("identify");
         rd(14'h000); chk("ID reads BCRT", readdata == 32'h42435254);
-        rd(14'h004); chk("VERSION reads 2.0", readdata == 32'h0002_0000);
+        rd(14'h004); chk("VERSION reads 2.1", readdata == 32'h0002_0001);
         rd(14'h00C); chk("STATUS shows PLL locked and HDMI configured",
                          readdata[0] == 1'b1 && readdata[1] == 1'b1);
 
@@ -167,6 +170,30 @@ module tb_regs;
         chk("base, stride and format latched",
             fb_base == 32'h0200_0000 && fb_stride == 32'd1920 &&
             fb_format == 3'd1);
+
+        $display("");
+        $display("heartbeat watchdog");
+        // the watchdog samples once per field, so toggle field to advance it
+        for (i = 0; i < 120; i = i + 1) begin
+            repeat (4) @(posedge clk_pix); field = ~field;
+        end
+        chk("hps_alive low when no heartbeat", hps_alive == 1'b0);
+        // beat it across several fields: alive should assert
+        for (i = 0; i < 8; i = i + 1) begin
+            wr(14'h064, i + 1);
+            repeat (4) @(posedge clk_pix); field = ~field;
+            repeat (4) @(posedge clk_pix); field = ~field;
+        end
+        chk("hps_alive high once heartbeat moves", hps_alive == 1'b1);
+        @(posedge clk_pix); field = 1'b0;
+        wr(14'h068, 32'd2);
+        repeat (40) begin @(posedge clk_pix); field = ~field; end
+        chk("host_state reflects the written value", host_state == 2'd2);
+        // stop beating: alive should drop after the timeout
+        for (i = 0; i < 120; i = i + 1) begin
+            repeat (4) @(posedge clk_pix); field = ~field;
+        end
+        chk("hps_alive drops when heartbeat stops", hps_alive == 1'b0);
 
         $display("");
         if (fails) $display("FAIL"); else $display("PASS");

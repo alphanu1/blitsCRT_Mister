@@ -8,8 +8,21 @@
 CROSS_COMPILE ?=
 CC      := $(CROSS_COMPILE)gcc
 CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
-LDFLAGS ?=
 LDLIBS  ?= -lm
+
+# Link statically for the board. MiSTer's rootfs ships an older glibc than a
+# modern cross toolchain builds against, so a dynamically linked daemon fails
+# with "GLIBC_2.xx not found". A static binary carries its own libc and runs
+# regardless. Set STATIC=0 for a normal dynamic build (e.g. host testing).
+# Static. The board runs it (confirmed on hardware), and it carries its own libc
+# so it does not depend on MiSTer's older glibc -- a dynamic build fails there
+# with 'GLIBC_2.xx not found'. Set STATIC=0 for a dynamic build (host testing).
+STATIC  ?= 1
+ifeq ($(STATIC),1)
+LDFLAGS ?= -static
+else
+LDFLAGS ?=
+endif
 
 CORE := device.c modes.c pll.c pll_reconfig.c fabric.c
 OBJ  := $(CORE:.c=.o) gadget.o main.o

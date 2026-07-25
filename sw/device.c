@@ -14,6 +14,7 @@
 
 #include "device.h"
 #include "fabric.h"
+#include "blitscrt_regs.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -97,6 +98,27 @@ void blitscrt_modelist_defaults(struct blitscrt_dev *d)
 				    288, 291, 294, 312,
 				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC);
 	blitscrt_modelist_add(d, &m);
+}
+
+/*
+ * Heartbeat. Bumped on a timer from the main loop; the fabric watches it and
+ * falls back to its own banner if it stops. Also pushes the host-status hint,
+ * so the fabric banner can reflect USB state that only the daemon knows.
+ */
+void blitscrt_dev_heartbeat(struct blitscrt_dev *d)
+{
+	if (!d->fabric)
+		return;
+	d->heartbeat++;
+	blitscrt_fabric_write(d->fabric, BLITSCRT_REG_HEARTBEAT, d->heartbeat);
+
+	{
+		uint32_t hs = d->host_attached
+			? (d->controller_enabled ? BLITSCRT_HOST_STREAMING
+						 : BLITSCRT_HOST_ATTACHED)
+			: BLITSCRT_HOST_NONE;
+		blitscrt_fabric_write(d->fabric, BLITSCRT_REG_HOSTSTATE, hs);
+	}
 }
 
 void blitscrt_dev_refresh_overlay(struct blitscrt_dev *d)

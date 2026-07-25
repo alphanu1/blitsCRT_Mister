@@ -13,15 +13,69 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <errno.h>
+
+/*
+ * Two transports behind one interface. LWH2F maps the register span directly;
+ * GP marshals each access as a command word to the h2f general-purpose port and
+ * a response word back, matching rtl/blitscrt_bridge.v BRIDGE="GP".
+ *
+ * The bridge moves 16 data bits per command, so a 32-bit write is two commands:
+ * low half, then high half with both mode bits set.
+ */
+enum fabric_transport { XPORT_LWH2F, XPORT_GP };
 
 struct blitscrt_fabric {
 	int      fd;
-	volatile uint8_t *base;
+	enum fabric_transport xport;
+	volatile uint8_t *base;             /* LWH2F: the register span */
+	volatile uint32_t *gp_out;          /* GP: ARM -> fabric command */
+	volatile uint32_t *gp_in;           /* GP: fabric -> ARM response */
 	size_t   span;
+	int      strobe;                    /* GP: toggles each command */
 };
+
+/* GP command word layout, mirroring blitscrt_bridge.v */
+#define GP_STROBE   (1u << 31)
+#define GP_WRITE    (1u << 30)
+#define GP_ADDR_SH  16
+#define GP_ADDR_MASK 0x3fffu
+
+/* The HPS h2f general-purpose registers live in the FPGA-manager address
+ * window. gp_out is written by the ARM, gp_in read back. */
+#define GP_H2F_BASE  0xFF706000u        /* fpgamgr gpo/gpi on Cyclone V */
+#define GP_GPO_OFF   0x10u
+#define GP_GPI_OFF   0x14u
+
+/* Reset manager brgmodrst: clearing a bit takes that bridge out of reset. */
+#define RSTMGR_BRGMODRST 0xFFD0501Cu   /* [0]=hps2fpga [1]=lwhps2fpga [2]=fpga2hps */
+
+static void bridge_enable(int memfd)
+{
+	long page = sysconf(_SC_PAGESIZE);
+	off_t aligned = (off_t)RSTMGR_BRGMODRST & ~(off_t)(page - 1);
+	unsigned off = (unsigned)((off_t)RSTMGR_BRGMODRST - aligned);
+	volatile unsigned char *map;
+	volatile uint32_t *reg;
+	uint32_t before, after;
+
+	map = mmap(NULL, page, PROT_READ | PROT_WRITE, MAP_SHARED, memfd, aligned);
+	if (map == MAP_FAILED) {
+		fprintf(stderr, "blitscrt: bridge_enable mmap failed (%s)\n", strerror(errno));
+		return;
+	}
+	reg = (volatile uint32_t *)(map + off);
+	before = *reg;
+	/* Clear the low three bits: release all three HPS<->FPGA bridges. */
+	*reg &= ~0x7u;
+	after = *reg;
+	fprintf(stderr, "blitscrt: brgmodrst 0x%08x -> 0x%08x\n", before, after);
+	munmap((void *)map, page);
+}
 
 struct blitscrt_fabric *blitscrt_fabric_open(void)
 {
@@ -39,22 +93,74 @@ struct blitscrt_fabric *blitscrt_fabric_open(void)
 		return NULL;
 	}
 
-	aligned = BLITSCRT_LWBRIDGE_BASE & ~(off_t)(page - 1);
-	f->span = BLITSCRT_REG_SPAN + (BLITSCRT_LWBRIDGE_BASE - aligned);
-	f->base = mmap(NULL, f->span, PROT_READ | PROT_WRITE, MAP_SHARED,
-		       f->fd, aligned);
-	if (f->base == MAP_FAILED) {
-		close(f->fd);
-		free(f);
-		return NULL;
-	}
-	f->base += (BLITSCRT_LWBRIDGE_BASE - aligned);
+	/*
+	 * Bring the HPS-to-FPGA bridges out of reset. When MiSTer boots its own
+	 * Linux (not through our u-boot override, which does 'bridge enable'),
+	 * the bridges can be held in reset -- reads of the fabric window then
+	 * return zeros and the ID check below fails for no obvious reason. Clear
+	 * the reset bits in the reset manager's brgmodrst register so the gp port
+	 * reaches the fabric. Harmless if they are already out of reset.
+	 */
+	bridge_enable(f->fd);
 
-	if (blitscrt_fabric_read(f, BLITSCRT_REG_ID) != BLITSCRT_ID_MAGIC) {
-		fprintf(stderr, "blitscrt: no ID magic at 0x%08X, wrong bitstream?\n",
-			BLITSCRT_LWBRIDGE_BASE);
-		blitscrt_fabric_close(f);
-		return NULL;
+	/*
+	 * GP transport: the fabric is reached through the h2f general-purpose
+	 * port, matching BRIDGE="GP" in the RTL. This is the default because it
+	 * is the interface MiSTer proves on this board with no extra HPS blocks.
+	 * Set BLITSCRT_LWH2F in the environment to use the lightweight bridge
+	 * instead, once that primitive is instantiated.
+	 */
+	f->xport = getenv("BLITSCRT_LWH2F") ? XPORT_LWH2F : XPORT_GP;
+
+	if (f->xport == XPORT_LWH2F) {
+		aligned = BLITSCRT_LWBRIDGE_BASE & ~(off_t)(page - 1);
+		f->span = BLITSCRT_REG_SPAN + (BLITSCRT_LWBRIDGE_BASE - aligned);
+		f->base = mmap(NULL, f->span, PROT_READ | PROT_WRITE,
+			       MAP_SHARED, f->fd, aligned);
+		if (f->base == MAP_FAILED) {
+			close(f->fd); free(f); return NULL;
+		}
+		f->base += (BLITSCRT_LWBRIDGE_BASE - aligned);
+	} else {
+		off_t a = GP_H2F_BASE & ~(off_t)(page - 1);
+		f->span = 0x1000 + (GP_H2F_BASE - a);
+		f->base = mmap(NULL, f->span, PROT_READ | PROT_WRITE,
+			       MAP_SHARED, f->fd, a);
+		if (f->base == MAP_FAILED) {
+			close(f->fd); free(f); return NULL;
+		}
+		f->gp_out = (volatile uint32_t *)
+			(f->base + (GP_H2F_BASE - a) + GP_GPO_OFF);
+		f->gp_in  = (volatile uint32_t *)
+			(f->base + (GP_H2F_BASE - a) + GP_GPI_OFF);
+	}
+
+	{
+		uint32_t id = blitscrt_fabric_read(f, BLITSCRT_REG_ID);
+		if (id != BLITSCRT_ID_MAGIC) {
+			fprintf(stderr, "blitscrt: no ID magic on %s: read 0x%08x, want 0x%08x\n",
+				f->xport == XPORT_GP ? "gp" : "lwh2f",
+				id, BLITSCRT_ID_MAGIC);
+			if (f->xport == XPORT_GP) {
+				uint32_t gi = *f->gp_in;
+				fprintf(stderr, "blitscrt: raw gp_in=0x%08x gp_out=0x%08x\n",
+					gi, *f->gp_out);
+				/* Our current RTL forces gp_in[30:16] to zero. If those bits
+				 * are set, the fabric is an OLD bitstream (pre-handshake-fix)
+				 * -- the .rbf on the card needs rebuilding and reflashing. */
+				if (gi & 0x7fff0000u)
+					fprintf(stderr, "blitscrt: gp_in[30:16] nonzero -> OLD bitstream, reflash the .rbf\n");
+			}
+			/* Probe a few registers raw, so we can see if ANY read lands. */
+			fprintf(stderr, "blitscrt: probe id=0x%08x ver=0x%08x status=0x%08x\n",
+				blitscrt_fabric_read(f, BLITSCRT_REG_ID),
+				blitscrt_fabric_read(f, BLITSCRT_REG_VERSION),
+				blitscrt_fabric_read(f, BLITSCRT_REG_STATUS));
+			fprintf(stderr, "blitscrt: (0x00000000 = bridge down or core not loaded; "
+				"other = protocol or base mismatch)\n");
+			blitscrt_fabric_close(f);
+			return NULL;
+		}
 	}
 	return f;
 }
@@ -67,14 +173,64 @@ void blitscrt_fabric_close(struct blitscrt_fabric *f)
 	free(f);
 }
 
+/* GP: send one command and, for a read, spin for the strobe echo. */
+static uint32_t gp_command(struct blitscrt_fabric *f, int wr,
+			   uint32_t addr, uint16_t data)
+{
+	uint32_t cmd;
+	int spin;
+
+	/* Toggle the strobe for this command, then build the word carrying that
+	 * new strobe. The fabric echoes this same strobe back in gp_in[31] only
+	 * once the transaction has completed (see blitscrt_bridge.v), so we wait
+	 * for the echo to match the strobe we just sent -- for both reads and
+	 * writes, so a write is known to have landed before the next command. */
+	/*
+	 * SAFETY: on MiSTer, gp_out[31:30] is core reset control (resetd <=
+	 * gp_out[31:30] in sys_top.v), and gp_out[20:17] are chip-select/clock.
+	 * Our strobe/address scheme collides with those, so driving gp_out here can
+	 * poke the core reset and never actually addresses our register block. The
+	 * gp transport is known-broken on MiSTer (see docs/GP_FINDINGS.md); until it
+	 * is redesigned around MiSTer's io protocol or replaced with f2sdram, do not
+	 * drive gp_out unless explicitly opted in for bring-up experiments.
+	 */
+	if (!getenv("BLITSCRT_GP_UNSAFE"))
+		return 0;
+	f->strobe ^= 1;
+	cmd = (f->strobe ? GP_STROBE : 0) |
+	      (wr ? GP_WRITE : 0) |
+	      ((addr & GP_ADDR_MASK) << GP_ADDR_SH) | data;
+	*f->gp_out = cmd;
+
+	for (spin = 0; spin < 100000; spin++) {
+		uint32_t r = *f->gp_in;
+		if (((r >> 31) & 1) == (unsigned)f->strobe)
+			return r & 0xffff;
+	}
+	return 0;   /* timed out waiting for the fabric to complete */
+}
+
 uint32_t blitscrt_fabric_read(struct blitscrt_fabric *f, uint32_t off)
 {
-	return *(volatile uint32_t *)(f->base + off);
+	if (f->xport == XPORT_LWH2F)
+		return *(volatile uint32_t *)(f->base + off);
+	/* GP moves 16 bits per command; assemble a word from two reads. */
+	{
+		uint32_t lo = gp_command(f, 0, off, 0);
+		uint32_t hi = gp_command(f, 0, off | 0x1, 0);   /* high-half select */
+		return (hi << 16) | lo;
+	}
 }
 
 void blitscrt_fabric_write(struct blitscrt_fabric *f, uint32_t off, uint32_t v)
 {
-	*(volatile uint32_t *)(f->base + off) = v;
+	if (f->xport == XPORT_LWH2F) {
+		*(volatile uint32_t *)(f->base + off) = v;
+		return;
+	}
+	gp_command(f, 1, off, v & 0xffff);
+	if (v >> 16)
+		gp_command(f, 1, off | 0x1, v >> 16);
 }
 
 int blitscrt_fabric_pll_reconfig(struct blitscrt_fabric *f,

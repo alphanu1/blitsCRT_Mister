@@ -4,7 +4,7 @@ IV      := iverilog -g2012
 RTL     := rtl/video_timing.v rtl/testcard.v rtl/overlay.v \
            rtl/char_ram.v rtl/font_rom.v
 
-.PHONY: all world manifest assets sim render render-i clean distclean tools setup setup-dry get-toolchain kernel-clone daemon bitstream bitstream-force quartus-path lint check-pins check-decl check-ip uboot-txt preview linux build kernel-check kernel-config
+.PHONY: all world manifest assets sim render render-i clean distclean tools setup setup-dry get-toolchain kernel-clone daemon bitstream bitstream-force quartus-path lint check-pins check-decl check-ip uboot-txt preview linux build kernel-check kernel-config initramfs
 
 # iverilog and Pillow are for verification only. Neither is needed to build the
 # bitstream -- Quartus consumes rtl/ and the generated .hex files, nothing else.
@@ -91,7 +91,8 @@ MANIFEST := \
   build/blitscrt.rbf \
   build/blitscrt.txt \
   build/blitscrt/zImage \
-  build/blitscrt/blitscrt.dtb
+  build/blitscrt/blitscrt.dtb \
+  build/initramfs/init
 
 manifest:
 	@echo ""
@@ -330,6 +331,27 @@ CARD_SUB     := $(BUILD_DIR)/blitscrt
 KERNEL_IMAGE := $(CARD_SUB)/zImage
 KERNEL_DTB   := $(CARD_SUB)/blitscrt.dtb
 
+# The one place the product name and version are set. They brand the kernel
+# (LOCALVERSION, so uname -r and dmesg carry them) and are compiled into the
+# initramfs init, which stamps them into the boot log. Override on the command
+# line if needed:  make world BLITSCRT_VERSION=0.11
+BLITSCRT_NAME    ?= BlitsCRT
+BLITSCRT_VERSION ?= 0.10
+
+# Proof-of-concept initramfs: a static init plus a static busybox for an
+# interactive debug shell, embedded into zImage via CONFIG_INITRAMFS_SOURCE.
+# Built by the 'initramfs' target.
+INITRAMFS_SRC := linux/initramfs/init.c
+INITRAMFS_DIR := $(BUILD_DIR)/initramfs
+INIT_BIN      := $(INITRAMFS_DIR)/init
+
+# Static busybox for the debug shell (dropped into the initramfs at /bin/busybox,
+# built standalone so applets resolve by name). Cloned and cross-compiled once,
+# then cached under build/. Override BUSYBOX_REF to pin a different tag.
+BUSYBOX_REF := 1_36_1
+BUSYBOX_SRC := $(BUILD_DIR)/busybox-src
+BUSYBOX_BIN := $(INITRAMFS_DIR)/bin/busybox
+
 # Cross-compiler for the ARM kernel. Auto-detected from the usual triplets;
 # override with CROSS_COMPILE=... if yours differs. The trailing dash is part
 # of the kernel's convention (it prepends this to gcc, ld, and so on).
@@ -455,20 +477,83 @@ kernel-config: kernel-check
 	fi
 	$(KPATH) $(MAKE) -C $(KERNEL_SRC) ARCH=arm $(KERNEL_DEFCONFIG)
 	$(KERNEL_SRC)/scripts/kconfig/merge_config.sh -m -O $(KERNEL_SRC) \
-	  $(KERNEL_SRC)/.config $(CURDIR)/linux/blitscrt_gadget.config
+	  $(KERNEL_SRC)/.config \
+	  $(CURDIR)/linux/blitscrt_gadget.config \
+	  $(CURDIR)/linux/blitscrt_boot.config
 	$(KPATH) $(MAKE) -C $(KERNEL_SRC) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) olddefconfig
 
+# ---- Proof-of-concept initramfs ----
+#
+# Cross-compiles the static init and a static busybox (debug shell), and lays out
+# the mount points. The kernel build embeds this directory via
+# CONFIG_INITRAMFS_SOURCE, so there is no separate cpio to ship -- the rootfs
+# lives inside zImage. Needs only the ARM cross-compiler and network access for
+# the busybox source; both are cached under build/ after the first run.
+initramfs: $(INIT_BIN) $(BUSYBOX_BIN)
+
+$(INIT_BIN): $(INITRAMFS_SRC)
+	@test -n "$(CROSS_COMPILE)" || { \
+	  echo "no ARM cross-compiler found for the initramfs init."; \
+	  echo "get one with 'make get-toolchain', or set CROSS_COMPILE=your-triplet-."; \
+	  exit 1; }
+	@mkdir -p $(INITRAMFS_DIR)/proc $(INITRAMFS_DIR)/sys \
+	          $(INITRAMFS_DIR)/dev $(INITRAMFS_DIR)/media/fat $(INITRAMFS_DIR)/bin
+	$(KPATH) $(CROSS_COMPILE)gcc -static -Os -Wall -Wextra -o $(INIT_BIN) \
+	  -DBLITSCRT_NAME='"$(BLITSCRT_NAME)"' \
+	  -DBLITSCRT_VERSION='"$(BLITSCRT_VERSION)"' \
+	  $(INITRAMFS_SRC)
+	@$(KPATH) $(CROSS_COMPILE)strip $(INIT_BIN) 2>/dev/null || true
+	@echo "built initramfs init: $(BLITSCRT_NAME) $(BLITSCRT_VERSION), $$(du -h $(INIT_BIN) | cut -f1), static ARM"
+
+# Static busybox for /bin/busybox. Cloned + built once, then cached. Configured
+# static + standalone shell; the tc applet is dropped (it does not build against
+# current kernel headers and we do not need it).
+$(BUSYBOX_BIN):
+	@test -n "$(CROSS_COMPILE)" || { \
+	  echo "no ARM cross-compiler found for busybox."; \
+	  echo "get one with 'make get-toolchain', or set CROSS_COMPILE=your-triplet-."; \
+	  exit 1; }
+	@mkdir -p $(BUILD_DIR)
+	@if [ ! -d $(BUSYBOX_SRC) ]; then \
+	  echo "cloning busybox $(BUSYBOX_REF)"; \
+	  git clone --depth 1 --branch $(BUSYBOX_REF) \
+	    https://github.com/mirror/busybox.git $(BUSYBOX_SRC); \
+	fi
+	$(KPATH) $(MAKE) -C $(BUSYBOX_SRC) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) defconfig
+	@cd $(BUSYBOX_SRC) && \
+	  sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config; \
+	  grep -q '^CONFIG_STATIC=y' .config || echo 'CONFIG_STATIC=y' >> .config; \
+	  sed -i 's/^# CONFIG_FEATURE_SH_STANDALONE is not set/CONFIG_FEATURE_SH_STANDALONE=y/' .config; \
+	  grep -q '^CONFIG_FEATURE_SH_STANDALONE=y' .config || echo 'CONFIG_FEATURE_SH_STANDALONE=y' >> .config; \
+	  sed -i 's/^# CONFIG_FEATURE_PREFER_APPLETS is not set/CONFIG_FEATURE_PREFER_APPLETS=y/' .config; \
+	  grep -q '^CONFIG_FEATURE_PREFER_APPLETS=y' .config || echo 'CONFIG_FEATURE_PREFER_APPLETS=y' >> .config; \
+	  sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config
+	yes "" | $(KPATH) $(MAKE) -C $(BUSYBOX_SRC) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) -j$$(nproc)
+	@mkdir -p $(INITRAMFS_DIR)/bin
+	@cp $(BUSYBOX_SRC)/busybox $(BUSYBOX_BIN)
+	@echo "built busybox (static ARM, $$(du -h $(BUSYBOX_BIN) | cut -f1)) -> initramfs/bin/busybox"
+
 # Build the image and device tree, then stage into build/blitscrt/. Runs
-# kernel-config first so a fresh tree just works. Set SKIP_CONFIG=1 to reuse an
-# existing .config (faster rebuilds).
-linux: kernel-check
+# kernel-config, builds the initramfs, points the kernel at it, then compiles.
+# Set SKIP_CONFIG=1 to reuse an existing .config (faster rebuilds); the initramfs
+# is always rebuilt and re-pointed so the embedded rootfs stays current.
+linux: kernel-check initramfs
 	@if [ -z "$(SKIP_CONFIG)" ]; then $(MAKE) --no-print-directory kernel-config; \
 	  else echo "reusing existing .config (SKIP_CONFIG set)"; fi
 	@mkdir -p $(CARD_SUB)
+	@# Embed our initramfs: enable initrd and point the source at the staged dir.
+	@# The path is absolute because the kernel build runs with -C $(KERNEL_SRC);
+	@# owners are squashed to root so /init is uid 0 no matter who builds.
+	$(KERNEL_SRC)/scripts/config --file $(KERNEL_SRC)/.config \
+	  --enable  BLK_DEV_INITRD \
+	  --set-str INITRAMFS_SOURCE "$(abspath $(INITRAMFS_DIR))" \
+	  --set-val INITRAMFS_ROOT_UID 0 \
+	  --set-val INITRAMFS_ROOT_GID 0
+	$(KPATH) $(MAKE) -C $(KERNEL_SRC) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) olddefconfig
 	$(KPATH) $(MAKE) -C $(KERNEL_SRC) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) \
-	  LOCALVERSION=-MiSTer -j$$(nproc) zImage dtbs
+	  LOCALVERSION=-$(BLITSCRT_NAME)-$(BLITSCRT_VERSION) -j$$(nproc) zImage dtbs
 	@cp $(KERNEL_SRC)/arch/arm/boot/zImage $(KERNEL_IMAGE) && \
-	  echo "staged blitscrt/zImage"
+	  echo "staged blitscrt/zImage ($(BLITSCRT_NAME)-$(BLITSCRT_VERSION), initramfs embedded)"
 	@if cp $(KERNEL_SRC)/arch/arm/boot/dts/$(KERNEL_DTB_NAME) $(KERNEL_DTB) 2>/dev/null || \
 	     cp $(KERNEL_SRC)/arch/arm/boot/dts/*/$(KERNEL_DTB_NAME) $(KERNEL_DTB) 2>/dev/null; then \
 	  echo "staged blitscrt/blitscrt.dtb ($(KERNEL_DTB_NAME))"; \

@@ -22,7 +22,7 @@ real hardware with a host attached.
 ```
 make setup      # 1. install the toolchain (cross-compiler, iverilog, dtc, git)
 make world      # 2. build everything the installed tools allow
-make sd DEST=/path/to/mounted/card      # 3. copy the fabric to a MiSTer card
+make sd DEST=/path/to/mounted/card      # 3. copy rbf + kernel to the card, then set the u-boot env
 ```
 
 `make setup` is the first step: it installs the build dependencies through your
@@ -121,20 +121,21 @@ be an FPGA.
 ## Relationship to MiSTer
 
 blitsCRT_Mister is not a MiSTer core. It does not use the MiSTer framework,
-`hps_io`, or the OSD, and it will not respond to the MiSTer binary.
+`hps_io`, the OSD, or the MiSTer menu, and it does not run any MiSTer core. It
+runs its **own** kernel on the MiSTer hardware.
 
-It does boot from a MiSTer card. MiSTer supports handing off to a bitstream with
-its own u-boot commands: a `.rbf` with a matching `.txt` gets those commands
-stashed in DDR3, then the board warm-reboots and u-boot runs them.
-blitsCRT_Mister uses that hand-off. u-boot configures the FPGA and stops before
-Linux.
+What it borrows from a MiSTer card is the low-level boot: the A2 preloader (which
+brings up DDR3 and the HPS pin mux) and the u-boot binary. Above that, BlitsCRT
+replaces the environment entirely. u-boot is repointed to program `blitscrt.rbf`
+onto the fabric and boot the BlitsCRT kernel directly, with no menu, no `.rbf`
+hand-off, and no MiSTer Linux. It is a **dedicated boot**: this card powers
+straight into BlitsCRT.
 
-What it inherits from that card is the A2 preloader, which brings up DDR3 and
-the HPS pin mux. Everything above that is its own. At M4 the USB
-controller needs peripheral mode; MiSTer's first-stage boot runs it in host
-mode, and the warm reboot into our kernel and device tree changes it.
+Because the kernel is ours, the USB OTG port can be put in peripheral mode, which
+the GUD host link needs and which the stock MiSTer kernel, being USB-host only,
+cannot do.
 
-Details and alternatives are in `docs/BOOT.md`.
+The boot procedure is in **Bringing up the HPS side** below.
 
 ## What it does
 
@@ -428,7 +429,7 @@ docs/       BRINGUP.md  step by step to first picture
 |---|---|
 | Board | MiSTer Pi, or a DE10-Nano. Cyclone V SE 5CSEBA6U23I7 |
 | Video | MiSTer analog A/V board |
-| SD card | A working MiSTer card. blitsCRT_Mister borrows its A2 preloader and its hand-off mechanism, and cannot boot without one |
+| SD card | A MiSTer card for its A2 preloader and u-boot binary. BlitsCRT then repoints u-boot to boot its own kernel — a dedicated card, not a MiSTer install. Cards over 32 GB are exFAT |
 | Display | A 15kHz CRT, plus a VGA-to-SCART cable from the A/V board, or an HDMI-to-VGA DAC or direct-video HDMI-to-SCART cable from HDMI |
 | Optional | Micro-B USB cable for the UART console on the back panel |
 
@@ -555,7 +556,7 @@ make quartus-path # locate Quartus and print the export PATH line
 make preview      # self-contained HTML of this README, video playable
 make manifest     # list every output and whether it exists
 make tools        # report which tools are installed
-make sd DEST=     # copy bitstream and u-boot override to a mounted card
+make sd DEST=     # copy bitstream + BlitsCRT kernel to a mounted card
 make clean        # remove all transient build products (safe if none exist)
 make distclean    # also remove generated assets and the Quartus output
 ```
@@ -633,17 +634,19 @@ kernel builds — no flags. Point `KERNEL_SRC=...` at a tree elsewhere to overri
 into `build/`, laid out to mirror the SD card:
 
 - `blitscrt.rbf` — the FPGA bitstream, if `make bitstream` has produced one
-- `blitscrt.txt` — the u-boot override that names the `.rbf`, generated so the
-  two cannot drift
-- `blitscrt/zImage` and `blitscrt/blitscrt.dtb` — if a kernel tree was found or
-  `make linux` has built them, staged in the `blitscrt/` subfolder the override
-  loads from
+- `blitscrt/zImage` and `blitscrt/blitscrt.dtb` — the BlitsCRT kernel (with the
+  initramfs embedded) and its device tree, if a kernel tree was found or
+  `make linux` has built them, in the `blitscrt/` subfolder the boot env loads from
 - `blitscrt/gadget-setup.sh` and `blitscrt/blitscrt_gadget.config` — the runtime
-  USB setup and kernel options, in the same subfolder
+  USB setup and kernel options, for the GUD gadget
+- `blitscrt.txt` — a generated u-boot override, retained but no longer used: the
+  boot now repoints u-boot's saved environment (`tools/blitsenv.txt`) instead of
+  relying on the MiSTer menu hand-off
 
-The `build/` tree mirrors the card exactly: `.rbf` and `.txt` at the top,
-kernel and runtime files under `blitscrt/`. Copy its contents to the card root
-and every file is already where `blitscrt.txt` expects it.
+The `build/` tree mirrors the card: `.rbf` at the top, kernel and runtime files
+under `blitscrt/`. Copy its contents to the card root, then set the u-boot
+environment once (see **Bringing up the HPS side**) and the board boots straight
+into BlitsCRT.
 
 `make bitstream` runs this automatically once it has produced a `.rbf`. A
 successful compile leaves `build/` ready without a second command. Running
@@ -653,275 +656,83 @@ Pieces whose toolchain is absent are reported, not faked: without Quartus there
 is no `.rbf`, without a kernel tree no `zImage`, and `make build` says so rather
 than staging a half-set silently.
 
-## Two ways to bring up the HPS side
+## Bringing up the HPS side
 
-The boot banner has three states (see **What the screen tells you at boot**).
-Getting past `NO HPS HEARTBEAT` to the daemon's live overlay is the M2 proof.
-There are two routes, and the first is far simpler.
+BlitsCRT boots its own kernel. The old model, selecting the `.rbf` from the
+MiSTer menu and letting MiSTer's u-boot hand off, is gone: this card boots
+straight into BlitsCRT.
 
-### On MiSTer's own Linux (no custom kernel)
+### The BlitsCRT kernel
 
-MiSTer already boots Linux with a working rootfs and `/dev/mem`. The daemon
-reaches the fabric over the gp bridge through `/dev/mem`, so it can run on the
-stock kernel with nothing custom booted. This is the quickest way to a
-heartbeat, and it needs no kernel build at all.
+`make world` builds a branded kernel from the MiSTer kernel tree: a `zImage` with
+an embedded initramfs, plus the device tree, versioned `BlitsCRT-0.10`
+(`LOCALVERSION`, so `uname -r` reads `5.15.1-BlitsCRT-0.10`). The initramfs is a
+single static `init` plus a static busybox, built into the image, so there is no
+separate rootfs to ship. On boot `init` brings up `/proc`, `/sys` and `devtmpfs`,
+mounts the card (exFAT on cards over 32 GB, FAT32 below), appends a stamped record
+to `/media/fat/blitscrt-boot.log`, and drops to a busybox shell on the serial
+console.
 
-1. `make sd DEST=...` puts `blitscrt.rbf` and the **halt** override on the card,
-   so MiSTer boots normally and loads our core.
-2. Copy `blitscrtd` and `blitscrt-startup.sh` (both staged in `build/blitscrt/`)
-   to the card's `/media/fat/linux/`. The staged `blitscrtd` is cross-compiled
-   for ARM and linked statically, so it carries its own libc and does not depend
-   on MiSTer's glibc version (a dynamically linked build fails on the board with
-   `GLIBC_2.xx not found`, since the rootfs glibc is older than the toolchain's).
-   `make world` builds it with the same toolchain as the kernel. A daemon built
-   without a cross-compiler is a host binary and will not run there; `make`
-   warns when that happens.
-3. If the card has `_user-startup.sh`, rename it to `user-startup.sh` — MiSTer
-   only runs the un-underscored name. Add one line to it:
+The kernel options beyond the base config live in `linux/blitscrt_boot.config`
+(embedded initramfs, exFAT and FAT, the DesignWare SD/MMC driver, the HPS UART
+console) and `linux/blitscrt_gadget.config` (dwc2 dual-role, FunctionFS, configfs
+-- the USB-gadget stack the GUD link needs).
 
-   ```
-   sh /media/fat/linux/blitscrt-startup.sh &
-   ```
+### Proof of concept: the kernel boots
 
-   It is run with `sh` so neither the script nor the daemon needs an execute bit,
-   which a FAT card would not keep; the script sets `+x` on the daemon itself.
+Confirmed on hardware. The custom u-boot env programs the fabric, boots
+BlitsCRT-0.10, the initramfs mounts the exFAT card, and the boot log is written by
+our own kernel:
 
-MiSTer runs that late in boot, on **every** boot, whichever core is active. When
-it starts, the daemon first brings the HPS-to-FPGA bridges out of reset (MiSTer's
-own boot can leave them held, which would make the fabric window read zeros), then
-reads the fabric's `BCRT` ID over the bridge and exits quietly if the blitsCRT
-core is not loaded. So it does nothing under the menu or
-another core, and only comes alive when our `.rbf` is the active core — it does
-not need a separate trigger tied to core loading. When our core is up it starts
-in `--no-gadget` mode, writes the heartbeat, and the banner flips to the live
-overlay. Register access and PLL reconfiguration work here too. What does **not**
-work on the stock kernel is the USB gadget — enumerating to a host needs dwc2
-peripheral mode and FunctionFS, which only the custom kernel carries.
+![BlitsCRT-0.10 booting on hardware: mounting the exFAT card and writing the boot log, with uname reporting the custom kernel](docs/images/blitscrt_kernel_poc.png)
 
-### On the custom kernel (needed for the USB host link)
+### The boot set
 
-The custom kernel is required only for M4, the USB gadget. Booting it is a larger
-job than the fabric side: it needs a root filesystem strategy (the override sets
-a console but no `root=`, so a bare `bootz` will panic on mount), and an init
-hook to launch the daemon. That work is not done yet. Until it is, the stock-
-kernel route above is how the HPS side is exercised.
+`make world` stages, under `build/`, everything the card needs:
 
-### The kernel
+| file | on the card | what it is |
+|---|---|---|
+| `blitscrt.rbf` | `/blitscrt.rbf` | the fabric bitstream, programmed by u-boot |
+| `zImage` | `/blitscrt/zImage` | the BlitsCRT kernel, initramfs embedded |
+| `blitscrt.dtb` | `/blitscrt/blitscrt.dtb` | the device tree |
+| `blitsenv.txt` | imported into u-boot | the u-boot environment (below) |
 
-The custom kernel is what runs the daemon and drives the fabric from the HPS.
-Building it is heavier than the fabric side and has prerequisites the rest of
-the build does not. It stays separate and only runs when the pieces are present.
+`make sd DEST=/path/to/mounted/card` copies the first three to the card root. The
+card's FAT/exFAT partition also carries the MiSTer preloader and u-boot that the
+A2 boot chain needs.
 
-**What you need:**
+### The u-boot environment
 
-- **A kernel tree.** A checkout of the SoC kernel — MiSTer's `Linux-Kernel_MiSTer`
-  or a mainline `linux-socfpga`. `make setup` offers to clone one, or run
-  `make kernel-clone` directly (non-interactive) to put it in `~/source/` where
-  the build looks. `make` auto-detects a tree in `~/source/`, `~/`, or the
-  parent directory; point `KERNEL_SRC=/path` at it otherwise. The tree needs
-  nothing pre-configured — `make linux` applies the config itself.
-- **An ARM cross-compiler.** Auto-detected from the usual triplets. Install one:
-  a repo package on Debian (`sudo apt install gcc-arm-linux-gnueabihf`) and
-  Fedora, but on Arch a prebuilt tarball from Arm or Bootlin is the sane route —
-  the AUR package builds from source. Override with `CROSS_COMPILE=your-triplet-`
-  if yours differs; the prebuilt Arm/Bootlin triplet is
-  `arm-none-linux-gnueabihf-`, already in the auto-detect list.
-- **`dtc`**, the device tree compiler, usually packaged with the kernel headers
-  or as `dtc`.
-
-**What the build does**, in `make linux`:
-
-1. `kernel-check` confirms the tree, the cross-compiler, and the config fragment
-   are all present, and stops with an actionable message if not.
-2. `kernel-config` applies the base defconfig (`multi_v7_defconfig` by default,
-   override with `KERNEL_DEFCONFIG=`) and merges `linux/blitscrt_gadget.config`
-   on top — the gadget, FunctionFS, and dwc2 options the daemon needs.
-3. It builds `zImage` and the device trees with the cross-compiler across all
-   cores, then stages `zImage` and the board dtb into `build/blitscrt/`.
-
-The tree is inspected to pick the right settings: a MiSTer tree (one carrying
-`arch/arm/configs/MiSTer_defconfig`) builds with `MiSTer_defconfig`, the
-`de10_nano` dtb, and an empty `.scmversion` so the kernel version string is
-clean and modules load; anything else falls back to `multi_v7_defconfig` and the
-`socdk` dtb. Override either with `KERNEL_DEFCONFIG=` or `KERNEL_DTB_NAME=`. On a
-rebuild, `make linux SKIP_CONFIG=1` reuses the existing `.config`.
-
-`make` and `make world` run all of this automatically when a tree and compiler
-are found, and skip with a note naming what is missing when they are not — the
-fabric build never waits on the kernel.
-
-### Where the files go on the card
-
-The `build/` folder is a staging area, not a card image. The files do **not**
-all go to the root. The exact destinations come from the u-boot override, which
-names each file and the path it loads from; these are not a convention, they are
-what `blitscrt.txt` reads.
-
-**Card root:**
+The one non-file step. BlitsCRT boots by pointing u-boot's saved environment at
+our kernel instead of MiSTer's. `tools/blitsenv.txt` is that environment:
 
 ```
-/blitscrt.rbf          the FPGA bitstream
-/blitscrt.txt          the u-boot override
+core=blitscrt.rbf
+bootcmd=... run fpgaload; load ... blitscrt/zImage; load ... blitscrt/blitscrt.dtb; ... bootz 0x01000000 - 0x03000000
 ```
 
-`blitscrt.txt` loads the bitstream from the card root as `blitscrt.rbf`. Both
-sit at the top level. `make sd DEST=...` copies exactly these two and touches
-nothing else.
+`run fpgaload` is MiSTer u-boot's own routine -- it loads `blitscrt.rbf` and
+`fpga load`s it into the fabric -- now pointed at our core; then the kernel and
+device tree load and `bootz` starts BlitsCRT. The initramfs is inside the
+`zImage`, so there is no `root=`. The kernel loads at `0x01000000` and the dtb at
+`0x03000000`, a 32 MB gap that keeps the growing kernel image clear of the dtb.
 
-**`blitscrt/` subfolder, only when booting the custom kernel:**
-
-```
-/blitscrt/zImage         the kernel image
-/blitscrt/blitscrt.dtb   the device tree
-```
-
-The Linux-booting override (`make uboot-txt` with the kernel form, or the M2+
-default) loads `blitscrt/zImage` and `blitscrt/blitscrt.dtb` — a subfolder, not
-the root. `gadget-setup.sh` and `blitscrt_gadget.config` are not loaded by
-u-boot at all; they live in the kernel's root filesystem and run after Linux is
-up.
-
-**Two override forms, two behaviours.** The default `blitscrt.txt` today
-**halts after loading the bitstream** — it configures the FPGA and stops before
-Linux, which is the M1 fabric-only path. The kernel form adds `bridge enable`,
-loads `zImage` and the dtb, and `bootz` into Linux. Regenerate with the kernel
-form when you are ready to boot: `make uboot-txt` produces whichever the build
-is set for.
-
-**Prerequisites for any of it.** The hand-off is **SD card only** — MiSTer
-disables it for cores on USB storage — and it needs a **working MiSTer install
-already on the card** (`menu.rbf`, `MiSTer`, `linux/`). The two root files alone
-do nothing; MiSTer's own userland reads the override and reboots into u-boot,
-which then loads from `mmc 0:1` or `0:2` depending on the card's partition
-layout. The override tries both.
-
-So, in order: for the M1 fabric, the two root files, and `make sd` places them.
-To boot the custom kernel — available now, the next real hardware step — also
-put `zImage` and `blitscrt.dtb` in `/blitscrt/` and use the kernel override
-form. USB peripheral mode (M4) is layered on top of a running kernel; it is what
-lets a host PC enumerate the display, not what lets Linux boot.
-
-`make clean` removes every transient product — testbench binaries, waveforms,
-the daemon build, the staged `build/` folder, the u-boot override — and never
-errors on a missing file. It works whether or not a full build ran. The
-tracked `sim/*.png` renders are left alone, since the page embeds them.
-`make distclean` also drops the generated `.hex` assets and the Quartus output,
-leaving only tracked sources.
-
-Nothing is written outside the project tree until `make sd`.
-
-| Target | Produces |
-|---|---|
-| `make` | `rtl/font8x8.hex`, `rtl/banner.hex`, `rtl/banner_i.hex` — the generated assets Quartus reads. Also `sim/*.vvp`, the compiled testbenches |
-| `make render` | `sim/testcard_640x240p60.png` and a 2x copy, plus `rtl/render.txt`, the raw pixel dump |
-| `make render-i` | `sim/testcard_640x480i60.png` and a 2x copy |
-| `make bitstream` | `quartus/output_files/` — bitstream and u-boot override |
-| `make uboot-txt` | just the u-boot override |
-| `make sd DEST=...` | `blitscrt.rbf` and `blitscrt.txt` in the root of the mounted card |
-
-Quartus writes everything under `quartus/output_files/`:
-
-| File | |
-|---|---|
-| `blitscrt.rbf` | The bitstream |
-| `blitscrt.txt` | The u-boot override, generated to match the `.rbf` name |
-| `blitscrt.sof` | Same design in JTAG format. Unused here, no Blaster on the board |
-| `blitscrt.fit.rpt` | Fitter report. The pin assignment check in `docs/BRINGUP.md` step 3 reads this |
-| `blitscrt.map.rpt` | Synthesis report, including whether `$readmemh` found the `.hex` files |
-| `blitscrt.sta.rpt` | Timing analysis |
-
-`quartus/db/` and `quartus/incremental_db/` are Quartus working directories and
-can be deleted at any time.
-
-`make clean` removes the testbench binaries and the pixel dump. `make distclean`
-also removes the generated `.hex` files. Neither touches `quartus/`.
-
-`.gitignore` covers all of it. The generated `.hex` files are ignored, since
-`make render-i` rewrites `rtl/banner.hex` in place and would otherwise produce a
-diff on every run. The PNGs in `sim/` are tracked, since this README embeds
-them.
-
-## Loading it
-
-There is no onboard USB-Blaster on the MiSTer Pi. The SD card is the way in.
+Install it once from the u-boot serial console. This is a **dedicated card** -- it
+replaces MiSTer's boot on it, so back up first:
 
 ```
-make sd DEST=/media/you/MiSTer
+load mmc 0:1 0x01000000 blitsenv.txt
+env import -t 0x01000000 $filesize
+saveenv
+reset
 ```
 
-That copies `blitscrt.rbf` and `blitscrt.txt` to the FAT partition root. Those
-two are the only files added. Everything else comes from the existing MiSTer
-install:
+Break into u-boot by holding a key at power-on (bootdelay is 0). u-boot stores its
+environment in the MMC (offset 512), so `saveenv` persists it with no u-boot
+rebuild. After that the card boots straight into BlitsCRT on every power-up.
 
-| | |
-|---|---|
-| A2 partition | preloader and u-boot, written as raw sectors |
-| `linux/` | kernel and rootfs |
-| `MiSTer` | the userland that reads the `.txt` and reboots |
-| `menu.rbf` | the menu you select from |
-
-MiSTer's own binary is what triggers the hand-off. A card carrying only the two
-new files will not boot.
-
-Select `blitscrt.rbf` from the MiSTer menu. The board reboots once and comes up
-on the test card with nothing else running. Power cycle to return to MiSTer.
-
-Two constraints from `menu.cpp` worth knowing:
-
-- The hand-off is SD card only. `if (!getStorage(0)) // multiboot is only on SD
-  card` — a core on USB storage will be programmed directly, with no reboot and
-  no `.txt`.
-- MiSTer counts every `.txt` in the directory. Exactly one, named to match the
-  `.rbf`, is taken automatically. With more than one it shows a picker and you
-  choose `blitscrt.txt`. `make sd` warns when it sees others.
-
-`bootcore=blitscrt` in `MiSTer.ini` does NOT work. Both auto-boot call sites
-pass only the name:
-
-```c
-// menu.cpp:7290   manual selection with a .txt present
-fpga_load_rbf(Selected_tmp, selPath);    // cfg passed, hand-off runs
-
-// menu.cpp:7672, bootcore.cpp:305   bootcore
-fpga_load_rbf(cfg.bootcore);             // no cfg, direct load
-```
-
-Without `cfg` the `.txt` is never read, there is no reboot, and `do_bridge(1)`
-runs against a design with nothing behind the bridges. Menu selection is the
-only route to the hand-off.
-
-For unattended boot, repoint u-boot itself from the serial console:
-
-```
-=> setenv bootcmd 'load mmc 0:1 ${loadaddr} blitscrt.rbf; fpga load 0 ${loadaddr} ${filesize}'
-=> saveenv
-```
-
-That skips MiSTer entirely and survives power cycles. See `docs/BOOT.md`.
-
-`blitscrt.txt` is generated by `tools/gen_uboot_txt.py` rather than shipped.
-It names the bitstream inside itself. Generating both together stops them
-drifting apart.
-
-The load is attempted four ways: `load` and `fatload`, on partitions 1 and 2.
-MiSTer's u-boot is a fork with exFAT support and the layout varies. A wrong
-guess fails silently without a serial console. To pin it down:
-
-```
-python3 tools/gen_uboot_txt.py quartus/output_files/blitscrt.txt \
-        --commands load --partitions 1
-```
-
-The same generator emits the M2 form that boots a kernel:
-
-```
-python3 tools/gen_uboot_txt.py quartus/output_files/blitscrt.txt --linux
-```
-
-Loading the bitstream as a plain core without the `.txt` will probably hang the
-ARM. MiSTer enables the HPS-to-FPGA bridges after a direct load, and the fabric
-has no slave behind them until M2 lands. The picture should still appear, since FPGA configuration
-outlives the ARM. Expect to power cycle.
+Watch it on the HPS UART at 115200: programming the fabric, the kernel boot, the
+mount and the log all appear there.
 
 ## HDMI
 
@@ -1136,160 +947,79 @@ never shows a partial frame at a half-applied timing.
 
 ## Status
 
-**M1 — fabric only.** Running on hardware. 15kHz output working, both
-connectors live.
+**M1 -- fabric only. Done.** Running on hardware: 15kHz output, both connectors
+live.
 
 | | |
 |---|---|
-| **done** | **15kHz confirmed on hardware: 640x480i60 at 15.750 kHz, displayed over HDMI** |
+| **done** | **15kHz confirmed on hardware: 640x480i60 at 15.750 kHz, over HDMI** |
 | done | 15kHz timing, progressive and interlaced, measured out of the RTL |
 | done | three built-in modes, runtime selection, detection, button cycling |
 | done | timing generator takes porches and geometry as inputs, not parameters |
 | done | test card, text overlay, font and banner generation |
 | done | ADV7513 setup over a fabric I2C master, 47 writes decoded |
 | done | pin assignments verified against MiSTer, every port covered |
-| done | SD hand-off and u-boot override, generated |
 | done | analog RGB666 and HDMI driven from the same pixel stream |
 
-**M2 — HPS and runtime control.** The software is finished and tested, and the
-fabric now has its register slave and PLL. What is missing is the bridge that
-connects the two: the HPS-to-fabric interface and the Linux side.
+**M2 -- custom kernel and runtime control. Mostly complete.** The BlitsCRT kernel
+boots on hardware and the daemon is written and tested. What remains is the
+HPS-to-fabric register transport, and wiring the daemon into boot.
 
 | | |
 |---|---|
+| **done** | **BlitsCRT-0.10 kernel boots on hardware, mounts the card, writes the boot log** |
+| done | dedicated u-boot boot: env programs the fabric and boots our kernel |
+| done | embedded initramfs: static init + busybox, exFAT/FAT mount, serial shell |
+| done | gadget stack built into the kernel (dwc2 dual-role, FunctionFS, configfs) |
 | done | GUD control endpoint, all 15 requests, 30 assertions |
-| done | mode validation against what a 15kHz CRT survives |
-| done | PLL solver for arbitrary pixel clocks, worst case 6 ppm |
-| done | register map contract, `sw/blitscrt_regs.h` |
-| done | FunctionFS transport, configfs setup |
-| done | test card fallback when no host is attached |
-| done | overlay driven from live state rather than a compile-time string |
-| done | Avalon-MM register slave, `rtl/blitscrt_regs.v`, 16 assertions |
+| done | mode validation, PLL solver (worst case 6 ppm), register map contract |
+| done | FunctionFS transport and configfs setup (`tools/gadget-setup.sh`) |
+| done | Avalon-MM register slave `rtl/blitscrt_regs.v`, PLL and reconfig IP wired in |
 | done | clock crossing: timing latched as a block on vblank, status resynced |
-| done | four-mode default list: 480i60, 576i50, 240p60, 288p50, all 0 ppm |
-| done | PLL reconfiguration: counter encoding, write sequence, fabric calls |
-| done | PLL and reconfig IP generated, verified, and wired into the fabric |
-| done | bridge seam `rtl/blitscrt_bridge.v`, lightweight or gp, one parameter |
-| done | register slave and bridge instanced in the top level, 18 assertions |
-| done | HPS interface `rtl/blitscrt_hps.v`, gp ports, wired to the bridge |
-| done | GP transport in `sw/fabric.c`, behind the same read/write interface |
-| done | device tree overlay, kernel fragment, gadget setup, boot doc |
-| done | three-state boot screen: fabric-only, HPS-up-no-host, streaming |
-| done | heartbeat watchdog and host-state hint, `tb_regs` covers both |
+| done | heartbeat watchdog and host-state hint |
+| **next** | **HPS-to-fabric register transport: bring up and prove the bridge** |
+| **next** | **init launches `blitscrtd` once Linux is up** |
 
-Two things follow from the fabric half being missing.
+The remaining piece is the register transport, and the custom kernel has
+**unblocked** it. On stock MiSTer the daemon could not read the fabric: MiSTer's
+`hps_io` owns the general-purpose port (`gp_out[17]` clock, `[20:18]`
+chip-selects, `[31:30]` reset), so our bridge's flat addressed scheme collided
+with it and every read came back a fixed value (full analysis in
+`docs/GP_FINDINGS.md`). That collision was a property of running under MiSTer.
+BlitsCRT now runs its own fabric with no `hps_io` in it, and owns the HPS-to-FPGA
+bridges directly, so the register path (`rtl/blitscrt_bridge.v` ->
+`rtl/blitscrt_regs.v`, over either the lightweight bridge or the gp port) can
+finally be brought up and proven without MiSTer contending for the same wires. If
+the lightweight bridge behaves under our boot (it was only ever reported
+non-functional *on MiSTer*), the daemon's existing `LWH2F` path reaches the
+register slave directly; otherwise the fallback is an f2sdram window, which also
+serves the M3 pixel path. This is the active work.
 
-`blitscrt_fabric_open()` returns NULL, and the daemon runs protocol-only.
-Enough to enumerate against a real host and prove the USB side, but it drives
-nothing.
+Everything the daemon drives once the transport is up -- registers, PLL
+reconfiguration, the heartbeat, the live overlay -- is written and unit-tested;
+`blitscrt_fabric_open()` is the seam. The daemon builds static for ARM and ran
+cleanly during bring-up.
 
-The PLL and its reconfiguration IP are generated and wired in. `pll_modes.v`
-instantiates the generated `pll_pix`, and `altera_pll_reconfig` sits on the
-0x1000 bridge window with `sw/pll_reconfig.c` driving it. `make check-ip`
-confirms the reconfiguration ports, both clocks, the 2:1 ratio and the register
-map. `docs/MEGAFUNCTIONS.md` is the step-by-step, including why this stays
-integer-N.
+**M3 -- scanout memory. Not started.** Pixels received over USB are drained and
+counted but not written anywhere yet. The 240p modes fit in on-chip M10K with no
+controller; deeper formats and the 480 modes go off-chip to the SDRAM module or
+HPS DDR3 (which also wants the top of DDR reserved via the kernel `mem=` argument,
+left out of the boot env for now).
 
-The HPS is connected. `rtl/blitscrt_hps.v` brings out the general-purpose port
-MiSTer uses -- the one HPS interface proven on this board without a Platform
-Designer system -- and feeds it to the bridge. The register slave and the
-reconfig block both hang off that bridge, so both are now reachable from the
-ARM.
+**M4 -- GUD USB host link. Not started.** The product goal: the board appearing to
+a host PC as a plug-and-play display, no driver to install. The kernel now carries
+the gadget stack, so the groundwork is in place, but GUD is **not configured and
+not running** yet. What remains: create the FunctionFS gadget on the booted system
+(`gadget-setup.sh` over configfs), set the OTG port to peripheral mode
+(`dr_mode = "peripheral"` in the device tree), launch `blitscrtd` with the gadget
+(not `--no-gadget`), and have a host enumerate it as a GUD display. This depends
+on M2's transport (to drive the fabric) and M3 (to have pixels to show). The cable
+is an A-to-A lead with VBUS cut on the board side, since the MiSTer Pi fits a
+Type-A host receptacle where the DE10-Nano has micro-AB.
 
-The transport choice stays a parameter. `rtl/blitscrt_bridge.v` is the one
-module that knows how the HPS reaches the fabric. It is set to `"GP"` today,
-matching the gp interface; `"LWH2F"` passes the lightweight bridge straight
-through instead, for a board that brings it out. `sw/fabric.c` carries both
-transports behind one read/write interface and picks between them on the
-`BLITSCRT_LWH2F` environment variable. Changing sides is a parameter and an
-env var, not a rewrite.
-
-The Linux side is in `linux/`: a device tree overlay, the kernel options beyond
-a stock config, and `tools/gadget-setup.sh` to create the USB gadget. `blitscrtd`
-opens the fabric through `/dev/mem`, opens FunctionFS, and binds to the UDC; a
-host PC then sees a GUD display with no driver to install.
-
-**M2 is blocked on the HPS↔fabric transport, and this is the active problem.**
-The fabric runs on hardware and the boot banner correctly shows `NO HPS
-HEARTBEAT`. The daemon now runs cleanly on MiSTer's own Linux (static ARM build,
-reaches `/dev/mem`, brings the bridges out of reset) — every piece of the
-software bring-up works. But it cannot read the fabric's registers: every
-register returns the same fixed value, because the gp transport our bridge
-implements does not match how MiSTer actually drives the general-purpose port.
-
-MiSTer's `sys_top.v` uses `gp_out[17]` as a transfer clock, `gp_out[20:18]` as
-chip-selects, and `gp_out[31:30]` as core-reset control, with an SPI-like
-byte-counted protocol (`hps_io.sv`). Our bridge instead put a strobe in bit 31
-and an address in bits 29:16 — colliding with MiSTer's clock, chip-select, and
-reset bits. So the addressed reads never reach our register block. The lightweight
-HPS→FPGA bridge is not an alternative here: it is reported non-functional on
-MiSTer. The full analysis and the options (adopt MiSTer's `hps_io` protocol, or
-use an f2sdram shared-memory window) are in `docs/GP_FINDINGS.md`.
-
-Until the transport is redesigned, the daemon's gp write path is disabled by
-default (it would otherwise drive MiSTer's reset bits); set `BLITSCRT_GP_UNSAFE`
-only for deliberate bring-up experiments. This is the next real piece of work,
-and it is a transport-design task on the stock-kernel + `/dev/mem` rig — it does
-not need the custom kernel.
-
-The custom kernel is a separate, larger task needed only for M4's USB gadget, and
-it does not fix the transport: the daemon reads registers the same way on either
-kernel.
-
-**M3 — scanout memory.** Not started. The 240p modes fit in M10K with no
-controller at all, which is the sensible first target. Deeper formats and the
-480 modes go off-chip to the SDRAM module or HPS DDR3. The bulk endpoint in
-`gadget.c` drains transfers and counts them without writing pixels anywhere.
-
-**M4 — the custom GUD kernel and the USB host link.** Not started, and the
-larger of the remaining milestones. This is the one that makes the board a real
-display a host PC can use.
-
-The HPS-to-fabric path itself does not wait on this — it is exercised now by
-running the daemon on MiSTer's stock kernel (see **Two ways to bring up the HPS
-side**), which proves register writes, PLL reconfiguration, the heartbeat, and
-the overlay handover. What M4 adds is the host-facing USB link, and it needs a
-custom kernel because the stock MiSTer kernel does not carry the gadget stack.
-
-The kernel image builds today (`make world` produces `zImage` and the dtb). What
-is not done is booting it into a userland that runs the daemon:
-
-- **A root filesystem.** The override sets a serial console but no `root=`, so a
-  bare `bootz` panics on mount. Two options: point `root=` at the MiSTer rootfs
-  already on the card, or ship a small initramfs with just the daemon. The
-  initramfs is cleaner for a dedicated appliance and avoids depending on
-  MiSTer's userland layout.
-- **An init hook.** Something in that rootfs has to start `blitscrtd` (with the
-  gadget, not `--no-gadget`) once Linux is up, and run `gadget-setup.sh` first.
-- **`dr_mode = "peripheral"`.** The device tree overlay assumes the OTG port is
-  already in peripheral mode; it should set this explicitly rather than depend on
-  the base MiSTer tree, which normally uses USB for host-side controllers.
-- **The cable.** An A-to-A lead with VBUS cut on the board side, since the MiSTer
-  Pi fits a Type-A host receptacle where the DE10-Nano has micro-AB.
-- **`/dev/mem` left open.** The daemon reaches the fabric through `/dev/mem`, so
-  the custom kernel must not lock that down — keep `CONFIG_STRICT_DEVMEM` off (or
-  add a UIO node for the gp window). MiSTer's stock kernel already allows it;
-  a fresh config might not.
-- **Bridge enable does not come for free.** MiSTer's u-boot brings the HPS-to-FPGA
-  bridges out of reset before Linux; a custom boot path may not. The daemon
-  clears `brgmodrst` itself on start, which covers this — it is a no-op when the
-  bridges are already up and the safety net when they are not.
-
-None of the fabric-side work changes here. The gp transport (the bridge RTL and
-the daemon's `gp_command`) and everything it drives — registers, PLL, heartbeat,
-the overlay — are identical whichever kernel boots. The custom kernel only adds
-the USB-facing GUD path on top; it does not replace how the daemon talks to the
-fabric.
-
-With those, the gadget config already merged into the kernel (dwc2 dual-role,
-FunctionFS, configfs — all built) comes into play, the daemon binds to the UDC,
-and a host enumerates the device as a GUD display. Until then the board boots,
-runs, and drives the CRT from its own test card and overlay; it just does not yet
-appear as a display to a host.
-
-**M5 — higher line rates over USB 2.0.** Not started. 24kHz and 31kHz open up
-progressive modes above 240p — 480p, 400p, medium-res arcade timings — and every
-one of them is over the full-frame USB 2.0 budget, even at RGB565:
+**M5 -- higher line rates over USB 2.0. Not started.** 24kHz and 31kHz open up
+progressive modes above 240p, and every one is over the full-frame USB 2.0 budget
+even at RGB565:
 
 ```
 640x480p60 RGB565  31kHz    37 MB/s    over ~35 MB/s bulk
@@ -1297,31 +1027,16 @@ one of them is over the full-frame USB 2.0 budget, even at RGB565:
 512x384p60 RGB888  24kHz    35 MB/s    at the edge
 ```
 
-The line rate itself costs nothing; the resolution does. 240p and 480i fit
-because one is half-height and the other sends one field per refresh. A
-progressive frame at these rates sends every pixel every refresh, and that is
-what blows the budget.
-
-Three levers close the gap, and they are not exclusive:
-
-- **Pixel depth.** RGB332 fits everything at 18 MB/s. RGB565 fits some. Both are
-  already implemented; this lever costs nothing but colour.
-- **Compression.** LZ4 is what GUD offers. It suits this unevenly: desktop and
-  UI content compresses 2 to 3 times, which fits comfortably, but video and game
-  frames manage only 1.1 to 1.4 times and stay over budget. So LZ4 rescues the
-  cases that are nearly cheap already and does little for full-screen motion. It
-  also needs a decompressor: on the ARM in front of the gp bridge, or in the
-  fabric between the bulk endpoint and scanout. The fabric path is real HDL work
-  and competes for the same logic as the M3 scanout controller.
-- **Damage rectangles.** Already in use, and they carry most real desktop work
-  regardless. They do nothing for full-screen video, which is the hard case.
-
-The honest shape: for UI and desktop use these modes are reachable now with
-RGB565 plus damage rects, and LZ4 would widen the margin. For full-screen video
-or a 60fps game at 480p, no lever except lower depth or a faster link
-(USB 3 / a different PHY) actually fits, and that is a larger change than a
-codec. M5 is worth taking when a real higher-rate workload demands it, not
-before, and pixel depth is the first lever to reach for.
+240p and 480i fit because one is half-height and the other sends one field per
+refresh; a progressive frame at these rates sends every pixel every refresh, and
+that is what blows the budget. Three non-exclusive levers close the gap: pixel
+depth (RGB332 fits everything at 18 MB/s, already implemented), LZ4 compression
+(2-3x on desktop and UI, only 1.1-1.4x on video, and it needs a decompressor on
+the ARM or in the fabric), and damage rectangles (already in use, carry most
+desktop work but nothing for full-screen video). For UI and desktop these modes
+are reachable now with RGB565 plus damage rects; for full-screen video or a 60fps
+game at 480p, only lower depth or a faster link actually fits. Worth taking when a
+real higher-rate workload demands it, pixel depth first.
 
 ## Known limitations
 

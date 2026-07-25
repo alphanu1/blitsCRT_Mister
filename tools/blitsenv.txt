@@ -1,0 +1,2 @@
+core=blitscrt.rbf
+bootcmd=mw 0xff709004 0x800; mmc rescan; run fpgaload; load mmc 0:1 0x01000000 blitscrt/zImage; load mmc 0:1 0x03000000 blitscrt/blitscrt.dtb; setenv bootargs console=ttyS0,115200 initcall_blacklist=fb_driver_init; bootz 0x01000000 - 0x03000000

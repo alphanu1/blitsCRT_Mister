@@ -18,7 +18,8 @@ import argparse
 import sys
 
 
-def build(rbf, loadaddr, parts, cmds, bootdelay, linux, kernel, dtb, bootargs):
+def build(rbf, loadaddr, parts, cmds, bootdelay, linux, kernel, dtb, bootargs,
+          bridges):
     tries = []
     for p in parts:
         for c in cmds:
@@ -61,16 +62,23 @@ def build(rbf, loadaddr, parts, cmds, bootdelay, linux, kernel, dtb, bootargs):
                 ktries.append("%s mmc 0:%d ${kernaddr} %s" % (c, p, kernel))
                 dtries.append("%s mmc 0:%d ${dtbaddr} %s" % (c, p, dtb))
         out.append("kernaddr=0x1000000")
-        out.append("dtbaddr=0x1800000")
+        out.append("dtbaddr=0x3000000")
         out.append("loadkern=%s" % " || ".join(ktries))
         out.append("loaddtb=%s" % " || ".join(dtries))
         out.append("bootargs=%s" % bootargs)
         out.append("")
-        out.append("# bridge enable is correct from M2, once the design has an HPS")
-        out.append("# component with slaves behind the bridges.")
+        if bridges:
+            out.append("# bridge enable: correct once the design has an HPS component")
+            out.append("# with slaves behind the bridges (M3+). Enabled with --bridges.")
+            bridge = "bridge enable; "
+        else:
+            out.append("# Bridges left down. The kernel-boot proof touches no fabric")
+            out.append("# registers, so there is nothing behind the bridges to reach")
+            out.append("# yet -- one fewer variable. Turn on later with --bridges.")
+            bridge = ""
         out.append("bootcmd=run loadrbf; fpga load 0 ${loadaddr} ${filesize}; "
-                   "bridge enable; run loadkern; run loaddtb; "
-                   "bootz ${kernaddr} - ${dtbaddr}")
+                   "%srun loadkern; run loaddtb; "
+                   "bootz ${kernaddr} - ${dtbaddr}" % bridge)
 
     out.append("")
     return "\n".join(out)
@@ -90,14 +98,17 @@ def main():
                     help="also boot a kernel (M2 onward)")
     ap.add_argument("--kernel", default="blitscrt/zImage")
     ap.add_argument("--dtb", default="blitscrt/blitscrt.dtb")
-    ap.add_argument("--bootargs", default="console=ttyS0,115200 quiet")
+    # No 'quiet': the proof is watching the boot on the serial console.
+    ap.add_argument("--bootargs", default="console=ttyS0,115200")
+    ap.add_argument("--bridges", action="store_true",
+                    help="add 'bridge enable' to bootcmd (M3+, once a slave exists)")
     a = ap.parse_args()
 
     parts = [int(x) for x in a.partitions.split(",")]
     cmds = [x.strip() for x in a.commands.split(",")]
 
     text = build(a.rbf, a.loadaddr, parts, cmds, a.bootdelay,
-                 a.linux, a.kernel, a.dtb, a.bootargs)
+                 a.linux, a.kernel, a.dtb, a.bootargs, a.bridges)
 
     if a.out == "-":
         sys.stdout.write(text)

@@ -29,9 +29,17 @@ if [ ! -f "$RBF" ]; then
     exit 1
 fi
 
-# generated next to the bitstream so the .rbf name inside it always matches
-if [ ! -f "$TXT" ]; then
-    echo "generating $TXT" >&2
+# The kernel and device tree, staged by 'make world' when a kernel tree is set.
+KDIR="build/blitscrt"
+
+# generated next to the bitstream so the .rbf name inside it always matches. If a
+# custom kernel is staged (M2+), regenerate it to boot that kernel on the warm
+# reboot; otherwise it halts after configuring the FPGA (M1).
+if [ -f "$KDIR/zImage" ]; then
+    echo "kernel staged -- generating $TXT to boot it" >&2
+    python3 tools/gen_uboot_txt.py "$TXT" --linux >&2
+elif [ ! -f "$TXT" ]; then
+    echo "generating $TXT (halts after FPGA; no kernel staged)" >&2
     python3 tools/gen_uboot_txt.py "$TXT" >&2
 fi
 
@@ -66,14 +74,28 @@ fi
 
 cp -v "$RBF"             "$DEST/blitscrt.rbf"
 cp -v "$TXT"             "$DEST/blitscrt.txt"
+
+# M2+: the kernel and device tree ride under blitscrt/ on the card, exactly where
+# blitscrt.txt's loadkern/loaddtb look for them. The initramfs is embedded inside
+# zImage, so these two files are the whole rootfs -- nothing else to copy.
+if [ -f "$KDIR/zImage" ]; then
+    mkdir -p "$DEST/blitscrt"
+    cp -v "$KDIR/zImage" "$DEST/blitscrt/zImage"
+    [ -f "$KDIR/blitscrt.dtb" ] && cp -v "$KDIR/blitscrt.dtb" "$DEST/blitscrt/blitscrt.dtb"
+    echo "kernel + device tree copied under blitscrt/"
+fi
 sync
 
 echo ""
-echo "Done. Two files added, nothing else changed."
-echo ""
 echo "  Boot the MiSTer and select blitscrt.rbf from the menu."
-echo "  It reboots once, then comes up on the test card."
-echo "  Power cycle to return to MiSTer."
+echo "  It reboots once, then configures the FPGA (test card)."
+if [ -f "$KDIR/zImage" ]; then
+    echo "  Our kernel then boots and appends a record to"
+    echo "  /media/fat/blitscrt-boot.log -- power-cycle and read that file"
+    echo "  (or watch the boot on the serial console at 115200) to confirm."
+else
+    echo "  Power cycle to return to MiSTer."
+fi
 echo ""
 echo "  Note: this works from the SD card only. MiSTer disables the hand-off"
 echo "  for cores on USB storage."

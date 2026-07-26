@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Generate an 8x8 bitmap font ROM for the blitsCRT_Mister overlay.
 
 Glyphs are authored as 5x7 cells and placed at bits 6..2 of each row byte

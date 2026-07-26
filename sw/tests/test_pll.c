@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Exercise the PLL solver against real 15kHz pixel clocks. */
 #include <stdio.h>
 #include <string.h>

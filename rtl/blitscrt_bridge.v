@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 `timescale 1ns/1ps
 // -----------------------------------------------------------------------------
 // blitscrt_bridge.v -- the seam between the HPS and the fabric.
@@ -42,6 +43,7 @@ module blitscrt_bridge #(
     // ---- general-purpose ports, used when BRIDGE == "GP" ----
     input  wire [31:0] gp_out,          // HPS -> fabric command
     output wire [31:0] gp_in,           // fabric -> HPS response
+    output wire        bus_stalled,      // sticky: a slave never accepted
 
     // ---- downstream Avalon-MM master, to the register slave ----
     output wire [13:0] avm_address,
@@ -64,6 +66,7 @@ module blitscrt_bridge #(
         assign lw_waitrequest= avm_waitrequest;
 
         assign gp_in = 32'd0;
+        assign bus_stalled = 1'b0;
     end
     else begin : g_gp
         // Marshal one transaction per gp_out command. Layout:
@@ -118,6 +121,26 @@ module blitscrt_bridge #(
         wire read_done  = avm_read  && !avm_waitrequest;   // accepted; data next cycle
         wire write_done = avm_write && !avm_waitrequest;
 
+        /* A slave that never drops waitrequest used to wedge this: r_req stayed
+         * set, strobe_ack never moved, and the HPS spun until its own timeout --
+         * every access to that address appearing to return zero while the rest of
+         * the map worked. Give up after 255 cycles instead, echo anyway so the
+         * host is not left waiting, and latch the fact. 255 cycles at 50 MHz is
+         * 5 us, far longer than any slave here legitimately needs. */
+        reg [7:0] stall;
+        reg       stalled;                  // sticky: some access timed out
+        wire      give_up = (stall == 8'hFF);
+        always @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                stall <= 8'd0; stalled <= 1'b0;
+            end else if (r_req && !read_done && !write_done) begin
+                if (!give_up) stall <= stall + 8'd1;
+                else          stalled <= 1'b1;
+            end else begin
+                stall <= 8'd0;
+            end
+        end
+
         always @(posedge clk or negedge rst_n) begin
             if (!rst_n) begin
                 strobe_ack <= 1'b0;
@@ -138,6 +161,12 @@ module blitscrt_bridge #(
                         r_wdata <= {16'd0, gp_out[15:0]};  // low half / byte / char
                         r_wlo   <= gp_out[15:0];
                     end
+                end else if (give_up) begin
+                    /* Abandon it. r_readback keeps its previous value, which is
+                     * wrong -- but a wrong value with bus_stalled set is far
+                     * easier to diagnose than a transport that looks dead. */
+                    r_req      <= 1'b0;
+                    strobe_ack <= strobe_d;
                 end else if (write_done) begin
                     r_req      <= 1'b0;
                     strobe_ack <= strobe_d;      // writes complete on acceptance
@@ -152,6 +181,8 @@ module blitscrt_bridge #(
                 end
             end
         end
+
+        assign bus_stalled = stalled;
 
         wire is_char = r_addr[13];
 

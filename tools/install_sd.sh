@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Copy the bitstream and its u-boot override onto a mounted MiSTer SD card.
 #
 #   ./tools/install_sd.sh /run/media/you/MiSTer
@@ -87,6 +88,7 @@ if [ -f "$KDIR/zImage" ]; then
     # gadget scripts ride along for M4.
     [ -f "$KDIR/blitscrtd" ]            && cp -v "$KDIR/blitscrtd"            "$DEST/blitscrt/blitscrtd"
     [ -f "$KDIR/blitscrt-peek" ]        && cp -v "$KDIR/blitscrt-peek"        "$DEST/blitscrt/blitscrt-peek"
+    [ -f "$KDIR/blitscrt-ddrbench" ]    && cp -v "$KDIR/blitscrt-ddrbench"    "$DEST/blitscrt/blitscrt-ddrbench"
     [ -f "$KDIR/gadget-setup.sh" ]      && cp -v "$KDIR/gadget-setup.sh"      "$DEST/blitscrt/gadget-setup.sh"
     echo "kernel + device tree copied under blitscrt/"
 fi

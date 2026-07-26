@@ -2,9 +2,44 @@
 /*
  * gud.h -- Generic USB Display protocol, device side.
  *
- * Mirrors include/drm/gud.h from the Linux kernel (Copyright 2020 Noralf
- * Trønnes, MIT). Only what the device needs to answer is reproduced here.
- * The host driver has been in-tree since v5.13.
+ * ===========================================================================
+ * THIS FILE IS MIT LICENSED. The rest of blitsCRT_Mister is GPL-2.0.
+ *
+ * The protocol definitions below -- the structures, request codes, format
+ * codes and flags -- are derived from include/drm/gud.h in the Linux kernel:
+ *
+ *     Copyright 2020 Noralf Trønnes
+ *     SPDX-License-Identifier: MIT
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ * ===========================================================================
+ *
+ * Only what the device side needs to answer is reproduced here; the upstream
+ * header is larger. The host driver has been in-tree since Linux 5.13. GUD
+ * lost its maintainer in January 2025 and the upstream repository is archived,
+ * but the protocol is frozen and the in-tree driver still works.
+ *
+ * Keeping this file MIT while the project moved to GPL-2 is deliberate: MIT
+ * requires its copyright and permission notice be retained, and a GPL-2 work
+ * may contain MIT-licensed files provided they carry their own notice. Do not
+ * fold these definitions into a GPL-2 source file -- the notice has to travel
+ * with the code it covers.
  */
 #ifndef BLITSCRT_GUD_H
 #define BLITSCRT_GUD_H

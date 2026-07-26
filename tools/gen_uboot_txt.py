@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Generate the u-boot override that MiSTer hands to the bootloader.
 
 The file names the bitstream inside it, so generating the two together stops

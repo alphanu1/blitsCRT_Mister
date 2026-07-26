@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 `timescale 1ns/1ps
 // -----------------------------------------------------------------------------
 // mode_table.v -- the modes the fabric can produce, and which one is selected.
@@ -47,6 +48,11 @@ module mode_table #(
     /* clkselect values, not clock indices: altclkctrl slots 0 and 1 are wired
      * to the reference pin to satisfy the placement rule, and only 2 and 3
      * carry PLL outputs. */
+    /* altclkctrl slots. On Cyclone V only inclk[2] and inclk[3] may carry PLL
+     * outputs -- 0 and 1 must be real clock pins -- so pll_modes wires the
+     * reference to 0 and 1 and the PLL to 2 and 3. Selecting 0 or 1 gives the
+     * 50 MHz reference, not a pixel clock. blitscrt_top's CLK_FULL mirrors
+     * CLK_12M6 and the two must agree. */
     localparam [1:0] CLK_12M6 = 2'd2;
     localparam [1:0] CLK_25M2 = 2'd3;
 

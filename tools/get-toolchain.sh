@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # get-toolchain.sh -- download and extract a prebuilt ARM cross-compiler.
 #
 # Deliberately separate from setup-deps.sh and opt-in: it pulls ~150 MB from a

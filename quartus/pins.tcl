@@ -1,10 +1,17 @@
 # -----------------------------------------------------------------------------
 # pins.tcl -- blitsCRT_Mister pin assignments for MiSTer Pi / DE10-Nano
 #
-# These are facts about how the board is wired, taken from the MiSTer framework
-# (sys/sys.tcl and sys/sys_analog.tcl in MiSTer-devel/Template_MiSTer) and
-# reduced to the signals milestone 1 actually uses. The SDRAM block is present
-# but commented out; it lands in M3.
+# ---------------------------------------------------------------------------
+# The assignments here are derived from the MiSTer framework:
+#
+#     sys/sys.tcl and sys/sys_analog.tcl in MiSTer-devel/Template_MiSTer
+#     GPL-2.0
+#
+# They are facts about how the board is wired, reduced to the signals this
+# design actually uses. `make check-pins MISTER=...` diffs ours against theirs.
+# ---------------------------------------------------------------------------
+#
+# The SDRAM block is present but commented out.
 #
 # VGA on the analog A/V board is a six-bit resistor ladder per channel driven
 # straight off FPGA pins. There is no DAC chip in the path, which is why the

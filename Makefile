@@ -1,10 +1,15 @@
 # Simulation and asset generation. Quartus is driven from quartus/blitscrt.qsf.
 
 IV      := iverilog -g2012
-RTL     := rtl/video_timing.v rtl/testcard.v rtl/overlay.v \
-           rtl/char_ram.v rtl/font_rom.v
+# Framebuffer preload geometry. Must match SCANOUT_W/SCANOUT_H on blitscrt_top.
+SCANOUT_GEOM ?= 320x480
+SCANOUT_FMT  ?= rgb565
 
-.PHONY: all world manifest assets sim render render-i clean distclean tools setup setup-dry get-toolchain kernel-clone daemon bitstream bitstream-force quartus-path lint check-pins check-decl check-ip uboot-txt preview linux build kernel-check kernel-config initramfs
+RTL     := rtl/video_timing.v rtl/testcard.v rtl/overlay.v \
+           rtl/char_ram.v rtl/font_rom.v \
+           rtl/scanout.v rtl/scanout_ram.v
+
+.PHONY: all world manifest assets sim render render-i render-scanout render-scanout-i clean distclean tools setup setup-dry get-toolchain kernel-clone daemon bitstream bitstream-force ddrbench quartus-path lint check-pins check-decl check-ip uboot-txt preview linux build kernel-check kernel-config initramfs
 
 # iverilog and Pillow are for verification only. Neither is needed to build the
 # bitstream -- Quartus consumes rtl/ and the generated .hex files, nothing else.
@@ -68,6 +73,7 @@ world: assets
 	fi
 	@$(MAKE) --no-print-directory daemon CROSS_COMPILE="$(CROSS_COMPILE)" STATIC="$(STATIC)" || echo "-- daemon build skipped"
 	@$(MAKE) --no-print-directory peek CROSS_COMPILE="$(CROSS_COMPILE)" STATIC="$(STATIC)" || echo "-- peek build skipped"
+	@$(MAKE) --no-print-directory ddrbench CROSS_COMPILE="$(CROSS_COMPILE)" STATIC="$(STATIC)" || echo "-- ddrbench build skipped"
 	@$(MAKE) --no-print-directory build   # build is idempotent (cp -f); safe
 	@$(MAKE) --no-print-directory manifest
 
@@ -76,6 +82,7 @@ MANIFEST := \
   rtl/font8x8.hex \
   rtl/banner.hex \
   rtl/banner_i.hex \
+  rtl/scanout_init.hex \
   sim/tb_timing.vvp \
   sim/tb_i2c.vvp \
   sim/tb_render.vvp \
@@ -83,6 +90,8 @@ MANIFEST := \
   sim/testcard_640x240p60_x2.png \
   sim/testcard_640x480i60.png \
   sim/testcard_640x480i60_x2.png \
+  sim/scanout_640x240p60.png \
+  sim/scanout_640x480i60.png \
   quartus/output_files/blitscrt.rbf \
   quartus/output_files/blitscrt.txt \
   quartus/output_files/blitscrt.sof \
@@ -95,6 +104,7 @@ MANIFEST := \
   build/blitscrt/blitscrt.dtb \
   build/blitscrt/blitscrtd \
   build/blitscrt/blitscrt-peek \
+  build/blitscrt/blitscrt-ddrbench \
   build/blitscrt/gadget-setup.sh
 
 manifest:
@@ -179,12 +189,18 @@ tools:
 
 # Proper dependencies so 'make all' does not regenerate these for every
 # downstream target.
-assets: rtl/font8x8.hex rtl/banner.hex
+assets: rtl/font8x8.hex rtl/banner.hex rtl/scanout_init.hex
 
 rtl/font8x8.hex: tools/gen_font.py
 	python3 tools/gen_font.py $@
 
 # One image, three banks. The overlay indexes the bank with the live mode.
+# The framebuffer preload. M3a has no write path, so the buffer comes up holding
+# this; it exists to be told apart from the test card at a glance. Geometry must
+# match SCANOUT_W/SCANOUT_H on blitscrt_top.
+rtl/scanout_init.hex: tools/gen_scanout_test.py
+	python3 tools/gen_scanout_test.py $@ $(SCANOUT_GEOM) $(SCANOUT_FMT)
+
 rtl/banner.hex: tools/gen_banner.py
 	python3 tools/gen_banner.py $@
 
@@ -200,12 +216,23 @@ sim: assets
 	vvp sim/tb_regs.vvp
 	$(IV) -o sim/tb_bridge.vvp sim/tb_bridge.v rtl/blitscrt_bridge.v
 	vvp sim/tb_bridge.vvp
+	$(IV) -o sim/tb_scanout.vvp sim/tb_scanout.v rtl/scanout.v rtl/scanout_ram.v rtl/video_timing.v
+	vvp sim/tb_scanout.vvp
+	$(IV) -o sim/tb_scanout_write.vvp sim/tb_scanout_write.v rtl/blitscrt_regs.v \
+	      rtl/scanout_ram.v rtl/scanout.v rtl/video_timing.v
+	vvp sim/tb_scanout_write.vvp
+	$(IV) -o sim/tb_scanout_fetch.vvp sim/tb_scanout_fetch.v rtl/scanout_fetch.v
+	vvp sim/tb_scanout_fetch.vvp
 
 # Elaborate the real top level with stand-ins for the Quartus primitives.
 .PHONY: lint
 # Verify the generated PLL megafunctions carry the settings the design needs.
 # Reads what came out rather than trusting what was ticked, since GUI labels
 # move between Quartus releases. See docs/MEGAFUNCTIONS.md.
+# Reads the Quartus reports for things it says but does not fail on.
+check-fit:
+	@python3 tools/check_fit.py quartus/output_files
+
 check-ip:
 	@python3 tools/check_ip.py
 
@@ -215,32 +242,62 @@ check-ip:
 check-decl:
 	@python3 tools/check_decl_order.py rtl/*.v sim/*.v
 
-lint: check-decl
+# Both memory sources elaborate. The DDR3 configuration has no Platform Designer
+# system behind it yet, so this is what catches a break in it before the Quartus
+# work lands rather than after.
+# The two altclkctrl slot constants must agree. A divergence here has no
+# simulation symptom at all -- it shows up as a monitor refusing to sync.
+check-clk:
+	@python3 tools/check_clk_sel.py
+
+lint: check-decl check-clk
 	$(need_iverilog)
-	$(IV) -o /dev/null -s blitscrt_top rtl/*.v sim/vendor_stubs.v && echo "top elaborates clean"
+	$(IV) -o /dev/null -s lint_onchip rtl/*.v sim/vendor_stubs.v sim/lint_onchip.v && echo "top elaborates clean (ONCHIP)"
+	$(IV) -o /dev/null -s lint_ddr3 rtl/*.v sim/vendor_stubs.v sim/lint_ddr3.v && echo "top elaborates clean (DDR3, stubbed f2sdram)"
 
 render: assets
 	$(need_iverilog)
 	@python3 -c "import PIL" 2>/dev/null || \
 	  { echo "Pillow not found:  sudo pacman -S python-pillow"; exit 1; }
-	$(IV) -o sim/tb_render.vvp sim/tb_render.v $(RTL)
+	$(IV) -DRENDER_TXT='"render_p60.txt"' -o sim/tb_render.vvp sim/tb_render.v $(RTL)
 	cd rtl && vvp ../sim/tb_render.vvp
-	python3 tools/render_png.py 640x240p60
+	python3 tools/render_png.py 640x240p60 testcard rtl/render_p60.txt
 
 render-i: assets
 	$(need_iverilog)
 	@python3 -c "import PIL" 2>/dev/null || \
 	  { echo "Pillow not found:  sudo pacman -S python-pillow"; exit 1; }
-	$(IV) -DRENDER_INTERLACED -o sim/tb_render_i.vvp sim/tb_render.v $(RTL)
+	$(IV) -DRENDER_INTERLACED -DRENDER_TXT='"render_i60.txt"' -o sim/tb_render_i.vvp sim/tb_render.v $(RTL)
 	cd rtl && vvp ../sim/tb_render_i.vvp
-	python3 tools/render_png.py 640x480i60
+	python3 tools/render_png.py 640x480i60 testcard rtl/render_i60.txt
+
+# Same pipeline, framebuffer instead of the test card. Proves the scanout path
+# through the real overlay rather than a mock-up.
+render-scanout: assets
+	$(need_iverilog)
+	@python3 -c "import PIL" 2>/dev/null || \
+	  { echo "Pillow not found:  sudo pacman -S python-pillow"; exit 1; }
+	$(IV) -DRENDER_SCANOUT -DRENDER_TXT='"render_sc.txt"' -o sim/tb_render_scanout.vvp sim/tb_render.v $(RTL)
+	cd rtl && vvp ../sim/tb_render_scanout.vvp
+	python3 tools/render_png.py 640x240p60 scanout rtl/render_sc.txt
+
+# 480i out of scanout memory. This is the one that shows whether the interlace is
+# real: both fields are captured and woven, so the single-row comb resolves as
+# fine lines. Line-doubled memory would show it as two-line bars.
+render-scanout-i: assets
+	$(need_iverilog)
+	@python3 -c "import PIL" 2>/dev/null || \
+	  { echo "Pillow not found:  sudo pacman -S python-pillow"; exit 1; }
+	$(IV) -DRENDER_SCANOUT -DRENDER_INTERLACED -DRENDER_TXT='"render_sc_i.txt"' -o sim/tb_render_scanout_i.vvp sim/tb_render.v $(RTL)
+	cd rtl && vvp ../sim/tb_render_scanout_i.vvp
+	python3 tools/render_png.py 640x480i60 scanout rtl/render_sc_i.txt
 
 # Remove transient build products. Every rm uses -f / -rf, so a missing file is
 # never an error -- clean works whether or not a full build ran. The tracked
 # sim/*.png renders are left alone; the README embeds them.
 clean:
 	rm -f  sim/*.vvp sim/*.vcd sim/*.fst sim/*.lxt
-	rm -f  rtl/render.txt $(UBOOT_TXT) README_preview.html
+	rm -f  rtl/render_*.txt $(UBOOT_TXT) README_preview.html
 	rm -f  sw/*.o sw/blitscrtd sw/test_pll sw/test_pll_reconfig sw/test_modes sw/test_device
 	rm -rf $(BUILD_DIR) $(WORK_DIR)
 	rm -rf __pycache__ tools/__pycache__ sw/__pycache__
@@ -249,7 +306,7 @@ clean:
 # Also remove generated assets and the Quartus output. Leaves only tracked
 # sources.
 distclean: clean
-	rm -f  rtl/font8x8.hex rtl/banner.hex rtl/banner_i.hex
+	rm -f  rtl/font8x8.hex rtl/banner.hex rtl/banner_i.hex rtl/scanout_init.hex
 	rm -rf quartus/output_files quartus/db quartus/incremental_db
 	rm -rf quartus/greybox_tmp quartus/.qsys_edit quartus/hps_isw_handoff
 
@@ -420,7 +477,8 @@ $(UBOOT_TXT): tools/gen_uboot_txt.py
 # newer than all of them, the fabric has not changed and a full Quartus compile
 # (minutes) would be wasted -- skip it. Force a rebuild with FORCE_BITSTREAM=1
 # or 'make bitstream-force'.
-RTL_SRCS := $(wildcard rtl/*.v rtl/*/*.v rtl/*.hex) quartus/blitscrt.qsf quartus/blitscrt.sdc
+RTL_SRCS := $(wildcard rtl/*.v rtl/*.sv rtl/*/*.v rtl/*/*.sv rtl/*.hex) \
+            quartus/blitscrt.qsf quartus/blitscrt.sdc
 
 bitstream: assets
 	@if [ -z "$(QUARTUS_SH)" ]; then \
@@ -434,6 +492,7 @@ bitstream: assets
 	  echo "using $(QUARTUS_SH)"; \
 	  ( cd quartus && $(QUARTUS_SH) --flow compile blitscrt ); \
 	fi
+	@python3 tools/check_fit.py quartus/output_files
 	@python3 tools/gen_uboot_txt.py $(UBOOT_TXT) $(UBOOT_FLAG)
 
 # Always recompile, ignoring the up-to-date check.
@@ -609,6 +668,16 @@ daemon:
 # blitscrt-peek reads and writes fabric registers over the same gp transport the
 # daemon uses. Built with the same auto-detected toolchain and staged next to the
 # daemon so it lands on the card.
+ddrbench:
+	@if [ -z "$(CROSS_COMPILE)" ]; then \
+	  echo "-- no ARM cross-compiler; building a host blitscrt-ddrbench that will NOT run on the board"; \
+	  $(MAKE) --no-print-directory -C sw STATIC=$(STATIC) blitscrt-ddrbench; \
+	else \
+	  echo "building blitscrt-ddrbench for ARM ($(CROSS_COMPILE)gcc)"; \
+	  $(KPATH) $(MAKE) --no-print-directory -C sw \
+	    CROSS_COMPILE=$(CROSS_COMPILE) STATIC=$(STATIC) blitscrt-ddrbench; \
+	fi
+
 peek:
 	@if [ -z "$(CROSS_COMPILE)" ]; then \
 	  echo "-- no ARM cross-compiler; building a host blitscrt-peek that will NOT run on the board"; \
@@ -658,6 +727,9 @@ build: assets $(UBOOT_TXT) daemon peek
 	  cp sw/blitscrtd $(CARD_SUB)/ && echo "staged blitscrt/blitscrtd"; \
 	else \
 	  echo "note: sw/blitscrtd not built (run: make -C sw); needed to run on the board"; \
+	fi
+	@if [ -f sw/blitscrt-ddrbench ]; then \
+	  cp sw/blitscrt-ddrbench $(CARD_SUB)/ && echo "staged blitscrt/blitscrt-ddrbench"; \
 	fi
 	@if [ -f sw/blitscrt-peek ]; then \
 	  cp sw/blitscrt-peek $(CARD_SUB)/ && echo "staged blitscrt/blitscrt-peek"; \

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef BLITSCRT_DEVICE_H
 #define BLITSCRT_DEVICE_H
 
@@ -48,7 +48,7 @@ void blitscrt_modelist_defaults(struct blitscrt_dev *d);
 
 /*
  * Host attach and detach. On detach the fabric falls back to the test card,
- * because a stale framebuffer scanning out after the cable is pulled looks
+ * because stale pixels scanning out after the cable is pulled looks
  * exactly like a crash.
  */
 void blitscrt_dev_on_host(struct blitscrt_dev *d, int attached);

@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // -----------------------------------------------------------------------------
-// blitscrt_top.v -- blitsCRT_Mister milestone 1
+// blitscrt_top.v -- blitsCRT_Mister top level
 //
-// Fabric only. No HPS, no SDRAM, no USB. Drives the MiSTer analog A/V board
-// with a colour-bar test card and a text overlay reporting the mode, so a
-// picture exists before any software runs and survives anything above it
+// Drives the MiSTer analog A/V board and HDMI from one pixel stream. Two pixel
+// sources feed the same point in the pipeline: the colour-bar test card, which
+// needs no software at all, and scanout memory, read by scanout.v out of
+// on-chip block RAM. CTRL picks between them and comes up on the test card, so
+// a picture exists before any software runs and survives anything above it
 // crashing later.
 //
 // Three modes, selected at runtime:
@@ -38,8 +41,49 @@ module blitscrt_top #(
     parameter integer DEFAULT_VGA  = 1,   // analog board fitted
     parameter integer DEFAULT_HDMI = 1,   // HDMI only; 2 for 31kHz VGA timing
     parameter integer FORCE_MODE   = -1,  // >= 0 pins the mode and ignores detect
-    parameter integer WITH_HPS     = 1    // 0 builds a bare fabric, no HPS
+    parameter integer WITH_HPS     = 1,   // 0 builds a bare fabric, no HPS
+
+    /*
+     * On-chip scanout memory, in pixels, one pixel per 16-bit word. 320x480 is
+     * 2.46 Mbit of the 5.57 Mbit of M10K on this device -- see rtl/scanout_ram.v
+     * for what the other geometries cost.
+     *
+     * 480 lines rather than 240 because 480i has to be genuinely interlaced.
+     * video_timing hands over the field-interleaved frame line, so 480 distinct
+     * lines in memory means the raster reads 0,2,4.. on one field and 1,3,5.. on
+     * the other: full vertical resolution, both fields carrying different
+     * content. Fitting 240 and line-doubling would show 240 lines twice, which
+     * is 240p wearing a 480i timing.
+     *
+     * 640x480 at 16 bits is 4.92 Mbit, 86% of the M10K on the device, and will
+     * not fit alongside the overlay. So the horizontal half is what gives: 320
+     * wide, pixel-doubled to fill the 640 active area. Full horizontal *and*
+     * vertical at once is what M3c and DDR3 are for -- 640x480 RGB565 is 600 KB,
+     * which is nothing off-chip and impossible on it.
+     */
+    parameter integer SCANOUT_W         = 320,
+    parameter integer SCANOUT_H         = 480,
+
+    /* "ONCHIP" or "DDR3" -- see the scanout block below. ONCHIP is what builds
+     * today; DDR3 needs the f2sdram port wired from a Platform Designer system,
+     * and the ports for it are on this module either way so the two builds have
+     * the same footprint. */
+    /* Defaulted here rather than left to the .qsf. A set_parameter override that
+     * Quartus quietly declines leaves a build that looks fine and behaves as the
+     * other configuration -- which has already cost a day once on SCANOUT_H. The
+     * RTL default always applies; the .qsf line is belt and braces. */
+    parameter         SCANOUT_SRC       = "DDR3",
+    parameter integer F2SDRAM_DW        = 64,
+
+    /* Only ever 0 for lint. A DDR3 build wants the real sysmem_lite, and having
+     * this as a second thing to remember to flip is how a build ends up with the
+     * fetcher talking to a stub that accepts every read and answers none --
+     * which looks exactly like a black screen from six other causes. Icarus has
+     * no Intel HPS primitives, so sim/lint_ddr3.v passes 0 and nothing else
+     * should. */
+    parameter integer WITH_QSYS         = 1
 ) (
+
     input  wire        FPGA_CLK1_50,
 
     // analog A/V board
@@ -76,6 +120,33 @@ module blitscrt_top #(
     wire hdmi_scl, hdmi_sda_o, hdmi_configured, hdmi_nack;
     wire rst_n;                       // video-domain reset, driven below
 
+    /*
+     * Everything blitscrt_regs drives. The register block is instantiated well
+     * below, but the overlay, the scanout mux and the pad drivers all read these
+     * before that point, so they are declared once here rather than scattered.
+     *
+     * Reset defaults reproduce M1/M2 behaviour exactly (s_ctrl = 5'b10110): test
+     * card and overlay on, HDMI on, scanout off. Wiring the control bits up
+     * therefore changes nothing until the daemon writes CTRL.
+     */
+    wire [11:0] r_hsy, r_hbp, r_hact, r_hfp, r_vsy, r_vbp, r_vact, r_vfp;
+    wire        r_interlace;
+    wire [31:0] r_pclk_khz, r_sc_base, r_sc_stride;
+    wire [2:0]  r_sc_format;
+    wire        r_scanout_en, r_testcard_en, r_overlay_en, r_csync_en, r_hdmi_en;
+    wire [8:0]  r_pll_m, r_pll_n, r_pll_c;
+    wire        r_pll_apply, r_char_we;
+    wire [12:0] r_char_addr;
+    wire [7:0]  r_char_data;
+    wire [11:0] r_sc_w, r_sc_h;
+    wire        r_sc_underrun_tog;
+    wire [15:0] r_sc_beats;
+    wire        r_sc_we;
+    wire [19:0] r_sc_waddr;
+    wire [15:0] r_sc_wdata;
+    wire        hps_alive;
+    wire [1:0]  host_state;
+
     // ---------------- mode selection, in the 50 MHz domain ----------------
     reg [3:0] rst50_sr = 4'b0000;
     always @(posedge FPGA_CLK1_50) rst50_sr <= {rst50_sr[2:0], BTN_RESET};
@@ -104,6 +175,33 @@ module blitscrt_top #(
     wire [11:0] t_vsy, t_vbp, t_vact, t_vfp;
     wire        t_ilace;
     wire [1:0]  clk_sel, cur_mode;
+
+    /* Driven by blitscrt_regs well below, but read by the clock select and the
+     * raster mux above it. check-decl enforces declaring before use. */
+    wire        r_hps_timing, r_hps_timing_bus;
+
+    wire [13:0] reg_address;
+    wire        reg_read, reg_write;
+    wire [31:0] reg_writedata, reg_readdata;
+    wire        reg_waitrequest;
+    wire        bus_stalled;
+
+    /* When the host owns timing it also owns the pixel clock: the reconfig block
+     * retunes the PLL, so the select is pinned to the full-rate output rather
+     * than following the mode table between the two.
+     *
+     * CLK_FULL is 2, not 0. altclkctrl on Cyclone V accepts PLL outputs only on
+     * inclk[2] and inclk[3] -- slots 0 and 1 must be real clock pins, so
+     * pll_modes puts the reference there. Pinning to 0 does not select c0, it
+     * selects FPGA_CLK1_50, and the raster then runs 640x480i timing off a
+     * 50 MHz clock at roughly 62 kHz of line rate. Which is exactly what
+     * happened the first time this bit was set.
+     *
+     * Taken from the bus-domain copy of the ownership bit, because this feeds
+     * the mux that generates clk_pix and a pixel-domain signal would be
+     * selecting the clock that clocks it. */
+    localparam [1:0] CLK_FULL = 2'd2;      // must match mode_table's CLK_12M6
+    wire [1:0]  clk_sel_eff = r_hps_timing_bus ? CLK_FULL : clk_sel;
     wire [31:0] cur_khz;
 
     mode_table #(
@@ -126,21 +224,42 @@ module blitscrt_top #(
 
     wire [63:0] reconfig_to_pll, reconfig_from_pll;
 
-    /* Avalon master stubs for the reconfig slave. Held idle until the HPS
-     * bridge decode at 0x1000 replaces them, so the PLL free-runs at its
-     * power-on frequencies. Declared before use; check-decl enforces it. */
-    wire [5:0]  pll_avs_address    = 6'd0;
-    wire        pll_avs_read       = 1'b0;
-    wire        pll_avs_write      = 1'b0;
-    wire [31:0] pll_avs_writedata  = 32'd0;
+    /* The PLL reconfig aperture at 0x1000, decoded here and nowhere else. The
+     * register block declines anything with address[12] set; without that these
+     * writes landed on H_SY, H_BP and CTRL, and the status poll read VERSION
+     * and took its low bits for "not busy, locked". */
+    wire        avm_is_pll = (reg_address[13:12] == 2'b01);
+    wire [5:0]  pll_avs_address    = reg_address[7:2];   // byte offset to word
+    wire        pll_avs_read       = reg_read  && avm_is_pll;
+    wire        pll_avs_write      = reg_write && avm_is_pll;
+    wire [31:0] pll_avs_writedata  = reg_writedata;
     wire [31:0] pll_avs_readdata;
     wire        pll_avs_waitrequest;
+
+    /*
+     * Both slaves are read latency 1 and the mux into the bridge is
+     * combinational for both. There used to be an extra flop on this path,
+     * added to "give it the same shape" as the register slave -- but that slave
+     * already registers its readdata internally, so the flop made this path
+     * latency 2 while the bridge samples at 1. Every read came back one cycle
+     * early, which on an idle bus is zero: the reconfig block looked absent
+     * while its writes were plainly working, because writes are never read back.
+     */
+    wire [31:0] regs_readdata;
+    wire        regs_waitrequest;
+    /* These feed the bridge. Named reg_* deliberately: an earlier edit left them
+     * as avm_*, which nothing else referenced -- so the mux drove two dead wires
+     * and the bridge's readback and waitrequest had no driver at all. Quartus
+     * ties an undriven wire to zero, so every register read came back 0x00000000
+     * and the strobe echo never appeared: the fabric looked absent. */
+    assign reg_readdata    = avm_is_pll ? pll_avs_readdata : regs_readdata;
+    assign reg_waitrequest = avm_is_pll ? pll_avs_waitrequest : regs_waitrequest;
 
 
     pll_modes u_pll (
         .refclk  (FPGA_CLK1_50),
         .rst     (~rst50_n),
-        .sel     (clk_sel),
+        .sel     (clk_sel_eff),
         .reconfig_to_pll   (reconfig_to_pll),
         .reconfig_from_pll (reconfig_from_pll),
         .clk_pix (clk_pix),
@@ -178,8 +297,8 @@ module blitscrt_top #(
         if (!rst50_n) begin
             sel_d <= 2'd0; mode_hold <= 8'hFF;
         end else begin
-            sel_d <= clk_sel;
-            if (sel_d != clk_sel) mode_hold <= 8'hFF;
+            sel_d <= clk_sel_eff;
+            if (sel_d != clk_sel_eff) mode_hold <= 8'hFF;
             else if (mode_hold)   mode_hold <= mode_hold - 8'd1;
         end
     end
@@ -196,11 +315,33 @@ module blitscrt_top #(
     wire [11:0] hcnt, lcnt, xpos, ypos;
     wire        field, vblank, field_start;
 
+    /*
+     * Who owns the raster. CTRL's HPS_TIMING bit picks between the front-panel
+     * mode table and the timing the daemon applied, and it is clear at reset --
+     * so the fabric produces a picture with no software, which is the whole
+     * reason the mode table exists. Software claims the job explicitly rather
+     * than taking it by turning up.
+     *
+     * The mode table stays the way back: clear the bit and the raster returns
+     * to a known-good mode without a reflash, which is worth having when a host
+     * has just asked for something the display cannot show.
+     */
+    wire        own_hps = r_hps_timing;
+    wire [11:0] v_hsy   = own_hps ? r_hsy  : t_hsy;
+    wire [11:0] v_hbp   = own_hps ? r_hbp  : t_hbp;
+    wire [11:0] v_hact  = own_hps ? r_hact : t_hact;
+    wire [11:0] v_hfp   = own_hps ? r_hfp  : t_hfp;
+    wire [11:0] v_vsy   = own_hps ? r_vsy  : t_vsy;
+    wire [11:0] v_vbp   = own_hps ? r_vbp  : t_vbp;
+    wire [11:0] v_vact  = own_hps ? r_vact : t_vact;
+    wire [11:0] v_vfp   = own_hps ? r_vfp  : t_vfp;
+    wire        v_ilace = own_hps ? r_interlace : t_ilace;
+
     video_timing u_timing (
         .clk(clk_pix), .rst_n(rst_n),
-        .h_sy(t_hsy), .h_bp(t_hbp), .h_act(t_hact), .h_fp(t_hfp),
-        .v_sy(t_vsy), .v_bp(t_vbp), .v_act(t_vact), .v_fp(t_vfp),
-        .interlace(t_ilace),
+        .h_sy(v_hsy), .h_bp(v_hbp), .h_act(v_hact), .h_fp(v_hfp),
+        .v_sy(v_vsy), .v_bp(v_vbp), .v_act(v_vact), .v_fp(v_vfp),
+        .interlace(v_ilace),
         .hs(hs), .vs(vs), .cs(cs), .de(de),
         .hcnt(hcnt), .lcnt(lcnt), .xpos(xpos), .ypos(ypos),
         .field(field), .vblank(vblank), .field_start(field_start)
@@ -229,6 +370,151 @@ module blitscrt_top #(
             de_card <= de; x_card <= xpos; y_card <= ypos;
         end
     end
+
+    // ---------------- scanout ----------------
+    //
+    // The scanout path, alongside the test card and muxed into the same
+    // point in the pipeline. scanout costs exactly one clock from xpos to
+    // r/g/b, which is what the test card costs, so the mux is transparent and
+    // PIPE below stays at 5. sim/tb_scanout.v holds that to account.
+    //
+    // Where the pixels live is a parameter, in the same spirit as BRIDGE on
+    // blitscrt_bridge: one place knows, and changing it does not touch anything
+    // downstream. scanout.v is identical either way -- it takes a pixel word and
+    // a position and knows nothing about where memory is.
+    //
+    //   "ONCHIP"  M3a/M3b. A whole picture in M10K, written a pixel at a time
+    //             over gp, preloaded with gen_scanout_test.py's pattern so it
+    //             works with no software at all. Capped by block RAM: 320x480
+    //             is 43% of the device and 640x480 will not fit.
+    //
+    //   "DDR3"    M3c. One line at a time out of HPS DDR3 over f2sdram. The
+    //             pixels are already there -- the gadget receives into DDR3 and
+    //             the daemon memcpys rects into a reserved window at a measured
+    //             110 MB/s -- so the fabric goes to them and nothing pushes a
+    //             pixel across a bridge. Geometry stops being a build-time
+    //             limit; 640x480 RGB565 is 600 KB, which is nothing off-chip.
+    //
+    // Only one is instantiated, so a DDR3 build gets that 43% of M10K back and
+    // spends about 64 Kbit on line buffers instead.
+    localparam integer SCANOUT_WORDS = SCANOUT_W * SCANOUT_H;
+    localparam integer SCANOUT_AW    = $clog2(SCANOUT_W * SCANOUT_H);
+
+    wire [19:0] sc_addr;
+    wire [11:0] sc_x, sc_y;
+    wire [31:0] sc_word;
+    wire        sc_underrun;
+    wire [15:0] sc_beats;
+
+    generate
+    if (SCANOUT_SRC == "DDR3") begin : g_ddr3
+
+        /* One request per line, raised at the line boundary for the line about
+         * to be displayed. The fetch then has the whole horizontal blanking
+         * interval -- 136 pixels, about 10.8 us at 12.6 MHz -- against roughly
+         * 2 us to move 160 beats, so five times the margin at the slowest mode
+         * and half that at 25.2 MHz. Requesting a line ahead instead would give
+         * a full line time, but needs the *next* line's source row, which is
+         * awkward across a field boundary and buys margin that is not short. */
+        wire [11:0] h_act_start = t_hsy + t_hbp;
+
+        reg  req_pulse, show_pulse;
+        always @(posedge clk_pix or negedge rst_n) begin
+            if (!rst_n) begin
+                req_pulse <= 1'b0; show_pulse <= 1'b0;
+            end else begin
+                req_pulse  <= (hcnt == 12'd0);
+                /* Four clocks before active video: the read port is registered,
+                 * so the buffer has to be swapped before scanout presents the
+                 * first column or pixel zero comes out of the old line. */
+                show_pulse <= (h_act_start > 12'd4) &&
+                              (hcnt == h_act_start - 12'd4);
+            end
+        end
+
+        /* The one module that touches the Platform Designer system, isolated the
+         * same way blitscrt_hps.v isolates the HPS primitive. Its ports are
+         * internal, so no pin assignments appear and check-pins stays clean. */
+        wire        f2s_clk, f2s_rst_n, f2s_waitrequest, f2s_readdatavalid;
+        wire [31:0] f2s_address;
+        wire        f2s_read;
+        wire [9:0]  f2s_burstcount;
+        wire [F2SDRAM_DW-1:0] f2s_readdata;
+
+        blitscrt_f2sdram #(.DW(F2SDRAM_DW), .WITH_QSYS(WITH_QSYS)) u_f2sdram (
+            .ref_clk(FPGA_CLK1_50), .ref_rst_n(rst50_n),
+            .m_clk(f2s_clk), .m_rst_n(f2s_rst_n),
+            .m_address(f2s_address), .m_read(f2s_read),
+            .m_burstcount(f2s_burstcount), .m_waitrequest(f2s_waitrequest),
+            .m_readdata(f2s_readdata), .m_readdatavalid(f2s_readdatavalid)
+        );
+
+        scanout_fetch #(
+            .DW(F2SDRAM_DW), .AW(32), .MAXW(1024), .MAX_BURST(128)
+        ) u_fetch (
+            .clk_mem(f2s_clk), .rst_mem_n(f2s_rst_n),
+            .avm_address(f2s_address), .avm_read(f2s_read),
+            .avm_burstcount(f2s_burstcount), .avm_waitrequest(f2s_waitrequest),
+            .avm_readdata(f2s_readdata), .avm_readdatavalid(f2s_readdatavalid),
+            .sc_base(r_sc_base), .sc_stride(r_sc_stride[15:0]),
+            .sc_w(r_sc_w), .sc_format(r_sc_format),
+            .clk_pix(clk_pix), .rst_pix_n(rst_n),
+            .line_req(req_pulse), .line_y(sc_y), .line_show(show_pulse),
+            .line_valid(), .line_done(), .busy(),
+            .underrun_tog(sc_underrun), .beats_last(sc_beats),
+            .rd_x(sc_x), .rd_q(sc_word)
+        );
+
+    end else begin : g_onchip
+
+        wire [15:0] sc_q;
+
+        scanout_ram #(
+            .DW(16), .AW(SCANOUT_AW), .WORDS(SCANOUT_WORDS),
+            .INIT_FILE("scanout_init.hex")
+        ) u_sc_ram (
+            .wclk(FPGA_CLK1_50), .we(r_sc_we),
+            .waddr(r_sc_waddr[SCANOUT_AW-1:0]), .wdata(r_sc_wdata),
+            .rclk(clk_pix), .raddr(sc_addr[SCANOUT_AW-1:0]), .rdata(sc_q)
+        );
+
+        assign sc_word     = {16'd0, sc_q};
+        assign sc_underrun = 1'b0;
+        assign sc_beats    = 16'd0;
+
+    end
+    endgenerate
+
+    /* Replication is derived from the geometry rather than a register bit: a
+     * buffer half the width of the active area is doubled, and one half the
+     * height is line-doubled. With SCANOUT_W=320 that puts a true 320-wide picture
+     * across all three modes, and the 240-line buffer covers 480i as well. */
+    wire hdouble = (t_hact  > r_sc_w);
+    wire vdouble = (frame_v > r_sc_h);
+
+    wire [5:0] sc_r, sc_g, sc_b;
+
+    scanout #(.AW(20)) u_scanout (
+        .clk(clk_pix), .rst_n(rst_n),
+        .de(de), .xpos(xpos), .ypos(ypos),
+        .sc_w(r_sc_w), .sc_h(r_sc_h), .sc_pitch(r_sc_w),
+        .sc_format(r_sc_format),
+        .hdouble(hdouble), .vdouble(vdouble),
+        .mem_addr(sc_addr), .mem_q(sc_word),
+        .x_src(sc_x), .y_src_o(sc_y),
+        .r(sc_r), .g(sc_g), .b(sc_b)
+    );
+
+    /* CTRL_TESTCARD outranks CTRL_ENABLE. The register header defines it as
+     * "show the card instead of the fb", and that ordering is what makes a
+     * dropped host safe: blitscrt_dev_on_host() clears scanout on
+     * FUNCTIONFS_DISABLE, and a stale frame left on screen would look exactly
+     * like a crash. */
+    wire src_scanout = r_scanout_en && !r_testcard_en;
+
+    wire [5:0] src_r = src_scanout ? sc_r : tc_r;
+    wire [5:0] src_g = src_scanout ? sc_g : tc_g;
+    wire [5:0] src_b = src_scanout ? sc_b : tc_b;
 
     // ---------------- overlay ----------------
     wire [12:0] char_addr;
@@ -260,17 +546,21 @@ module blitscrt_top #(
     );
 
     // BTN_USER hides the text so the bars can be judged unobstructed
-    reg overlay_en = 1'b1;
-    reg btn_user_d = 1'b1;
+    reg overlay_btn = 1'b1;
+    reg btn_user_d  = 1'b1;
     always @(posedge clk_pix or negedge rst_n) begin
         if (!rst_n) begin
-            overlay_en <= 1'b1;
-            btn_user_d <= 1'b1;
+            overlay_btn <= 1'b1;
+            btn_user_d  <= 1'b1;
         end else begin
             btn_user_d <= BTN_USER;
-            if (btn_user_d && !BTN_USER) overlay_en <= ~overlay_en;
+            if (btn_user_d && !BTN_USER) overlay_btn <= ~overlay_btn;
         end
     end
+
+    /* Either the button or CTRL_OVERLAY can hide the text. The button stays
+     * authoritative for judging the bars unobstructed with no software running. */
+    wire overlay_show = overlay_btn && r_overlay_en;
 
     wire       de_px;
     wire [5:0] px_r, px_g, px_b;
@@ -281,8 +571,8 @@ module blitscrt_top #(
         .hps_alive(hps_alive),
         .clk(clk_pix), .rst_n(rst_n),
         .de_in(de_card), .xpos(x_card), .ypos(y_card),
-        .r_in(tc_r), .g_in(tc_g), .b_in(tc_b),
-        .enable(overlay_en),
+        .r_in(src_r), .g_in(src_g), .b_in(src_b),
+        .enable(overlay_show),
         .char_addr(char_addr), .char_data(char_data),
         .font_addr(font_addr), .font_data(font_data),
         .de_out(de_px), .r_out(px_r), .g_out(px_g), .b_out(px_b)
@@ -317,11 +607,6 @@ module blitscrt_top #(
         .gp_in (hps_gp_in)
     );
 
-    wire [13:0] reg_address;
-    wire        reg_read, reg_write;
-    wire [31:0] reg_writedata, reg_readdata;
-    wire        reg_waitrequest;
-
     // GP is MiSTer's proven interface: the gp primitive is already on this
     // silicon, no Platform Designer, no extra HPS blocks. The seam means
     // flipping to "LWH2F" later is a parameter plus the bridge primitive.
@@ -333,41 +618,60 @@ module blitscrt_top #(
         .gp_out(hps_gp_out), .gp_in(hps_gp_in),
         .avm_address(reg_address), .avm_read(reg_read),
         .avm_write(reg_write), .avm_writedata(reg_writedata),
-        .avm_readdata(reg_readdata), .avm_waitrequest(reg_waitrequest)
+        .avm_readdata(reg_readdata), .avm_waitrequest(reg_waitrequest),
+        .bus_stalled(bus_stalled)
     );
 
-    // Register-slave outputs, observed but not yet wired to the video path.
-    wire [11:0] r_hsy, r_hbp, r_hact, r_hfp, r_vsy, r_vbp, r_vact, r_vfp;
-    wire        r_interlace;
-    wire [31:0] r_pclk_khz, r_fb_base, r_fb_stride;
-    wire [2:0]  r_fb_format;
-    wire        r_fb_flip;
-    wire [4:0]  r_ctrl_unused;
-    wire [8:0]  r_pll_m, r_pll_n, r_pll_c;
-    wire        r_pll_apply, r_char_we;
-    wire [12:0] r_char_addr;
-    wire [7:0]  r_char_data;
-    wire        hps_alive;
-    wire [1:0]  host_state;
+    /* Everything this block drives is live. Timing is obeyed when CTRL's
+     * HPS_TIMING bit is set; until then the front-panel mode table owns the
+     * raster, so a picture exists before any software runs. */
+    /* Passed whole, not part-selected. SC_W/SC_H are declared [15:0] in the
+     * slave, so the value truncates to the parameter's own range on the way in.
+     * SCANOUT_W[15:0] looks equivalent and is not: `parameter integer` has no
+     * declared vector range, so the part-select is not a well-formed constant
+     * expression. Icarus evaluates it anyway; Quartus dropped the override and
+     * used the default, which is how a 320x480 build came up reporting 320x240. */
+    /* Capabilities are a build-time fact reported at runtime. DDR3 and on-chip
+     * need different write paths, and choosing wrong fails silently: rect writes
+     * on a DDR3 build land in a register nothing is listening to. */
+    localparam [31:0] CAPS_WORD = (SCANOUT_SRC == "DDR3") ? 32'h0000_0001
+                                                          : 32'h0000_0002;
 
-    blitscrt_regs u_regs (
+    blitscrt_regs #(
+        .SC_W(SCANOUT_W), .SC_H(SCANOUT_H), .CAPS(CAPS_WORD)
+    ) u_regs (
         .clk(FPGA_CLK1_50), .rst_n(rst50_n),
         .address(reg_address), .read(reg_read), .write(reg_write),
-        .writedata(reg_writedata), .readdata(reg_readdata),
-        .waitrequest(reg_waitrequest),
-        .clk_pix(clk_pix), .vid_rst_n(rst_n),
+        .writedata(reg_writedata), .readdata(regs_readdata),
+        .waitrequest(regs_waitrequest),
+        /* Power-on reset only, without the mode-change hold: the configuration
+         * this block latches must survive a clk_sel change. */
+        .clk_pix(clk_pix), .vid_cfg_rst_n(rst_sr[3] & BTN_RESET),
         .vblank(vblank), .field(field),
         .pll_locked(pll_locked), .hdmi_configured(hdmi_configured),
         .h_sy(r_hsy), .h_bp(r_hbp), .h_act(r_hact), .h_fp(r_hfp),
         .v_sy(r_vsy), .v_bp(r_vbp), .v_act(r_vact), .v_fp(r_vfp),
         .interlace(r_interlace), .pclk_khz(r_pclk_khz),
-        .scanout_en(), .testcard_en(), .overlay_en(),
-        .csync_en(), .hdmi_en(),
-        .fb_base(r_fb_base), .fb_stride(r_fb_stride),
-        .fb_format(r_fb_format), .fb_flip(r_fb_flip),
+        .scanout_en(r_scanout_en), .testcard_en(r_testcard_en),
+        .overlay_en(r_overlay_en), .csync_en(r_csync_en), .hdmi_en(r_hdmi_en),
+        .hps_timing(r_hps_timing), .hps_timing_bus(r_hps_timing_bus),
+        .sc_base(r_sc_base), .sc_stride(r_sc_stride),
+        .sc_format(r_sc_format), .sc_w(r_sc_w), .sc_h(r_sc_h),
+        .pll_wait(pll_avs_waitrequest),
+        .pll_accept((pll_avs_read || pll_avs_write) && !pll_avs_waitrequest),
+        .bus_stalled(bus_stalled),
+        .scanout_underrun_tog(sc_underrun), .scanout_beats(sc_beats),
+        /* Post-mux, so this reports what the raster is really running on
+         * rather than what was asked for. */
+        .live_hsy(v_hsy),   .live_hbp(v_hbp),
+        .live_hact(v_hact), .live_hfp(v_hfp),
+        .live_vsy(v_vsy),   .live_vbp(v_vbp),
+        .live_vact(v_vact), .live_vfp(v_vfp),
+        .live_ilace(v_ilace), .live_clksel(clk_sel_eff),
         .pll_m(r_pll_m), .pll_n(r_pll_n), .pll_c(r_pll_c),
         .pll_apply(r_pll_apply),
         .char_we(r_char_we), .char_addr(r_char_addr), .char_data(r_char_data),
+        .sc_we(r_sc_we), .sc_waddr(r_sc_waddr), .sc_wdata(r_sc_wdata),
         .hps_alive(hps_alive), .host_state(host_state)
     );
 
@@ -392,7 +696,10 @@ module blitscrt_top #(
         end
     end
 
-    wire hs_out = (CSYNC != 0) ? cs_sr[PIPE-1] : hs_sr[PIPE-1];
+    /* CTRL_CSYNC ORs with the compile-time parameter, so a build pinned to
+     * composite sync stays that way regardless of what software writes. */
+    wire use_csync = (CSYNC != 0) || r_csync_en;
+    wire hs_out = use_csync ? cs_sr[PIPE-1] : hs_sr[PIPE-1];
     wire vs_out = vs_sr[PIPE-1];
 
     // ---------------- pads ----------------
@@ -439,9 +746,10 @@ module blitscrt_top #(
 
     // 6 bits per channel widened to 8 by repeating the top bits, so full scale
     // stays full scale. Normal bus order: D[23:16] red, [15:8] green, [7:0] blue.
-    assign HDMI_TX_D  = de_px ? {px_r, px_r[5:4], px_g, px_g[5:4], px_b, px_b[5:4]}
-                              : 24'd0;
-    assign HDMI_TX_DE = de_px;
+    wire hdmi_active = de_px && r_hdmi_en;
+    assign HDMI_TX_D  = hdmi_active ? {px_r, px_r[5:4], px_g, px_g[5:4], px_b, px_b[5:4]}
+                                    : 24'd0;
+    assign HDMI_TX_DE = hdmi_active;
 
     // Separate sync regardless of the CSYNC parameter -- that setting is for
     // the analog pads. The DAC downstream makes its own VGA sync.

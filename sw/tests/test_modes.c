@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Check that real modelines survive the round trip, and that dangerous ones
  * are rejected. */
 #include <stdio.h>

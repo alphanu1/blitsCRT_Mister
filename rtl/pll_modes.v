@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 `timescale 1ns/1ps
 // -----------------------------------------------------------------------------
 // pll_modes.v -- pixel clock generation and selection.

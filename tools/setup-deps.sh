@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # setup-deps.sh -- install the build dependencies for blitsCRT_Mister.
 #
 # Two groups, installed separately so a hiccup in one does not abort the other:

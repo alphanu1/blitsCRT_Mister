@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * pll.c -- solve Cyclone V PLL counters for an arbitrary pixel clock.
  *

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef BLITSCRT_GADGET_H
 #define BLITSCRT_GADGET_H
 

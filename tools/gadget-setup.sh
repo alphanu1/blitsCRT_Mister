@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Create the USB gadget over configfs and mount FunctionFS for blitscrtd.
 #
 # Run once at boot, before blitscrtd. Requires the dwc2 controller in

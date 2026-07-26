@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Verify pin assignments.
 
 Two checks, both of which have bitten this project's ancestor:

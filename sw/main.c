@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * main.c -- blitscrtd, the GUD device daemon.
  *
@@ -69,6 +69,24 @@ int main(int argc, char **argv)
 		fprintf(stderr, "blitscrtd: fabric v%u.%u\n",
 			blitscrt_fabric_read(fab, BLITSCRT_REG_VERSION) >> 16,
 			blitscrt_fabric_read(fab, BLITSCRT_REG_VERSION) & 0xffff);
+
+	/*
+	 * Tell the fabric how big the picture is. On a DDR3 build this also maps
+	 * the reserved window the daemon writes rects into; on an on-chip build
+	 * the geometry already reads back correct and this is a no-op that
+	 * simply confirms it.
+	 */
+	if (fab) {
+		unsigned w = 0, h = 0;
+		uint32_t caps = blitscrt_fabric_caps(fab);
+		blitscrt_scanout_geom(fab, &w, &h);
+		if (w && h && blitscrt_scanout_configure(fab, w, h,
+							 BLITSCRT_FMT_RGB565) == 0)
+			fprintf(stderr, "blitscrt: scanout %ux%u RGB565 from %s\n",
+				w, h,
+				(caps & BLITSCRT_CAP_SCANOUT_DDR3) ? "HPS DDR3"
+								   : "on-chip M10K");
+	}
 
 	blitscrt_dev_init(&dev, fab);
 	blitscrt_dev_on_host(&dev, 0);   /* test card until a host turns up */

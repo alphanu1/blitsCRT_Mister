@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * pll_reconfig.c -- drive altera_pll_reconfig on Cyclone V.
  *

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Measures the 31kHz VGA mode, and checks that mode_table selects the right
 // default for what is plugged in and cycles correctly on the button.
 `timescale 1ns/1ps

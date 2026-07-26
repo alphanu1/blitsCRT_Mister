@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Walk the sequence a GUD host actually performs, then the dynamic-resolution
  * path that Switchres would drive. No USB, no hardware. */
 #include <stdio.h>
@@ -125,7 +126,7 @@ int main(void)
 		      req(GUD_REQ_SET_DISPLAY_ENABLE, 0, &on, 1) == 0);
 	}
 
-	printf("\nframebuffer flush\n");
+	printf("\nscanout flush\n");
 	{
 		struct gud_set_buffer_req b;
 		memset(&b, 0, sizeof b);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Captures every active pixel the RTL drives for one frame and writes
 // x,y,r,g,b so it can be rendered to PNG. Verifies the test card and the
 // overlay against the real datapath rather than a mock-up.
@@ -58,12 +59,40 @@ module tb_render;
                       .rclk(clk), .raddr(char_addr), .rdata(char_data));
     font_rom u_font  (.clk(clk), .addr(font_addr), .data(font_data));
 
+    /* -DRENDER_SCANOUT swaps the pixel source from the test card to the
+     * framebuffer, so the rendered PNG proves the scanout path end to end
+     * through the real overlay rather than a mock-up. Same geometry derivation
+     * blitscrt_top uses: a buffer narrower or shorter than the active area gets
+     * replicated up to fill it. */
+`ifdef RENDER_SCANOUT
+    localparam integer SCANOUT_W = 320, SCANOUT_H = 480;
+    localparam integer SCANOUT_AW = $clog2(SCANOUT_W * SCANOUT_H);
+
+    wire [19:0] sc_addr; wire [15:0] sc_q;
+    scanout_ram #(.DW(16), .AW(SCANOUT_AW), .WORDS(SCANOUT_W*SCANOUT_H), .INIT_FILE("scanout_init.hex"))
+      u_fb (.wclk(clk), .we(1'b0), .waddr({SCANOUT_AW{1'b0}}), .wdata(16'd0),
+            .rclk(clk), .raddr(sc_addr[SCANOUT_AW-1:0]), .rdata(sc_q));
+
+    wire [5:0] sc_r, sc_g, sc_b;
+    scanout #(.AW(20)) u_scanout (
+        .clk(clk), .rst_n(rst_n), .de(de), .xpos(xpos), .ypos(ypos),
+        .sc_w(SCANOUT_W[11:0]), .sc_h(SCANOUT_H[11:0]), .sc_pitch(SCANOUT_W[11:0]),
+        .sc_format(3'd0),                       // RGB565
+        .hdouble(H_ACT   > SCANOUT_W), .vdouble(V_FRAME > SCANOUT_H),
+        .mem_addr(sc_addr), .mem_q({16'd0, sc_q}),
+        .r(sc_r), .g(sc_g), .b(sc_b));
+
+    wire [5:0] src_r = sc_r, src_g = sc_g, src_b = sc_b;
+`else
+    wire [5:0] src_r = tc_r, src_g = tc_g, src_b = tc_b;
+`endif
+
     wire de_px; wire [5:0] px_r, px_g, px_b;
     overlay u_overlay (
         .clk(clk), .rst_n(rst_n), .double_h(ILACE[0]), .bank(BANK[1:0]),
         .hps_alive(1'b1),
         .de_in(de_card), .xpos(x_card), .ypos(y_card),
-        .r_in(tc_r), .g_in(tc_g), .b_in(tc_b), .enable(1'b1),
+        .r_in(src_r), .g_in(src_g), .b_in(src_b), .enable(1'b1),
         .char_addr(char_addr), .char_data(char_data),
         .font_addr(font_addr), .font_data(font_data),
         .de_out(de_px), .r_out(px_r), .g_out(px_g), .b_out(px_b)
@@ -81,7 +110,13 @@ module tb_render;
     reg fld_d;
 
     initial begin
-        fh = $fopen("render.txt", "w");
+        /* Distinct per variant. All four render targets used to write
+         * render.txt, so a parallel make had two testbenches interleaving lines
+         * into one file and render_png.py choking on the result. */
+`ifndef RENDER_TXT
+ `define RENDER_TXT "render.txt"
+`endif
+        fh = $fopen(`RENDER_TXT, "w");
         n = 0; fields_seen = 0; started = 0;
         #1000 rst_n = 1;
 

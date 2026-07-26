@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # gud-probe.sh -- work out what the running kernel can do for a USB gadget.
 #
 # GUD needs the MiSTer HPS to act as a USB *device* (peripheral), which needs a

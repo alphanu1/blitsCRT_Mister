@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 `timescale 1ns/1ps
 // char_ram.v -- overlay character buffer, 64 rows x 128 cols, 8 KB.
 //

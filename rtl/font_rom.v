@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // 8x8 font ROM, 128 glyphs. Registered read, inferred M10K.
 `timescale 1ns/1ps
 `default_nettype none

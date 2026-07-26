@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * gadget.c -- FunctionFS transport for the GUD device side.
  *
@@ -215,7 +215,7 @@ static void handle_bulk(struct blitscrt_gadget *g)
 	}
 
 	/*
-	 * The rect lands at buffer.x/y in the framebuffer. Once the SDRAM
+	 * The rect lands at buffer.x/y in scanout memory. Once the SDRAM
 	 * path exists this becomes a strided copy into scanout memory; for
 	 * now the transfer is drained and counted so the host stays happy.
 	 */

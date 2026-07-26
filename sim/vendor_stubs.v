@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Behavioural stand-ins for the Quartus primitives so the top level can be
 // elaborated and linted under Icarus. Not used in synthesis.
 `timescale 1ns/1ps

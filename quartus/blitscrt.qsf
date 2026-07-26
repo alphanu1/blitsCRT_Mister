@@ -47,9 +47,32 @@ set_parameter -name FORCE_MODE   -1
 # Composite sync on the HS pin, for SCART pin 20.
 set_parameter -name CSYNC 0
 
+# Where scanout memory lives, and the only switch for it.
+#
+#   "DDR3"    HPS memory over f2sdram. No geometry limit worth the name; this is
+#             what M3c is. Pulls in rtl/mister/sysmem.sv.
+#   "ONCHIP"  M10K, capped at 320x480. The M3a/M3b path, proven on hardware.
+#             Comment the two lines below out to fall back to it.
+#
+# Passed whole, never part-selected: `parameter integer` has no declared vector
+# range, so SCANOUT_SRC[..] is not a constant expression, and Quartus silently
+# drops an override it cannot evaluate rather than erroring.
+set_parameter -name SCANOUT_SRC  "DDR3"
+set_parameter -name F2SDRAM_DW   64
+
 set_global_assignment -name VERILOG_FILE ../rtl/blitscrt_top.v
 set_global_assignment -name VERILOG_FILE ../rtl/video_timing.v
 set_global_assignment -name VERILOG_FILE ../rtl/testcard.v
+set_global_assignment -name VERILOG_FILE ../rtl/scanout.v
+set_global_assignment -name VERILOG_FILE ../rtl/scanout_ram.v
+set_global_assignment -name VERILOG_FILE ../rtl/scanout_fetch.v
+set_global_assignment -name VERILOG_FILE ../rtl/blitscrt_f2sdram.v
+
+# Lifted from MiSTer, GPL-2.0, unmodified -- see rtl/mister/README.md.
+# sysmem_lite is a flattened Platform Designer system, so there is nothing to
+# generate: these two files are the whole f2sdram path.
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/mister/sysmem.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/mister/f2sdram_safe_terminator.sv
 set_global_assignment -name VERILOG_FILE ../rtl/overlay.v
 set_global_assignment -name VERILOG_FILE ../rtl/char_ram.v
 set_global_assignment -name VERILOG_FILE ../rtl/font_rom.v

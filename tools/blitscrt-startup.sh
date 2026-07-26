@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # blitscrt-startup.sh -- run blitscrtd on MiSTer's own Linux.
 #
 # Install: copy blitscrtd and this script into the same folder on the card

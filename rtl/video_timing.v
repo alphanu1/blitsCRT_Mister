@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // -----------------------------------------------------------------------------
 // video_timing.v -- blitsCRT_Mister timing generator (15kHz, progressive or interlaced)
 //

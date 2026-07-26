@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Decodes the I2C bus the ADV7513 initialiser drives and checks every
 // transaction against the register table.
 `timescale 1ns/1ps

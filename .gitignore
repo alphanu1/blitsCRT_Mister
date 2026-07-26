@@ -1,11 +1,10 @@
 # ---------------------------------------------------------------------------
-# Generated assets. Reproduced by `make assets` from tools/gen_*.py, and
-# rtl/banner.hex is rewritten in place by `make render-i`, which would
-# otherwise show up as a spurious diff every time.
+# Generated assets. Reproduced by `make assets` from tools/gen_*.py.
 # ---------------------------------------------------------------------------
 rtl/font8x8.hex
 rtl/banner.hex
 rtl/banner_i.hex
+rtl/scanout_init.hex
 
 # ---------------------------------------------------------------------------
 # Simulation
@@ -15,7 +14,7 @@ sim/*.vvp
 sim/*.vcd
 sim/*.lxt
 sim/*.fst
-rtl/render.txt
+rtl/render_*.txt
 
 # ---------------------------------------------------------------------------
 # Quartus

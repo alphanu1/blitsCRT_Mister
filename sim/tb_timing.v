@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Measures line rate, field/frame rate, active pixel counts and total line
 // count straight out of the RTL, for both target modes.
 `timescale 1ns/1ps

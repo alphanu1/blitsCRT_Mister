@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Render README.md to a single self-contained HTML file.
 
 Every image, GIF and video is inlined as a data URI, so the result opens

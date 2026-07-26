@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Build the character-buffer init image for the blitsCRT_Mister overlay.
 
 The grid is 128 cols x 64 rows of 8x8 cells, addressed as {row[5:0], col[6:0]}

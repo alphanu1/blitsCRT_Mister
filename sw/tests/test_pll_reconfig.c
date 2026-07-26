@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Counter encoding has to round-trip and the halves have to sum to the divide,
  * or the PLL comes up at the wrong frequency with no error anywhere. */
 #include <stdio.h>

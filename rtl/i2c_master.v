@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // -----------------------------------------------------------------------------
 // i2c_master.v -- minimal write-only I2C master
 //

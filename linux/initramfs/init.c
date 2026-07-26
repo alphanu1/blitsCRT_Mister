@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * init.c -- PID 1 for the blitsCRT_Mister boot proof-of-concept.
  *

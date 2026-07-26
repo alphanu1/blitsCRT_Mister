@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // The bridge presents an identical Avalon master whichever way the HPS reaches
 // it, and moves full 32-bit registers over two 16-bit gp halves. The gp slave
 // here is REGISTERED (read latency 1), matching rtl/blitscrt_regs.v -- the old
@@ -33,7 +34,7 @@ module tb_bridge;
         .clk(clk), .rst_n(rst_n),
         .lw_address(14'd0), .lw_read(1'b0), .lw_write(1'b0),
         .lw_writedata(32'd0), .lw_readdata(), .lw_waitrequest(),
-        .gp_out(gp_out), .gp_in(gp_in),
+        .gp_out(gp_out), .gp_in(gp_in), .bus_stalled(),
         .avm_address(g_addr), .avm_read(g_rd), .avm_write(g_wr),
         .avm_writedata(g_wdata), .avm_readdata(g_rdata), .avm_waitrequest(g_wait)
     );

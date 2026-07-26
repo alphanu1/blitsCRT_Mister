@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // -----------------------------------------------------------------------------
 // adv7513_init.v -- configure the HDMI transmitter for MiSTer Direct Video
 //
@@ -5,9 +6,20 @@
 // and the MiSTer binary writes the registers from Linux. M1 has no software, so
 // the same table lives here and a small sequencer walks it.
 //
-// Register values follow MiSTer's own init in Main_MiSTer/video.cpp, which is
-// field-proven on this transmitter, minus the audio block. Two differ on
-// purpose:
+// ---------------------------------------------------------------------------
+// The register table below is derived from MiSTer's own initialisation
+// sequence in Main_MiSTer/video.cpp:
+//
+//     https://github.com/MiSTer-devel/Main_MiSTer
+//     GPL-2.0-or-later
+//
+// Somebody else debugged that ordering on this transmitter and it is taken
+// here as-is, minus the audio block. Reimplemented as a fabric table walked by
+// an I2C sequencer rather than register writes from Linux, but the values and
+// their order are theirs.
+// ---------------------------------------------------------------------------
+//
+// Two values differ on purpose:
 //
 //   0x3B = 0x00  automatic pixel repetition. This is the whole trick behind
 //                Direct Video -- the ADV7513 detects a pixel clock below its

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Exercises the register slave the way the daemon drives it: identify, stage a
 // mode, apply it, and confirm the video side only sees the new timing at a
 // vblank and only as a complete set.
@@ -21,9 +22,8 @@ module tb_regs;
 
     wire [11:0] h_sy,h_bp,h_act,h_fp,v_sy,v_bp,v_act,v_fp;
     wire interlace, scanout_en, testcard_en, overlay_en, csync_en, hdmi_en;
-    wire [31:0] pclk_khz, fb_base, fb_stride;
-    wire [2:0] fb_format;
-    wire fb_flip;
+    wire [31:0] pclk_khz, sc_base, sc_stride;
+    wire [2:0] sc_format;
     wire [8:0] pll_m, pll_n, pll_c;
     wire pll_apply, char_we;
     wire [12:0] char_addr;
@@ -35,16 +35,22 @@ module tb_regs;
         .clk(clk), .rst_n(rst_n), .address(address), .read(read),
         .write(write), .writedata(writedata), .readdata(readdata),
         .waitrequest(waitrequest),
-        .clk_pix(clk_pix), .vid_rst_n(vid_rst_n), .vblank(vblank),
+        .clk_pix(clk_pix), .vid_cfg_rst_n(vid_rst_n), .vblank(vblank),
         .field(field), .pll_locked(pll_locked),
         .hdmi_configured(hdmi_configured),
+        .pll_wait(1'b0), .pll_accept(1'b0), .bus_stalled(1'b0),
+        .scanout_underrun_tog(1'b0), .scanout_beats(16'd0),
+        .live_hsy(12'd60), .live_hbp(12'd76), .live_hact(12'd640), .live_hfp(12'd24),
+        .live_vsy(12'd3),  .live_vbp(12'd16), .live_vact(12'd240), .live_vfp(12'd3),
+        .live_ilace(1'b1), .live_clksel(2'd2),
         .h_sy(h_sy),.h_bp(h_bp),.h_act(h_act),.h_fp(h_fp),
         .v_sy(v_sy),.v_bp(v_bp),.v_act(v_act),.v_fp(v_fp),
         .interlace(interlace), .pclk_khz(pclk_khz),
         .scanout_en(scanout_en), .testcard_en(testcard_en),
         .overlay_en(overlay_en), .csync_en(csync_en), .hdmi_en(hdmi_en),
-        .fb_base(fb_base), .fb_stride(fb_stride), .fb_format(fb_format),
-        .fb_flip(fb_flip),
+        .hps_timing(), .hps_timing_bus(),
+        .sc_base(sc_base), .sc_stride(sc_stride), .sc_format(sc_format),
+        .sc_w(), .sc_h(),
         .pll_m(pll_m), .pll_n(pll_n), .pll_c(pll_c), .pll_apply(pll_apply),
         .char_we(char_we), .char_addr(char_addr), .char_data(char_data),
         .hps_alive(hps_alive), .host_state(host_state)
@@ -86,7 +92,25 @@ module tb_regs;
 
         $display("identify");
         rd(14'h000); chk("ID reads BCRT", readdata == 32'h42435254);
-        rd(14'h004); chk("VERSION reads 2.1", readdata == 32'h0002_0001);
+        rd(14'h004); chk("VERSION reads 3.6", readdata == 32'h0003_0006);
+
+        /* The PLL reconfig aperture at 0x1000 used to decode as register 0x00,
+         * so a modeset wrote the M counter into H_SY, the C counter into H_BP
+         * and the START word into CTRL -- then read STATUS from VERSION and
+         * took it for success. Nothing in that window may reach these. */
+        wr(14'h008, 32'h0000_0016);              /* known CTRL */
+        wr(14'h010, 32'd60);                     /* known H_SY */
+        wr(14'h014, 32'd76);                     /* known H_BP */
+        wr(14'h1008, 32'h0000_0001);             /* PLL START */
+        wr(14'h1010, 32'd999);                   /* PLL M */
+        wr(14'h1014, 32'd888);                   /* PLL C */
+        rd(14'h008); chk("PLL window leaves CTRL alone", readdata == 32'h16);
+        rd(14'h010); chk("PLL window leaves H_SY alone", readdata == 32'd60);
+        rd(14'h014); chk("PLL window leaves H_BP alone", readdata == 32'd76);
+
+        wr(14'h008, 32'h0000_0036);              /* CTRL_HPS_TIMING | defaults */
+        rd(14'h008); chk("CTRL carries the ownership bit", readdata == 32'h36);
+        wr(14'h008, 32'h0000_0016);
         rd(14'h00C); chk("STATUS shows PLL locked and HDMI configured",
                          readdata[0] == 1'b1 && readdata[1] == 1'b1);
 
@@ -168,8 +192,8 @@ module tb_regs;
         repeat (4) @(posedge clk_pix); vblank = 0;
         repeat (4) @(posedge clk_pix);
         chk("base, stride and format latched",
-            fb_base == 32'h0200_0000 && fb_stride == 32'd1920 &&
-            fb_format == 3'd1);
+            sc_base == 32'h0200_0000 && sc_stride == 32'd1920 &&
+            sc_format == 3'd1);
 
         $display("");
         $display("heartbeat watchdog");

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * fabric.c -- register access over the HPS lightweight bridge.
  *
@@ -37,7 +37,43 @@ struct blitscrt_fabric {
 	volatile uint32_t *gp_in;           /* GP: fabric -> ARM response */
 	size_t   span;
 	int      strobe;                    /* GP: toggles each command */
+	unsigned sc_w, sc_h;                /* scanout geometry, read at open */
+	uint32_t caps;                      /* BLITSCRT_CAP_*, read at open */
+
+	/* DDR3 scanout only: the reserved window, mapped uncached. */
+	volatile uint8_t *sc_win;
+	size_t   sc_win_span;
+	uint32_t sc_phys;
+	unsigned sc_bpp, sc_stride;
 };
+
+static int map_scanout_window(struct blitscrt_fabric *f)
+{
+	if (f->sc_win)
+		return 0;
+	f->sc_phys = BLITSCRT_SCANOUT_DDR_BASE;
+	f->sc_win_span = BLITSCRT_SCANOUT_DDR_SIZE;
+	f->sc_win = mmap(NULL, f->sc_win_span, PROT_READ | PROT_WRITE,
+			 MAP_SHARED, f->fd, (off_t)f->sc_phys);
+	if (f->sc_win == MAP_FAILED) {
+		f->sc_win = NULL;
+		fprintf(stderr, "blitscrt: cannot map scanout window at 0x%08x "
+				"(%s) -- is mem= reserving it?\n",
+			BLITSCRT_SCANOUT_DDR_BASE, strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+static unsigned fmt_bpp(uint32_t fmt)
+{
+	switch (fmt) {
+	case BLITSCRT_FMT_RGB332:   return 1;
+	case BLITSCRT_FMT_RGB888:   return 3;
+	case BLITSCRT_FMT_XRGB8888: return 4;
+	default:                    return 2;   /* RGB565 */
+	}
+}
 
 /* GP command word layout, mirroring blitscrt_bridge.v */
 #define GP_STROBE   (1u << 31)
@@ -133,6 +169,26 @@ struct blitscrt_fabric *blitscrt_fabric_open(void)
 			(f->base + (GP_H2F_BASE - a) + GP_GPO_OFF);
 		f->gp_in  = (volatile uint32_t *)
 			(f->base + (GP_H2F_BASE - a) + GP_GPI_OFF);
+
+		/*
+		 * Resynchronise the strobe to whatever the fabric last saw.
+		 *
+		 * The strobe is an edge, and the fabric holds its parity in a
+		 * register that outlives this process. f->strobe starts at zero
+		 * in every fresh one, so if the last program to touch gp
+		 * finished on an odd command count, our first command carries
+		 * the parity the fabric already has: no edge, no transaction.
+		 * gp_in[31] is still echoing that parity from before, so the
+		 * spin in gp_command() matches instantly and hands back the
+		 * readdata left in the bridge by the *previous process*.
+		 *
+		 * That is why it looked intermittent -- whether it bites depends
+		 * on whether the last invocation issued an odd or even number of
+		 * commands. No testbench could have found it: the RTL is correct
+		 * and the state that was wrong is ours.
+		 */
+		if (getenv("BLITSCRT_GP_UNSAFE"))
+			f->strobe = (int)((*f->gp_in >> 31) & 1);
 	}
 
 	{
@@ -162,12 +218,66 @@ struct blitscrt_fabric *blitscrt_fabric_open(void)
 			return NULL;
 		}
 	}
+
+	/* Scanout geometry is whatever memory is fitted -- a compile-time
+	 * parameter on-chip, something else once it moves off. Read it rather
+	 * than assume it. A fabric older than 3.0 has no such register and
+	 * answers zero, which leaves the rect calls refusing rather than
+	 * scribbling at a guessed pitch. */
+	{
+		uint32_t g = blitscrt_fabric_read(f, BLITSCRT_REG_SCANOUT_GEOM);
+		f->sc_w = g & 0xffffu;
+		f->sc_h = (g >> 16) & 0xffffu;
+		/* A fabric older than 3.2 has no CAPS register, and an undecoded
+		 * offset reads back zero -- the same value a dropped parameter
+		 * would give. Say which it is rather than leaving the caller to
+		 * guess from a zero. */
+		uint32_t ver = blitscrt_fabric_read(f, BLITSCRT_REG_VERSION);
+		if (ver < 0x00030002u)
+			fprintf(stderr, "blitscrt: fabric %u.%u predates CAPS, "
+					"SCANOUT_DIAG and writable geometry "
+					"(needs 3.2) -- rect writes will use the "
+					"gp port\n", ver >> 16, ver & 0xffffu);
+
+		/* Read twice and require agreement. This is cached for the life of
+		 * the handle and every write path keys off it, so a single bad
+		 * read here silently routes rects at the wrong memory for the
+		 * whole session with no further symptom. */
+		f->caps = blitscrt_fabric_read(f, BLITSCRT_REG_CAPS);
+		if (f->caps != blitscrt_fabric_read(f, BLITSCRT_REG_CAPS)) {
+			fprintf(stderr, "blitscrt: CAPS read unstable; re-reading\n");
+			f->caps = blitscrt_fabric_read(f, BLITSCRT_REG_CAPS);
+		}
+
+		/* Take the rest of the scanout state from the fabric too, rather
+		 * than assuming RGB565 and a packed stride. Whatever configured
+		 * it last may have been a different process entirely -- every
+		 * blitscrt-peek invocation is one -- and the fabric is the only
+		 * thing that remembers. */
+		f->sc_bpp    = fmt_bpp(blitscrt_fabric_read(f,
+					BLITSCRT_REG_SCANOUT_FORMAT) & 0x7u);
+		f->sc_stride = blitscrt_fabric_read(f, BLITSCRT_REG_SCANOUT_STRIDE);
+		if (!f->sc_stride)
+			f->sc_stride = f->sc_w * f->sc_bpp;
+
+		/* Map the window here, not in configure(). It is a property of
+		 * the fabric reporting DDR3, not of having just set geometry --
+		 * and a short-lived tool that only wants to blit never calls
+		 * configure at all. */
+		if (f->caps & BLITSCRT_CAP_SCANOUT_DDR3)
+			(void)map_scanout_window(f);
+		if (!f->sc_w || !f->sc_h)
+			fprintf(stderr, "blitscrt: fabric reports no scanout "
+					"geometry (needs fabric 3.0); rect "
+					"writes disabled\n");
+	}
 	return f;
 }
 
 void blitscrt_fabric_close(struct blitscrt_fabric *f)
 {
 	if (!f) return;
+	if (f->sc_win) munmap((void *)f->sc_win, f->sc_win_span);
 	if (f->base) munmap((void *)((uintptr_t)f->base & ~(uintptr_t)(sysconf(_SC_PAGESIZE)-1)), f->span);
 	if (f->fd >= 0) close(f->fd);
 	free(f);
@@ -233,6 +343,224 @@ void blitscrt_fabric_write(struct blitscrt_fabric *f, uint32_t off, uint32_t v)
 		gp_command(f, 1, off | 0x1, v >> 16);
 }
 
+/*
+ * One command, always. blitscrt_fabric_write() happens to skip the high half
+ * when the value fits in 16 bits, but that is an optimisation of the value, not
+ * a property of the call, and the per-pixel cost of the rect path is worth
+ * being explicit about: one gp command per pixel is the floor this transport
+ * allows, and this is the call that hits it.
+ */
+void blitscrt_fabric_write16(struct blitscrt_fabric *f, uint32_t off, uint16_t v)
+{
+	if (!f) return;
+	if (f->xport == XPORT_LWH2F) {
+		*(volatile uint32_t *)(f->base + off) = v;
+		return;
+	}
+	gp_command(f, 1, off, v);
+}
+
+uint32_t blitscrt_fabric_caps(struct blitscrt_fabric *f)
+{
+	return f ? f->caps : 0;
+}
+
+/*
+ * Tell the fabric how big the picture is and where it lives, and on a DDR3
+ * build map the window the daemon writes into.
+ *
+ * The window is uncached, which it has to be: f2sdram reaches the SDRAM
+ * controller directly and is not coherent with the A9's caches, so anything
+ * left sitting in L2 would simply not be there when the fetcher looked. That
+ * costs read bandwidth and almost nothing on writes -- measured at 110 MB/s by
+ * memcpy against 69 MB/s for hand-rolled stores, which is why every path below
+ * copies whole rows rather than looping over pixels.
+ *
+ * Geometry, stride, base and format are staged and latch together on a vblank,
+ * so this cannot leave the fetcher reading a new width at an old stride.
+ */
+int blitscrt_scanout_configure(struct blitscrt_fabric *f,
+			       unsigned w, unsigned h, uint32_t format)
+{
+	unsigned bpp;
+
+	if (!f || !w || !h) return -1;
+	bpp = fmt_bpp(format);
+
+	f->sc_w = w;
+	f->sc_h = h;
+	f->sc_bpp = bpp;
+	f->sc_stride = w * bpp;
+
+	if (f->caps & BLITSCRT_CAP_SCANOUT_DDR3) {
+		size_t need = (size_t)f->sc_stride * h;
+
+		if (need > BLITSCRT_SCANOUT_DDR_SIZE) {
+			fprintf(stderr, "blitscrt: %ux%u at %u bpp needs %zu bytes, "
+					"reserved window is %u\n",
+				w, h, bpp, need, BLITSCRT_SCANOUT_DDR_SIZE);
+			return -1;
+		}
+		if (map_scanout_window(f) < 0)
+			return -1;
+		blitscrt_fabric_write(f, BLITSCRT_REG_SCANOUT_BASE, f->sc_phys);
+	}
+
+	blitscrt_fabric_write(f, BLITSCRT_REG_SCANOUT_GEOM,
+			      ((uint32_t)h << 16) | (w & 0xffffu));
+	blitscrt_fabric_write(f, BLITSCRT_REG_SCANOUT_STRIDE, f->sc_stride);
+	blitscrt_fabric_write(f, BLITSCRT_REG_SCANOUT_FORMAT, format);
+	blitscrt_fabric_write(f, BLITSCRT_REG_APPLY, 1);
+
+	/* Read it back. Writing a register and reporting success from the value
+	 * that was written proves nothing -- a dropped write, a stale bitstream
+	 * or a read-only register all look identical from the writing side. */
+	{
+		uint32_t g = blitscrt_fabric_read(f, BLITSCRT_REG_SCANOUT_GEOM);
+		if ((g & 0xffffu) != w || ((g >> 16) & 0xffffu) != h) {
+			fprintf(stderr, "blitscrt: geometry did not take -- asked for "
+					"%ux%u, reads back %ux%u\n",
+				w, h, g & 0xffffu, (g >> 16) & 0xffffu);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+int blitscrt_fabric_live(struct blitscrt_fabric *f, struct blitscrt_live *o)
+{
+	uint32_t h1, h2, v1, v2, mi;
+
+	if (!f || !o) return -1;
+	h1 = blitscrt_fabric_read(f, BLITSCRT_REG_LIVE_H1);
+	h2 = blitscrt_fabric_read(f, BLITSCRT_REG_LIVE_H2);
+	v1 = blitscrt_fabric_read(f, BLITSCRT_REG_LIVE_V1);
+	v2 = blitscrt_fabric_read(f, BLITSCRT_REG_LIVE_V2);
+	mi = blitscrt_fabric_read(f, BLITSCRT_REG_LIVE_MISC);
+
+	o->h_sy = h1 & 0xffffu;  o->h_bp = h1 >> 16;
+	o->h_act = h2 & 0xffffu; o->h_fp = h2 >> 16;
+	o->v_sy = v1 & 0xffffu;  o->v_bp = v1 >> 16;
+	o->v_act = v2 & 0xffffu; o->v_fp = v2 >> 16;
+	o->h_total = o->h_sy + o->h_bp + o->h_act + o->h_fp;
+	o->v_total = o->v_sy + o->v_bp + o->v_act + o->v_fp;
+	o->interlace  = (mi & BLITSCRT_LIVE_INTERLACE)  ? 1 : 0;
+	o->hps_timing = (mi & BLITSCRT_LIVE_HPS_TIMING) ? 1 : 0;
+	o->clk_sel = BLITSCRT_LIVE_CLKSEL(mi);
+
+	/* Slots 0 and 1 are the 50 MHz reference pin, not a PLL output. Reading
+	 * one of those back means the raster is not on a pixel clock at all. */
+	o->pclk_hz = (o->clk_sel < 2) ? 50.0e6 :
+		     (double)blitscrt_fabric_read(f, BLITSCRT_REG_PCLK_KHZ) * 1000.0;
+	o->line_hz  = o->h_total ? o->pclk_hz / o->h_total : 0.0;
+	o->field_hz = o->v_total ? o->line_hz / o->v_total : 0.0;
+	return 0;
+}
+
+int blitscrt_scanout_geom(struct blitscrt_fabric *f, unsigned *w, unsigned *h)
+{
+	if (!f || !f->sc_w || !f->sc_h)
+		return -1;
+	if (w) *w = f->sc_w;
+	if (h) *h = f->sc_h;
+	return 0;
+}
+
+void blitscrt_scanout_seek(struct blitscrt_fabric *f, uint32_t index)
+{
+	if (!f) return;
+	blitscrt_fabric_write(f, BLITSCRT_REG_SCANOUT_WADDR, index);
+}
+
+/*
+ * A damage rectangle. Runs of consecutive pixels is all one is, so each row is
+ * a seek followed by the run -- no address traffic between pixels, which is
+ * what the auto-incrementing pointer is for.
+ *
+ * src is packed w pixels per row, which is how GUD delivers a rect. Returns the
+ * number of pixels written, after clipping to the memory that is actually
+ * fitted; a rect entirely outside it writes nothing rather than wrapping.
+ */
+long blitscrt_scanout_blit(struct blitscrt_fabric *f,
+			   unsigned x, unsigned y, unsigned w, unsigned h,
+			   const uint16_t *src)
+{
+	unsigned row, col;
+	long n = 0;
+
+	if (!f || !src) return -1;
+	if (!f->sc_w || !f->sc_h) {
+		fprintf(stderr, "blitscrt: fabric reports no scanout geometry\n");
+		return -1;
+	}
+	if (x >= f->sc_w || y >= f->sc_h) return 0;
+	if (w > f->sc_w - x) w = f->sc_w - x;
+	if (h > f->sc_h - y) h = f->sc_h - y;
+
+	/* DDR3: a rect is h row-copies into the window. Row-granular memcpy costs
+	 * nothing against one large copy -- measured 111 MB/s in 1280-byte rows
+	 * against 110 for 8 MB in one go -- so a narrow rect is not penalised. */
+	if (f->caps & BLITSCRT_CAP_SCANOUT_DDR3) {
+		if (!f->sc_win && map_scanout_window(f) < 0) return -1;
+		for (row = 0; row < h; row++)
+			memcpy((void *)(f->sc_win + (size_t)(y + row) * f->sc_stride
+					+ (size_t)x * f->sc_bpp),
+			       (const uint8_t *)src + (size_t)row * w * f->sc_bpp,
+			       (size_t)w * f->sc_bpp);
+		return (long)w * h;
+	}
+
+	for (row = 0; row < h; row++) {
+		blitscrt_scanout_seek(f, (uint32_t)((y + row) * f->sc_w + x));
+		for (col = 0; col < w; col++, n++)
+			blitscrt_fabric_write16(f, BLITSCRT_REG_SCANOUT_WDATA,
+						src[row * w + col]);
+	}
+	return n;
+}
+
+long blitscrt_scanout_fill(struct blitscrt_fabric *f,
+			   unsigned x, unsigned y, unsigned w, unsigned h,
+			   uint16_t colour)
+{
+	unsigned row, col;
+	long n = 0;
+
+	if (!f) return -1;
+	if (!f->sc_w || !f->sc_h) {
+		fprintf(stderr, "blitscrt: fabric reports no scanout geometry\n");
+		return -1;
+	}
+	if (x >= f->sc_w || y >= f->sc_h) return 0;
+	if (w > f->sc_w - x) w = f->sc_w - x;
+	if (h > f->sc_h - y) h = f->sc_h - y;
+
+	if (f->caps & BLITSCRT_CAP_SCANOUT_DDR3) {
+		/* Build one row, then copy it down. memset only works when both
+		 * bytes of the pixel match, and a per-pixel store loop gives up
+		 * a third of the bandwidth on an uncached mapping. */
+		uint16_t *rowbuf;
+		if (!f->sc_win && map_scanout_window(f) < 0) return -1;
+		rowbuf = malloc((size_t)w * f->sc_bpp);
+		if (!rowbuf) return -1;
+		for (col = 0; col < w; col++) rowbuf[col] = colour;
+		for (row = 0; row < h; row++)
+			memcpy((void *)(f->sc_win + (size_t)(y + row) * f->sc_stride
+					+ (size_t)x * f->sc_bpp),
+			       rowbuf, (size_t)w * f->sc_bpp);
+		free(rowbuf);
+		return (long)w * h;
+	}
+
+	for (row = 0; row < h; row++) {
+		blitscrt_scanout_seek(f, (uint32_t)((y + row) * f->sc_w + x));
+		for (col = 0; col < w; col++, n++)
+			blitscrt_fabric_write16(f, BLITSCRT_REG_SCANOUT_WDATA,
+						colour);
+	}
+	return n;
+}
+
 int blitscrt_fabric_pll_reconfig(struct blitscrt_fabric *f,
 				 const struct pll_config *p)
 {
@@ -252,11 +580,35 @@ int blitscrt_fabric_pll_reconfig(struct blitscrt_fabric *f,
 	/* Busy clears when the counters are shifted in, lock returns some
 	 * microseconds later. The pixel clock is unusable in between, which is
 	 * why the caller holds the video pipeline in reset. */
-	for (spin = 0; spin < 1000000; spin++) {
-		uint32_t st = blitscrt_fabric_read(f, BLITSCRT_PLLRECFG_OFFSET +
+	{
+		uint32_t st = 0;
+		/* A million 32-bit reads is two million gp commands, roughly
+		 * twenty minutes at 620 ns each. Nobody waits that long, so the
+		 * old limit meant "hang", not "time out". Ten thousand is about
+		 * twelve seconds, which is still far longer than a relock. */
+		for (spin = 0; spin < 10000; spin++) {
+			st = blitscrt_fabric_read(f, BLITSCRT_PLLRECFG_OFFSET +
 						      (PLL_RECONFIG_STATUS * 4));
-		if (!(st & PLL_STATUS_BUSY) && (st & PLL_STATUS_LOCKED))
-			return 0;
+			if (!(st & PLL_STATUS_BUSY) && (st & PLL_STATUS_LOCKED))
+				return 0;
+		}
+		/* Say what was seen. Returning a bare -1 here sent us round the
+		 * houses twice: the mode visibly changed on screen while this
+		 * reported failure, and nothing distinguished "the block never
+		 * finished" from "the block is not answering at all". */
+		fprintf(stderr,
+			"blitscrt: PLL reconfig did not complete after %d polls\n"
+			"  STATUS  (0x%04x) = 0x%08x  busy=%d locked=%d\n"
+			"  MODE    (0x%04x) = 0x%08x\n"
+			"  a status of 0x00000000 means the reconfig block is not\n"
+			"  answering -- check the 0x1000 aperture decode, not the PLL\n",
+			spin,
+			BLITSCRT_PLLRECFG_OFFSET + PLL_RECONFIG_STATUS * 4, st,
+			(st & PLL_STATUS_BUSY) ? 1 : 0,
+			(st & PLL_STATUS_LOCKED) ? 1 : 0,
+			BLITSCRT_PLLRECFG_OFFSET + PLL_RECONFIG_MODE * 4,
+			blitscrt_fabric_read(f, BLITSCRT_PLLRECFG_OFFSET +
+						PLL_RECONFIG_MODE * 4));
 	}
 	return -1;
 }
@@ -295,20 +647,63 @@ int blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 	blitscrt_fabric_write(f, BLITSCRT_REG_PCLK_KHZ,
 			      (uint32_t)(t->pll.actual_hz / 1000));
 
-	blitscrt_fabric_write(f, BLITSCRT_REG_FB_FORMAT, fmt);
-	blitscrt_fabric_write(f, BLITSCRT_REG_FB_STRIDE,
-			      t->h_act * (fmt == BLITSCRT_FMT_RGB332 ? 1 :
-					  fmt == BLITSCRT_FMT_RGB888 ? 3 : 2));
+	/*
+	 * The active area is part of the mode, so geometry moves with it. Leaving
+	 * it behind gives a raster of one height reading a picture of another:
+	 * applying 576i while scanout still believed 480 lines put the bottom
+	 * 96 lines outside the bounds clamp.
+	 *
+	 * Height is the FRAME height. scanout reads a progressive surface and
+	 * interleaves on the way out, so an interlaced mode needs both fields'
+	 * worth of lines in memory -- t->v_act is per field.
+	 */
+	{
+		unsigned fh = t->v_act *
+			      ((t->mode_flags & BLITSCRT_MODE_INTERLACE) ? 2u : 1u);
+		if (blitscrt_scanout_configure(f, t->h_act, fh, fmt) < 0)
+			return -1;
+	}
 
-	/* latch everything together on the next vblank */
-	blitscrt_fabric_write(f, BLITSCRT_REG_APPLY, 1);
+	/* Claim the raster, then check what it is actually running.
+	 *
+	 * The APPLYING bit is not trustworthy across a reconfiguration. The PLL
+	 * losing lock resets apply_ack in the video domain while apply_req keeps
+	 * its value in the bus domain, so the toggle handshake can come back
+	 * disagreeing -- which latches the staged timing spontaneously and leaves
+	 * the status bit describing a transfer that no longer maps to anything.
+	 * A mode that visibly applied was being reported as a failure.
+	 *
+	 * So the handshake is a hint and the live registers are the answer. Same
+	 * rule as configure(): read back what happened rather than trusting that
+	 * a write meant what it said.
+	 */
+	{
+		uint32_t c = blitscrt_fabric_read(f, BLITSCRT_REG_CTRL);
+		blitscrt_fabric_write(f, BLITSCRT_REG_CTRL,
+				      c | BLITSCRT_CTRL_HPS_TIMING);
+	}
 
-	for (spin = 0; spin < 100000; spin++) {
-		if (!(blitscrt_fabric_read(f, BLITSCRT_REG_STATUS) &
-		      BLITSCRT_STAT_APPLYING))
+	for (spin = 0; spin < 200; spin++) {
+		struct blitscrt_live lv;
+		if (blitscrt_fabric_live(f, &lv) < 0)
+			return -1;
+		if (lv.hps_timing && lv.h_act == t->h_act &&
+		    lv.h_total == t->h_total && lv.v_total == t->v_total_field &&
+		    lv.interlace == ((t->mode_flags & BLITSCRT_MODE_INTERLACE) ? 1 : 0))
 			return 0;
 	}
-	return -1;      /* no vblank came; scanout is stopped or the PLL is lost */
+	{
+		struct blitscrt_live lv;
+		if (blitscrt_fabric_live(f, &lv) == 0)
+			fprintf(stderr, "blitscrt: mode did not take -- asked H %u "
+					"total %u, V total %u%s; raster reports H "
+					"%u total %u, V total %u%s, clk_sel %u\n",
+				t->h_act, t->h_total, t->v_total_field,
+				(t->mode_flags & BLITSCRT_MODE_INTERLACE) ? " i" : "",
+				lv.h_act, lv.h_total, lv.v_total,
+				lv.interlace ? " i" : "", lv.clk_sel);
+	}
+	return -1;
 }
 
 void blitscrt_fabric_enable(struct blitscrt_fabric *f, int on)
@@ -316,6 +711,10 @@ void blitscrt_fabric_enable(struct blitscrt_fabric *f, int on)
 	uint32_t c;
 	if (!f) return;
 	c = blitscrt_fabric_read(f, BLITSCRT_REG_CTRL);
+	/* Hand the raster back to the front-panel mode table when the host goes.
+	 * A mode the host asked for is only meaningful while it is there, and the
+	 * table is a known-good mode that needs no software. */
+	if (!on) c &= ~BLITSCRT_CTRL_HPS_TIMING;
 	if (on) c |=  BLITSCRT_CTRL_ENABLE;
 	else    c &= ~BLITSCRT_CTRL_ENABLE;
 	/* the test card is what shows when scanout is off */

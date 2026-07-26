@@ -84,3 +84,4 @@ sw/test_device
 # build products; never committed.
 # ---------------------------------------------------------------------------
 build/
+build-tmp/

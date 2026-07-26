@@ -130,6 +130,10 @@ void blitscrt_dev_refresh_overlay(struct blitscrt_dev *d)
 
 	blitscrt_fabric_overlay_clear(d->fabric);
 	blitscrt_fabric_overlay_line(d->fabric, 2, 4, "BLITSCRT_MISTER");
+	/* Unmistakable "the daemon is here" line -- the baked idle banner in this
+	 * same spot reads "FABRIC  NO HPS YET", so seeing this instead is the proof
+	 * that the live overlay, not the baked one, is on screen. */
+	blitscrt_fabric_overlay_line(d->fabric, 3, 4, "FABRIC  HPS UP");
 
 	if (d->active_valid) {
 		snprintf(line, sizeof line, "MODE   %uX%u%s %.2fHZ",
@@ -142,6 +146,38 @@ void blitscrt_dev_refresh_overlay(struct blitscrt_dev *d)
 		blitscrt_fabric_overlay_line(d->fabric, 5, 4, line);
 		snprintf(line, sizeof line, "PIXEL  %.3f MHZ",
 			 d->active_timing.pll.actual_hz / 1e6);
+		blitscrt_fabric_overlay_line(d->fabric, 6, 4, line);
+	} else {
+		/* No host has set a mode, so report the fabric's own timing read back
+		 * from the register block -- what the CRT is actually being driven
+		 * with. Rates are derived the same way the baked banner computes
+		 * them, so the live overlay reads identically to the idle one. */
+		struct blitscrt_fabric *f = d->fabric;
+		unsigned hsy  = blitscrt_fabric_read(f, BLITSCRT_REG_H_SY)  & 0xFFF;
+		unsigned hbp  = blitscrt_fabric_read(f, BLITSCRT_REG_H_BP)  & 0xFFF;
+		unsigned hact = blitscrt_fabric_read(f, BLITSCRT_REG_H_ACT) & 0xFFF;
+		unsigned hfp  = blitscrt_fabric_read(f, BLITSCRT_REG_H_FP)  & 0xFFF;
+		unsigned vsy  = blitscrt_fabric_read(f, BLITSCRT_REG_V_SY)  & 0xFFF;
+		unsigned vbp  = blitscrt_fabric_read(f, BLITSCRT_REG_V_BP)  & 0xFFF;
+		unsigned vact = blitscrt_fabric_read(f, BLITSCRT_REG_V_ACT) & 0xFFF;
+		unsigned vfp  = blitscrt_fabric_read(f, BLITSCRT_REG_V_FP)  & 0xFFF;
+		unsigned khz  = blitscrt_fabric_read(f, BLITSCRT_REG_PCLK_KHZ);
+		int ilace     = blitscrt_fabric_read(f, BLITSCRT_REG_MODE_FLAGS) & 1;
+
+		unsigned h_tot = hsy + hbp + hact + hfp;
+		unsigned v_tot = vsy + vbp + vact + vfp;
+		unsigned frame_lines = ilace ? (2 * v_tot + 1) : v_tot;
+		double line_hz  = h_tot ? (double)khz * 1000.0 / h_tot : 0.0;
+		double field_hz = frame_lines
+			? (ilace ? line_hz * 2.0 / frame_lines : line_hz / frame_lines)
+			: 0.0;
+
+		snprintf(line, sizeof line, "MODE   %uX%u%s %.2fHZ",
+			 hact, ilace ? vact * 2 : vact, ilace ? "I" : "P", field_hz);
+		blitscrt_fabric_overlay_line(d->fabric, 4, 4, line);
+		snprintf(line, sizeof line, "LINE   %.3f KHZ", line_hz / 1000.0);
+		blitscrt_fabric_overlay_line(d->fabric, 5, 4, line);
+		snprintf(line, sizeof line, "PIXEL  %.3f MHZ", khz / 1000.0);
 		blitscrt_fabric_overlay_line(d->fabric, 6, 4, line);
 	}
 

@@ -104,13 +104,18 @@
 
 /* ---- overlay character buffer ---- */
 /*
- * 128 cols x 64 rows of 8-bit codes, addressed {row[5:0], col[6:0]}.
- * One byte per 32-bit word, so the 8192 entries occupy 0x2000..0x3FFF.
+ * 128 cols x 64 rows of 8-bit codes, addressed {row[5:0], col[6:0]}. The buffer
+ * is byte-addressed and contiguous: char (row,col) lives at
+ * BLITSCRT_CHARRAM_OFFSET + row*COLS + col, so the 8192 entries fill
+ * 0x2000..0x3FFF exactly (one byte per address, NOT one byte per 32-bit word).
+ * The overlay shows 16 rows at a time -- one bank per mode -- and the daemon
+ * writes its live text into bank 0 (rows 0..15).
  */
-#define BLITSCRT_CHARRAM_OFFSET  0x2000u
-#define BLITSCRT_CHARRAM_COLS    128u
-#define BLITSCRT_CHARRAM_ROWS    64u
-#define BLITSCRT_CHAR_BLANK      0x20u     /* transparent, video shows through */
-#define BLITSCRT_CHAR_BACKED     0x01u     /* opaque black, no glyph */
+#define BLITSCRT_CHARRAM_OFFSET    0x2000u
+#define BLITSCRT_CHARRAM_COLS      128u
+#define BLITSCRT_CHARRAM_ROWS      64u
+#define BLITSCRT_CHARRAM_BANK_ROWS 16u      /* rows the overlay shows per mode bank */
+#define BLITSCRT_CHAR_BLANK        0x20u    /* transparent, video shows through */
+#define BLITSCRT_CHAR_BACKED       0x01u    /* opaque black, no glyph */
 
 #endif

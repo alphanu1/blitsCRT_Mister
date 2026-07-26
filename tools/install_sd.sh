@@ -82,6 +82,12 @@ if [ -f "$KDIR/zImage" ]; then
     mkdir -p "$DEST/blitscrt"
     cp -v "$KDIR/zImage" "$DEST/blitscrt/zImage"
     [ -f "$KDIR/blitscrt.dtb" ] && cp -v "$KDIR/blitscrt.dtb" "$DEST/blitscrt/blitscrt.dtb"
+    # blitscrtd is baked into the initramfs too, but a copy here is the one init
+    # prefers, so the daemon can be swapped without rebuilding the kernel. The
+    # gadget scripts ride along for M4.
+    [ -f "$KDIR/blitscrtd" ]            && cp -v "$KDIR/blitscrtd"            "$DEST/blitscrt/blitscrtd"
+    [ -f "$KDIR/blitscrt-peek" ]        && cp -v "$KDIR/blitscrt-peek"        "$DEST/blitscrt/blitscrt-peek"
+    [ -f "$KDIR/gadget-setup.sh" ]      && cp -v "$KDIR/gadget-setup.sh"      "$DEST/blitscrt/gadget-setup.sh"
     echo "kernel + device tree copied under blitscrt/"
 fi
 sync

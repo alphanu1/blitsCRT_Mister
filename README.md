@@ -961,44 +961,41 @@ live.
 | done | pin assignments verified against MiSTer, every port covered |
 | done | analog RGB666 and HDMI driven from the same pixel stream |
 
-**M2 -- custom kernel and runtime control. Mostly complete.** The BlitsCRT kernel
-boots on hardware and the daemon is written and tested. What remains is the
-HPS-to-fabric register transport, and wiring the daemon into boot.
+**M2 -- custom kernel and runtime control. Done.** The BlitsCRT kernel boots on
+hardware, the daemon reads and drives the fabric over the gp transport, and the
+live overlay -- mode, line and pixel rates read back from the register block, with
+an HPS-up heartbeat holding it on screen -- is running.
+
+![M2 on hardware: the daemon driving the live overlay, HPS up, reporting the real 480i60 timing](docs/images/blitscrt_m2_hps_up.png)
 
 | | |
 |---|---|
-| **done** | **BlitsCRT-0.10 kernel boots on hardware, mounts the card, writes the boot log** |
+| **done** | **daemon reads `fabric v2.1` over gp, runs the heartbeat, drives the live overlay on hardware** |
+| done | BlitsCRT-0.10 kernel boots, mounts the card, writes the boot log |
 | done | dedicated u-boot boot: env programs the fabric and boots our kernel |
 | done | embedded initramfs: static init + busybox, exFAT/FAT mount, serial shell |
-| done | gadget stack built into the kernel (dwc2 dual-role, FunctionFS, configfs) |
-| done | GUD control endpoint, all 15 requests, 30 assertions |
-| done | mode validation, PLL solver (worst case 6 ppm), register map contract |
-| done | FunctionFS transport and configfs setup (`tools/gadget-setup.sh`) |
+| done | init launches `blitscrtd --no-gadget` on boot |
+| done | gp bridge: read-latency, 32-bit half-select, and strobe CDC, verified in `tb_bridge` |
+| done | `blitscrt-peek` register tool for bring-up (read / write / beat) |
 | done | Avalon-MM register slave `rtl/blitscrt_regs.v`, PLL and reconfig IP wired in |
 | done | clock crossing: timing latched as a block on vblank, status resynced |
-| done | heartbeat watchdog and host-state hint |
-| **next** | **HPS-to-fabric register transport: bring up and prove the bridge** |
-| **next** | **init launches `blitscrtd` once Linux is up** |
+| done | heartbeat watchdog and host-state hint; `hps_alive` drives the overlay bank |
+| done | GUD control endpoint (15 requests), mode validation, PLL solver (6 ppm worst case) |
+| done | gadget stack built into the kernel (dwc2 dual-role, FunctionFS, configfs) -- for M4 |
 
-The remaining piece is the register transport, and the custom kernel has
-**unblocked** it. On stock MiSTer the daemon could not read the fabric: MiSTer's
-`hps_io` owns the general-purpose port (`gp_out[17]` clock, `[20:18]`
-chip-selects, `[31:30]` reset), so our bridge's flat addressed scheme collided
-with it and every read came back a fixed value (full analysis in
-`docs/GP_FINDINGS.md`). That collision was a property of running under MiSTer.
-BlitsCRT now runs its own fabric with no `hps_io` in it, and owns the HPS-to-FPGA
-bridges directly, so the register path (`rtl/blitscrt_bridge.v` ->
-`rtl/blitscrt_regs.v`, over either the lightweight bridge or the gp port) can
-finally be brought up and proven without MiSTer contending for the same wires. If
-the lightweight bridge behaves under our boot (it was only ever reported
-non-functional *on MiSTer*), the daemon's existing `LWH2F` path reaches the
-register slave directly; otherwise the fallback is an f2sdram window, which also
-serves the M3 pixel path. This is the active work.
+Bringing the transport up on hardware turned up three bugs, all now fixed in
+`rtl/blitscrt_bridge.v` and covered by `sim/tb_bridge.v`: the bridge captured the
+registered slave's read data a cycle early (a one-transaction lag); it never moved
+more than 16 bits, so the 32-bit `BCRT` ID read back half-shifted; and it sampled
+the asynchronous gp strobe without synchronising it, dropping the odd transfer.
+With those fixed the daemon reads the register block cleanly both ways -- confirmed
+with `blitscrt-peek` -- runs the heartbeat, and `hps_alive` latches, switching the
+overlay from the fabric's baked banner to the daemon's live text.
 
-Everything the daemon drives once the transport is up -- registers, PLL
-reconfiguration, the heartbeat, the live overlay -- is written and unit-tested;
-`blitscrt_fabric_open()` is the seam. The daemon builds static for ARM and ran
-cleanly during bring-up.
+The daemon writes its banner into all three overlay banks so it shows whatever
+mode the front panel has selected, and reports the fabric's actual timing read
+back from the registers. `blitscrt_fabric_open()` is the seam; the daemon builds
+static for ARM and runs from the initramfs, or from a swappable copy on the card.
 
 **M3 -- scanout memory. Not started.** Pixels received over USB are drained and
 counted but not written anywhere yet. The 240p modes fit in on-chip M10K with no

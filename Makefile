@@ -67,6 +67,7 @@ world: assets
 	    echo "-- kernel build failed; staging the rest anyway"; \
 	fi
 	@$(MAKE) --no-print-directory daemon CROSS_COMPILE="$(CROSS_COMPILE)" STATIC="$(STATIC)" || echo "-- daemon build skipped"
+	@$(MAKE) --no-print-directory peek CROSS_COMPILE="$(CROSS_COMPILE)" STATIC="$(STATIC)" || echo "-- peek build skipped"
 	@$(MAKE) --no-print-directory build   # build is idempotent (cp -f); safe
 	@$(MAKE) --no-print-directory manifest
 
@@ -92,7 +93,9 @@ MANIFEST := \
   build/blitscrt.txt \
   build/blitscrt/zImage \
   build/blitscrt/blitscrt.dtb \
-  build/initramfs/init
+  build/blitscrt/blitscrtd \
+  build/blitscrt/blitscrt-peek \
+  build/blitscrt/gadget-setup.sh
 
 manifest:
 	@echo ""
@@ -239,7 +242,7 @@ clean:
 	rm -f  sim/*.vvp sim/*.vcd sim/*.fst sim/*.lxt
 	rm -f  rtl/render.txt $(UBOOT_TXT) README_preview.html
 	rm -f  sw/*.o sw/blitscrtd sw/test_pll sw/test_pll_reconfig sw/test_modes sw/test_device
-	rm -rf build/
+	rm -rf $(BUILD_DIR) $(WORK_DIR)
 	rm -rf __pycache__ tools/__pycache__ sw/__pycache__
 	find . -name '*.pyc' -delete 2>/dev/null || true
 
@@ -310,6 +313,11 @@ UBOOT_FLAG := $(if $(filter 1,$(BOOT_LINUX)),--linux,)
 STATIC ?= 1   # daemon: static by default, it runs on the board
 BUILD_DIR ?= build
 
+# Build intermediates that must NOT land on the card: the busybox clone and the
+# initramfs staging (both are folded into the kernel image, not copied). Kept out
+# of BUILD_DIR so 'build/' holds only files that go on the card.
+WORK_DIR := $(BUILD_DIR)-tmp
+
 # Kernel build. KERNEL_SRC points at a configured kernel tree; the image and
 # device tree are built there and copied into BUILD_DIR. Left unset, the linux
 # target explains what to set rather than failing cryptically.
@@ -342,15 +350,19 @@ BLITSCRT_VERSION ?= 0.10
 # interactive debug shell, embedded into zImage via CONFIG_INITRAMFS_SOURCE.
 # Built by the 'initramfs' target.
 INITRAMFS_SRC := linux/initramfs/init.c
-INITRAMFS_DIR := $(BUILD_DIR)/initramfs
+INITRAMFS_DIR := $(WORK_DIR)/initramfs
 INIT_BIN      := $(INITRAMFS_DIR)/init
 
 # Static busybox for the debug shell (dropped into the initramfs at /bin/busybox,
 # built standalone so applets resolve by name). Cloned and cross-compiled once,
 # then cached under build/. Override BUSYBOX_REF to pin a different tag.
 BUSYBOX_REF := 1_36_1
-BUSYBOX_SRC := $(BUILD_DIR)/busybox-src
+BUSYBOX_SRC := $(WORK_DIR)/busybox-src
 BUSYBOX_BIN := $(INITRAMFS_DIR)/bin/busybox
+
+# The daemon, baked into the initramfs at /bin/blitscrtd as a fallback. init
+# prefers a copy on the card (swappable during bring-up) and falls back to this.
+DAEMON_EMBED := $(INITRAMFS_DIR)/bin/blitscrtd
 
 # Cross-compiler for the ARM kernel. Auto-detected from the usual triplets;
 # override with CROSS_COMPILE=... if yours differs. The trailing dash is part
@@ -489,7 +501,7 @@ kernel-config: kernel-check
 # CONFIG_INITRAMFS_SOURCE, so there is no separate cpio to ship -- the rootfs
 # lives inside zImage. Needs only the ARM cross-compiler and network access for
 # the busybox source; both are cached under build/ after the first run.
-initramfs: $(INIT_BIN) $(BUSYBOX_BIN)
+initramfs: $(INIT_BIN) $(BUSYBOX_BIN) $(DAEMON_EMBED)
 
 $(INIT_BIN): $(INITRAMFS_SRC)
 	@test -n "$(CROSS_COMPILE)" || { \
@@ -532,6 +544,18 @@ $(BUSYBOX_BIN):
 	@mkdir -p $(INITRAMFS_DIR)/bin
 	@cp $(BUSYBOX_SRC)/busybox $(BUSYBOX_BIN)
 	@echo "built busybox (static ARM, $$(du -h $(BUSYBOX_BIN) | cut -f1)) -> initramfs/bin/busybox"
+
+# Build blitscrtd (static ARM) and bake it into the initramfs. Rebuilds when any
+# daemon source changes.
+$(DAEMON_EMBED): $(wildcard sw/*.c sw/*.h)
+	@test -n "$(CROSS_COMPILE)" || { \
+	  echo "no ARM cross-compiler found for blitscrtd."; \
+	  echo "get one with 'make get-toolchain', or set CROSS_COMPILE=your-triplet-."; \
+	  exit 1; }
+	$(KPATH) $(MAKE) -C sw CROSS_COMPILE=$(CROSS_COMPILE) STATIC=1 blitscrtd
+	@mkdir -p $(INITRAMFS_DIR)/bin
+	@cp sw/blitscrtd $(DAEMON_EMBED)
+	@echo "embedded blitscrtd (static ARM, $$(du -h $(DAEMON_EMBED) | cut -f1)) -> initramfs/bin/blitscrtd"
 
 # Build the image and device tree, then stage into build/blitscrt/. Runs
 # kernel-config, builds the initramfs, points the kernel at it, then compiles.
@@ -580,13 +604,30 @@ daemon:
 	    echo "built sw/blitscrtd ($$(file sw/blitscrtd 2>/dev/null | grep -o 'x86-64\|ARM\|aarch64' | head -1))"; \
 	fi
 
+# ---- Bring-up register tool ----
+#
+# blitscrt-peek reads and writes fabric registers over the same gp transport the
+# daemon uses. Built with the same auto-detected toolchain and staged next to the
+# daemon so it lands on the card.
+peek:
+	@if [ -z "$(CROSS_COMPILE)" ]; then \
+	  echo "-- no ARM cross-compiler; building a host blitscrt-peek that will NOT run on the board"; \
+	  $(MAKE) --no-print-directory -C sw STATIC=$(STATIC) blitscrt-peek; \
+	else \
+	  echo "building blitscrt-peek for ARM ($(CROSS_COMPILE)gcc)"; \
+	  $(KPATH) $(MAKE) --no-print-directory -C sw \
+	    CROSS_COMPILE=$(CROSS_COMPILE) STATIC=$(STATIC) blitscrt-peek; \
+	fi
+	@[ -f sw/blitscrt-peek ] && \
+	  echo "built sw/blitscrt-peek ($$(file sw/blitscrt-peek 2>/dev/null | grep -o 'x86-64\|ARM\|aarch64' | head -1))" || true
+
 # ---- Stage a complete bootable set ----
 #
 # Collects everything the board loads at power-on into BUILD_DIR: the FPGA
 # bitstream, the u-boot override that names it, and the kernel image plus
 # device tree if they have been built. The result is what gets copied to an SD
 # card. Pieces that need a toolchain not present are reported, not faked.
-build: assets $(UBOOT_TXT) daemon
+build: assets $(UBOOT_TXT) daemon peek
 	@mkdir -p $(BUILD_DIR)
 	@# Regenerate the override to match reality: boot the kernel if one is
 	@# staged, else halt after the FPGA. Handles the same-run case where the
@@ -617,6 +658,9 @@ build: assets $(UBOOT_TXT) daemon
 	  cp sw/blitscrtd $(CARD_SUB)/ && echo "staged blitscrt/blitscrtd"; \
 	else \
 	  echo "note: sw/blitscrtd not built (run: make -C sw); needed to run on the board"; \
+	fi
+	@if [ -f sw/blitscrt-peek ]; then \
+	  cp sw/blitscrt-peek $(CARD_SUB)/ && echo "staged blitscrt/blitscrt-peek"; \
 	fi
 	@echo ""
 	@echo "build set in $(BUILD_DIR)/ (mirrors the SD card):"

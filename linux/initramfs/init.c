@@ -194,6 +194,56 @@ static void debug_shell(void)
 	}
 }
 
+/*
+ * Launch blitscrtd --no-gadget in the background to bring up the HPS<->fabric
+ * register transport (M2). It reads the register block over gp and, on a match,
+ * runs the heartbeat. gp writes are safe here because we own gp_out -- there is
+ * no MiSTer hps_io on these wires -- so enable them. Output goes to a log on the
+ * card, and the daemon is a background child so the shell still comes up. A copy
+ * on the card wins over the one baked into the initramfs, so the daemon can be
+ * swapped without rebuilding the kernel.
+ */
+static void launch_daemon(void)
+{
+	static const char *paths[] = {
+		"/media/fat/blitscrt/blitscrtd",   /* card copy, swappable */
+		"/bin/blitscrtd",                  /* embedded fallback */
+		NULL
+	};
+	const char *bin = NULL;
+	for (int i = 0; paths[i]; i++)
+		if (access(paths[i], X_OK) == 0) {
+			bin = paths[i];
+			break;
+		}
+	if (!bin) {
+		say("blitscrt: no blitscrtd found; skipping the transport daemon.\n");
+		return;
+	}
+
+	pid_t pid = fork();
+	if (pid == 0) {
+		int fd = open("/media/fat/blitscrtd.log",
+			      O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		if (fd >= 0) {
+			dup2(fd, 1);
+			dup2(fd, 2);
+			if (fd > 2)
+				close(fd);
+		}
+		setenv("BLITSCRT_GP_UNSAFE", "1", 1);   /* our fabric owns gp_out */
+		execl(bin, "blitscrtd", "--no-gadget", (char *)NULL);
+		_exit(127);
+	}
+	if (pid > 0) {
+		char line[192];
+		int n = snprintf(line, sizeof line,
+			"blitscrt: launched %s --no-gadget (pid %d);"
+			" output in /media/fat/blitscrtd.log\n", bin, (int)pid);
+		wr(2, line, (size_t)(n > 0 ? n : 0));
+	}
+}
+
 int main(void)
 {
 	char kver[512], up[128], line[1024];
@@ -245,11 +295,12 @@ int main(void)
 			say("blitscrt: could not open " LOGPATH " for writing\n");
 		}
 		sync();          /* flush the record; leave it mounted for the shell */
+		launch_daemon(); /* M2: bring up the HPS<->fabric transport */
 	}
 
 	if (mounted)
-		say("\nblitscrt: " FATDIR " is mounted and the log is written."
-		    " Dropping to a shell.\n");
+		say("\nblitscrt: " FATDIR " mounted, log written, transport daemon"
+		    " started. Dropping to a shell.\n");
 	else
 		say("\nblitscrt: mount failed (see the dump above)."
 		    " Dropping to a shell to debug.\n");

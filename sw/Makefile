@@ -34,6 +34,11 @@ all: blitscrtd
 blitscrtd: $(OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
+# Bring-up helper: read/write fabric registers over the same transport. Reuses
+# the daemon's fabric/pll objects so the gp path is identical.
+blitscrt-peek: peek.o fabric.o pll_reconfig.o pll.o modes.o device.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 

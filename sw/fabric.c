@@ -328,25 +328,34 @@ void blitscrt_fabric_overlay_clear(struct blitscrt_fabric *f)
 {
 	unsigned r, c;
 	if (!f) return;
-	for (r = 0; r < BLITSCRT_CHARRAM_ROWS; r++)
+	/* Clear the three mode banks (rows 0..47). The overlay shows whichever mode
+	 * bank the front-panel button (cur_mode) has selected, so the live text has
+	 * to land in all three; clearing them first wipes the baked "NO HPS YET"
+	 * idle banners. Bank 3 (rows 48..63, the daemon-not-running screen) is left
+	 * baked. Byte-addressed: char (r,c) is at OFFSET + r*COLS + c. */
+	for (r = 0; r < 3 * BLITSCRT_CHARRAM_BANK_ROWS; r++)
 		for (c = 0; c < BLITSCRT_CHARRAM_COLS; c++)
 			blitscrt_fabric_write(f,
 				BLITSCRT_CHARRAM_OFFSET +
-				((r * BLITSCRT_CHARRAM_COLS + c) * 4),
+				(r * BLITSCRT_CHARRAM_COLS + c),
 				BLITSCRT_CHAR_BLANK);
 }
 
 void blitscrt_fabric_overlay_line(struct blitscrt_fabric *f,
 				  unsigned row, unsigned col, const char *s)
 {
-	unsigned i;
-	if (!f || row >= BLITSCRT_CHARRAM_ROWS) return;
+	unsigned i, b;
+	if (!f || row >= BLITSCRT_CHARRAM_BANK_ROWS) return;   /* row is within a bank */
 	for (i = 0; s[i] && col + i < BLITSCRT_CHARRAM_COLS; i++) {
 		uint8_t ch = (uint8_t)s[i];
 		if (ch == ' ') ch = BLITSCRT_CHAR_BACKED;
-		blitscrt_fabric_write(f,
-			BLITSCRT_CHARRAM_OFFSET +
-			(((row * BLITSCRT_CHARRAM_COLS) + col + i) * 4),
-			ch & 0x7F);
+		/* Replicate into all three mode banks so the line shows whichever the
+		 * button has selected. Bank b, row `row` is at (b*16 + row). */
+		for (b = 0; b < 3; b++)
+			blitscrt_fabric_write(f,
+				BLITSCRT_CHARRAM_OFFSET +
+				(((b * BLITSCRT_CHARRAM_BANK_ROWS + row) *
+				  BLITSCRT_CHARRAM_COLS) + col + i),
+				ch & 0x7F);
 	}
 }

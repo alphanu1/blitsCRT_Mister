@@ -1017,198 +1017,109 @@ mode the front panel has selected, and reports the fabric's actual timing read
 back from the registers. `blitscrt_fabric_open()` is the seam; the daemon builds
 static for ARM and runs from the initramfs, or from a swappable copy on the card.
 
-**M3 -- scanout memory. Done, with one outstanding bug.** Split into three, because the
-pixel path and the memory it lands in are separate problems.
+**M3 -- scanout memory. Done, one bug outstanding.** Pixels live in HPS DDR3 and
+the fabric fetches them a line at a time over f2sdram. Confirmed on hardware at
+640x480: 160 beats a line, no underruns, and a rect written at 78 MB/s by `memcpy`
+with the register bus never touched.
 
-*M3a -- the scanout pipeline.* Done, confirmed on hardware. `rtl/scanout.v` reads
-scanout memory and unpacks RGB565, RGB888, XRGB8888 and RGB332 to RGB666, and
-`rtl/scanout_ram.v` holds it in on-chip M10K, 320x240 at one 16-bit word per pixel
-for 1.2 Mbit of the 5.57 Mbit available. The source mux in `blitscrt_top` picks
-between the test card and scanout off `CTRL`, and the control bits that were left
-unconnected through M2 -- `ENABLE`, `TESTCARD`, `OVERLAY`, `CSYNC`, `HDMI_EN` --
-are live. Reset defaults reproduce M1/M2 behaviour exactly, so nothing changes
-until something writes `CTRL`.
+| | |
+|---|---|
+| **done** | **640x480 scanned out of HPS DDR3 over f2sdram on hardware: 160 beats a line, zero underruns** |
+| done | `scanout.v` unpacks RGB565 / RGB888 / XRGB8888 / RGB332 to RGB666, one clock, matching the test card |
+| done | source mux off `CTRL`; the five control bits stubbed through M2 are live |
+| done | pixel and line replication derived from geometry, giving a true 320-wide active area back |
+| done | on-chip M10K path (`scanout_ram.v`), preloaded so scanout works with no software at all |
+| done | rect write port: `SCANOUT_WADDR` seeks, `SCANOUT_WDATA` advances, one gp command per pixel |
+| done | `scanout_fetch.v` bursts a line into a double-buffered line buffer; raw beats, lane select on read |
+| done | `sysmem_lite` lifted from MiSTer; word-address and burstcount adaptation in `blitscrt_f2sdram.v` |
+| done | `SCANOUT_SRC` selects on-chip or DDR3; `scanout.v` is identical either way |
+| done | `CAPS` reports which, because the two need different write paths and choosing wrong fails silently |
+| done | `SCANOUT_GEOM` writable and latched with the timing set; geometry moves with the mode |
+| done | `SCANOUT_DIAG`: beats moved for the last line, saturating underrun count |
+| done | daemon maps the reserved DDR3 window; `blit()` and `fill()` route on `CAPS` |
+| done | raster obeys the daemon's timing on `CTRL_HPS_TIMING`, front-panel table when clear |
+| done | 0x1000 aperture no longer aliases the register file; `tb_regs` holds it to account |
+| done | measured: gp 3.19 MB/s, uncached DDR3 writes 110 MB/s by `memcpy` |
+| **bug** | **PLL reconfiguration aperture reads back zeroes; arbitrary pixel clocks unreachable** |
 
-Scanout costs exactly one clock from `xpos` to RGB, which is what the test card
-costs, so the mux is transparent and the five-deep sync alignment is untouched.
-`sim/tb_scanout.v` holds that to account: 28 checks over the unpack, the address
-generation, replication and the bounds clamp. Memory comes up holding
-`tools/gen_scanout_test.py`'s pattern -- a gradient, a diagonal, a grid and corner
-patches, chosen so an address or stride mistake is visible rather than merely
-wrong -- so the read path can be proved before any write path exists. `make
-render-scanout` puts it through the real overlay and out to PNG.
+*The outstanding bug.* `altera_pll_reconfig`'s Avalon slave is wired and decoded at
+0x1000, and every register in that window reads `0x00000000` -- including `MODE`,
+which was just written. `blitscrt_fabric_pll_reconfig()` polls for a status that
+never arrives and reports failure, so any mode needing a pixel clock the fabric was
+not compiled with cannot be reached. 640x480i60 and 640x480p60 are unaffected.
 
-Replication comes out of the geometry rather than a register bit: memory half the
-width of the active area is pixel-doubled, half the height line-doubled. That is
-what gets a true 320-wide active area back after the design dropped to two pixel
-clocks, and it covers 480i from 240 lines.
+Ruled out: the aperture decode arithmetic, and read latency -- an extra flop on
+that path did make it latency 2 against the bridge's 1, and removing it in fabric
+3.5 changed nothing, confirmed on hardware. Not yet separated: a slave that never
+drops `waitrequest` from a decode that never reaches it, since both give zeroes
+from the HPS side. Fabric 3.6 adds `BUS_DIAG`, reporting that slave's
+`waitrequest` live and counting accepted accesses in the window, and the bridge now
+abandons a transaction after 255 cycles rather than wedging the transport and
+returning zeroes the same way a dead slave would. `blitscrt-peek -p` decodes it.
 
-*M3b -- the rect write port.* Done in simulation, not yet run on hardware.
-Scanout memory is 76800 pixels against a 14-bit bus address, so it cannot be
-mapped into the register window the way the character buffer is. It is reached
-through an auto-incrementing pointer instead, which is the shape a damage
-rectangle wants anyway: `SCANOUT_WADDR` seeks, `SCANOUT_WDATA` takes one pixel and
-the pointer follows, so a run of consecutive pixels costs no address traffic
-between them.
+*A mode can appear to apply while this is broken.* The timing registers are staged
+before the reconfiguration, and the PLL losing lock resets `apply_ack` in the video
+domain while `apply_req` keeps its value in the bus domain -- so the handshake comes
+back disagreeing and the video side latches the staged timing spontaneously. A 576i
+modeline synced that way against the old 12.6 MHz clock: 15.75 kHz over 625 lines
+is 50.4 Hz, close enough to PAL that a tolerant display accepts it. `set_mode()`
+now decides success by reading `LIVE_*` rather than trusting the handshake.
 
-`WDATA` is 16 bits wide on purpose. The gp bridge issues a complete bus write off
-a single low-half command, so a 16-bit register costs one command per pixel where
-a 32-bit one costs two -- the difference between a full 320x240 repaint taking
-77 ms and 150 ms. One command per pixel is the floor this transport allows.
-
-`sw/fabric.c` grows the rect surface: `blitscrt_scanout_blit()` and
-`_fill()` take x/y/w/h, seek once per row, clip to whatever memory is fitted, and
-report what actually landed. Geometry is not assumed -- `SCANOUT_GEOM` reports it
-and the daemon reads it at open, because it will be something else entirely once
-memory moves off-chip. `WADDR` reads back, so counting what landed is one register
-read.
-
-`sim/tb_scanout_write.v` covers both halves: that the pointer seeks, advances by
-exactly one per word and reads back, and then the whole path -- bus domain,
-through memory, into the pixel domain -- writing a rect over a known background
-and checking it appears at the right raster coordinates and nowhere else.
-
-`blitscrt-peek -f <x> <y> <w> <h> <rgb565>` fills a rect and times it. That is
-also the first real measurement of gp throughput, since one command per pixel
-makes pixels/second the transport's ceiling -- the number that decides whether
-M3c is optional or mandatory.
-
-*M3c -- HPS DDR3 over f2sdram.* Done. The datapath is confirmed on hardware.
-
-Scanout memory moves off-chip, which removes the geometry ceiling entirely --
-640x480 RGB565 is 600 KB, impossible in M10K and nothing in DDR3. It is also the
-cheaper path, not merely the bigger one: pixels arriving over USB are already in
-DDR3, so the fabric goes to them rather than software pushing every pixel across
-a bridge. Measured on hardware, the ARM writes that window at 110 MB/s by memcpy
-against USB 2.0's ~35 MB/s ceiling, so the host-side copy stops being a limit.
-Row-granular copies cost nothing against one large one, so a narrow damage rect
-is not penalised.
-
-`rtl/scanout_fetch.v` bursts one line into a double-buffered line buffer while
-the raster reads the other. The buffers hold raw bus beats and lane selection
-happens on the read side, so the fetch path is entirely format-agnostic -- it
-moves bytes and never learns what a pixel is. Double buffering is not for
-throughput; a line is 1280 bytes against 63.5 us and the margin is roughly
-fortyfold. It is there so a late burst cannot swap a buffer under the raster,
-which would tear rather than merely slow.
-
-`rtl/blitscrt_f2sdram.v` is the seam, and `rtl/mister/sysmem.sv` is MiSTer's,
-lifted whole. It turned out not to be a Platform Designer project at all but a
-flattened system checked in as SystemVerilog, so there is nothing to generate.
-Using theirs is not only convenience: the f2sdram port configuration is latched
-by `APPLYCFG` while the SDRAM interface is idle, which the preloader does at boot
-and Linux cannot do at all, so a different configuration would not match what is
-already latched. The adapter exists for two things -- the port is word-addressed,
-so a byte address shifts right by three, and burstcount narrows to eight bits.
-
-`SCANOUT_SRC` picks where pixels live, in the same spirit as `BRIDGE` on
-`blitscrt_bridge`: one place knows and nothing downstream changes. `scanout.v` is
-identical either way. Only one memory is instantiated, so a DDR3 build gets the
-43% of M10K back that the on-chip picture was using.
-
-Software reads what it is talking to rather than assuming. `CAPS` says which
-scanout source the bitstream has, because the two need different write paths and
-choosing wrong fails silently -- rect writes on a DDR3 build land in a register
-nothing is listening to. `SCANOUT_GEOM` is writable and latches with the timing
-set, so geometry is no longer a compile-time fact. `SCANOUT_DIAG` reports beats
-moved for the last line and a saturating underrun count, which turns a wrong
-picture into one register read: zero beats is the port not answering, non-zero
-underruns is the fetcher falling behind, and neither is distinguishable from the
-other by looking at the screen.
-
-`blitscrt_scanout_configure()` sets geometry, stride, base and format together
-and maps the reserved window; `_blit()` and `_fill()` then route on `CAPS`, so
-callers do not know or care which memory is fitted.
-
-*Outstanding: the PLL reconfiguration aperture does not respond.*
-`altera_pll_reconfig`'s Avalon slave is wired and decoded at 0x1000, and every
-register in that window reads `0x00000000` -- including `MODE`, which was just
-written. `blitscrt_fabric_pll_reconfig()` therefore polls for a status that never
-arrives and reports failure, so any mode needing a pixel clock the fabric was not
-compiled with cannot be reached. 640x480i60 and 640x480p60 are unaffected because
-they use the two clocks the PLL already produces.
-
-What is known: it is not the aperture decode arithmetic, which `tb_regs` checks
-and which no longer touches the register file. It is not read latency either --
-an extra flop on that path did make it latency 2 against the bridge's 1, and
-removing it in fabric 3.5 changed nothing, confirmed on hardware. What has not
-been separated is a slave that never asserts `waitrequest` low, from a decode that
-never reaches it: from the HPS side both give zeroes. Fabric 3.6 adds `BUS_DIAG`,
-which reports that slave's `waitrequest` live and counts accepted accesses in the
-window, and the bridge now abandons a transaction after 255 cycles rather than
-wedging the transport and returning zeroes the same way a dead slave would.
-
-Worth knowing that a mode can appear to apply while this is broken. The timing
-registers are staged before the reconfiguration, and the PLL losing lock resets
-`apply_ack` in the video domain while `apply_req` keeps its value in the bus
-domain -- so the handshake comes back disagreeing and the video side latches the
-staged timing spontaneously. A 576i modeline synced that way against the old
-12.6 MHz clock: 15.75 kHz and 625 lines is 50.4 Hz, close enough to PAL that a
-tolerant display accepts it. `set_mode()` now decides success by reading `LIVE_*`
-rather than trusting the handshake, for exactly that reason.
-
-*Also folded in here, and done:* the raster obeys the daemon's timing when
-`CTRL`'s `HPS_TIMING` bit is set, and the front-panel mode table when it is clear.
-Clear at reset, so a picture exists before any software runs, and clearing it is
-the way back from a mode the display cannot show -- which works because gp runs on
-the 50 MHz reference and stays reachable whatever the pixel clock is doing. That
-matters with `BTN_OSD` dead on this board. Both directions are confirmed on
-hardware.
-
-Two things had to be fixed underneath it. The video-domain configuration latch
-reset on `vid_rst_n`, which also drops for 256 cycles on every `clk_sel` change,
-so claiming timing and then touching the mode select silently reverted the host's
-mode to the reset defaults; it now resets on power-on only. And the clock select
-under host ownership pinned to slot 0, which on Cyclone V is a clock *pin* and not
-a PLL output -- `altclkctrl` accepts PLL outputs only on slots 2 and 3. That ran
+*Two things had to be fixed under timing ownership.* The video-domain configuration
+latch reset on `vid_rst_n`, which also drops for 256 cycles on every `clk_sel`
+change, so claiming timing and then touching the mode select silently reverted the
+host's mode to the reset defaults; it now resets on power-on only. And the clock
+select under host ownership pinned to slot 0, which on Cyclone V is a clock *pin*,
+not a PLL output -- `altclkctrl` takes PLL outputs on slots 2 and 3 only. That ran
 640x480i timing off 50 MHz, about 62 kHz of line rate, and the only symptom was a
 monitor refusing to sync. `tools/check_clk_sel.py` now checks the two constants
 agree, because nothing in simulation touches `altclkctrl` at all.
 
 **M4 -- GUD USB host link. Not started.** The product goal: the board appearing to
-a host PC as a plug-and-play display, no driver to install. The kernel now carries
-the gadget stack, so the groundwork is in place, but GUD is **not configured and
-not running** yet. What remains: create the FunctionFS gadget on the booted system
-(`gadget-setup.sh` over configfs), set the OTG port to peripheral mode
-(`dr_mode = "peripheral"` in the device tree), launch `blitscrtd` with the gadget
-(not `--no-gadget`), and have a host enumerate it as a GUD display.
+a host PC as a plug-and-play display, no driver to install. The kernel carries the
+gadget stack and everything a host modeset touches is in place and tested from the
+board side, but GUD is **not configured and not running**.
 
-Everything a host modeset touches is now in place and tested from the board side:
-the 0x1000 aperture no longer aliases the register file, geometry moves with the
-mode, timing ownership switches both ways with a recovery path, and success is
-confirmed by reading the raster rather than a handshake bit. The one exception is
-the PLL reconfiguration bug above -- until that is fixed a host can only be given
-modes on the two clocks the fabric was compiled with. The cable
-is an A-to-A lead with VBUS cut on the board side, since the MiSTer Pi fits a
-Type-A host receptacle where the DE10-Nano has micro-AB.
+| | |
+|---|---|
+| done | GUD control endpoint, 15 requests, mode validation, PLL solver, `test_device` coverage |
+| done | gadget stack in the kernel: dwc2 dual-role, FunctionFS, configfs |
+| done | modeset path end to end: timing, geometry, ownership, confirmed against `LIVE_*` |
+| done | `blitscrt-peek -m` applies a modeline through the same path a host uses |
+| **todo** | **create the FunctionFS gadget over configfs (`gadget-setup.sh`)** |
+| todo | set the OTG port to peripheral mode: `dr_mode = "peripheral"` in the device tree |
+| todo | launch `blitscrtd` with the gadget, not `--no-gadget` |
+| todo | have a host enumerate it as a GUD display |
+| **todo** | **wire the bulk endpoint to `blitscrt_scanout_blit()` -- rects are drained and counted, never written** |
+| **todo** | **stop advertising RGB888, or gate the list on `CAPS` -- the DDR3 fetcher cannot read it** |
+| todo | A-to-A cable with VBUS cut on the board side (MiSTer Pi fits a Type-A host receptacle) |
 
-Two things a host will get wrong today, both found by driving the modeset path by
-hand before any host was attached. Neither is a tweak; they are the milestone.
-
-*The bulk endpoint does not write pixels.* `gadget.c` drains the transfer and
-counts it so the host stays happy, and the rect never reaches memory. So a host
-will enumerate, modeset correctly, negotiate a format and stream frames, and the
-screen will not change. It is a small job now rather than a large one:
-`blitscrt_scanout_blit()` takes exactly the x/y/w/h a GUD `set_buffer` request
-carries, and routes itself to DDR3 or the gp rect port off `CAPS`.
+*The bulk endpoint does not write pixels.* `gadget.c` drains the transfer and counts
+it so the host stays happy, and the rect never reaches memory. So a host will
+enumerate, modeset correctly, negotiate a format and stream frames, and the screen
+will not change. Small now rather than large: `blitscrt_scanout_blit()` takes
+exactly the x/y/w/h a GUD `set_buffer` request carries, and routes itself.
 
 *RGB888 is advertised and the DDR3 fetcher cannot read it.* Three bytes per pixel
-straddles the 64-bit beat boundary -- pixel 2 spans bytes 6, 7 and 8 -- and the
-lane extractor in `scanout_fetch.v` handles 1, 2 and 4-byte formats only. A host
-choosing it gets a picture sheared by a byte per pixel, with no error anywhere.
-Advertise `XRGB8888` instead: the same 8 bits per channel, aligned, one more byte
-on a wire where damage rects dominate anyway. Or gate the advertised list on
-`CAPS`, so an on-chip build still offers RGB888 and a DDR3 build does not. Worth
-doing before a host ever connects, because format negotiation happens long before
-anything would make it look suspicious.
-
-The modeset path itself needs nothing: `device.c` already calls
-`blitscrt_fabric_set_mode()`, which sets timing, reconfigures the PLL, moves the
-geometry with the mode and confirms the result against the live registers.
+straddles the 64-bit beat boundary -- pixel 2 spans bytes 6, 7 and 8 -- and the lane
+extractor handles 1, 2 and 4-byte formats only. A host choosing it gets a picture
+sheared by a byte per pixel, with no error anywhere. Advertise `XRGB8888` instead:
+same 8 bits per channel, aligned, one more byte on a wire where damage rects
+dominate. Worth doing before a host ever connects, because format negotiation
+happens long before anything would look suspicious.
 
 **M5 -- higher line rates over USB 2.0. Not started.** 24kHz and 31kHz open up
 progressive modes above 240p, and every one is over the full-frame USB 2.0 budget
-even at RGB565:
+even at RGB565.
+
+| | |
+|---|---|
+| done | RGB332 implemented, which fits everything at 18 MB/s |
+| done | damage rectangles, which carry most desktop work |
+| done | LZ4 negotiation present in the protocol layer, declined in one line |
+| **todo** | **decide the lever against a real workload; pixel depth first** |
+| todo | LZ4 decompressor on the ARM, into a cached buffer then one `memcpy` to the window |
+| todo | measure the compression ratio on actual host traffic -- it cannot be known before M4 |
 
 ```
 640x480p60 RGB565  31kHz    37 MB/s    over ~35 MB/s bulk
@@ -1219,13 +1130,18 @@ even at RGB565:
 240p and 480i fit because one is half-height and the other sends one field per
 refresh; a progressive frame at these rates sends every pixel every refresh, and
 that is what blows the budget. Three non-exclusive levers close the gap: pixel
-depth (RGB332 fits everything at 18 MB/s, already implemented), LZ4 compression
-(2-3x on desktop and UI, only 1.1-1.4x on video, and it needs a decompressor on
-the ARM or in the fabric), and damage rectangles (already in use, carry most
-desktop work but nothing for full-screen video). For UI and desktop these modes
-are reachable now with RGB565 plus damage rects; for full-screen video or a 60fps
-game at 480p, only lower depth or a faster link actually fits. Worth taking when a
-real higher-rate workload demands it, pixel depth first.
+depth, LZ4 (2-3x on desktop and UI, only 1.1-1.4x on video, and it needs a
+decompressor), and damage rectangles. For UI and desktop these modes are reachable
+now with RGB565 plus damage rects; for full-screen video or a 60fps game at 480p,
+only lower depth or a faster link actually fits.
+
+LZ4 is weakest exactly where the link is tightest -- anything changing every pixel
+every frame defeats it and damage rects together. Where it earns its place is large
+updates of compressible content: scrolling, window drags, page repaints. It is also
+what puts 640x480 **RGB888** within reach for desktop use, needing 1.58x against a
+55 MB/s demand. Decompress into a cached buffer and `memcpy` to the uncached
+window; LZ4's short scattered copies are the worst case for write-combining, which
+is the 69-against-110 MB/s gap measured on the board.
 
 ## Known limitations
 

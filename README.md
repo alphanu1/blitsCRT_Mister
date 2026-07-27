@@ -682,14 +682,6 @@ The kernel options beyond the base config live in `linux/blitscrt_boot.config`
 console) and `linux/blitscrt_gadget.config` (dwc2 dual-role, FunctionFS, configfs
 -- the USB-gadget stack the GUD link needs).
 
-### Proof of concept: the kernel boots
-
-Confirmed on hardware. The custom u-boot env programs the fabric, boots
-BlitsCRT-0.10, the initramfs mounts the exFAT card, and the boot log is written by
-our own kernel:
-
-![BlitsCRT-0.10 booting on hardware: mounting the exFAT card and writing the boot log, with uname reporting the custom kernel](docs/images/blitscrt_kernel_poc.png)
-
 ### The boot set
 
 `make world` stages, under `build/`, everything the card needs:
@@ -922,8 +914,20 @@ encoded as high=255+1 and wrapped silently.
 
 ### Dynamic resolutions
 
-Switchres generates a modeline per game. A fixed list will not do, and two
-paths are covered:
+Switchres generates a modeline per game, and nothing has to be told to this
+device in advance. GUD hands over a **complete DRM mode** on every modeset --
+pixel clock in kHz plus all eight timing values and the flag word -- not an index
+into a list. So a synthesised mode needs no extra step:
+
+```
+Switchres  ->  X / DRM  ->  SET_STATE_CHECK   ->  modes.c validates,
+                                                  solves M/N/C
+                            SET_STATE_COMMIT  ->  PLL retuned, timing and
+                                                  geometry latched, raster
+                                                  handed to the host
+```
+
+A fixed list will not do, and two paths are covered:
 
 - **Adding to the list.** `blitscrt_modelist_add()` validates and appends, then
   raises `GUD_CONNECTOR_STATUS_CHANGED`. The host re-probes the connector and
@@ -936,7 +940,14 @@ paths are covered:
 
 Refusing matters as much as accepting. A 640x480p60 mode at 31.5kHz gets
 stalled with `GUD_STATUS_INVALID_PARAMETER` and the previous mode stays live.
-Sending 31kHz to a 15kHz set is a repair bill.
+Sending 31kHz to a 15kHz set is a repair bill. A mode is also refused rather than
+approximated if no M/N/C lands inside the VCO band at a tight enough tolerance --
+the device has to be able to make the clock, not merely tolerate the timing.
+
+One unknown, and it sits on the host side. GUD's kernel driver may filter modes
+through DRM's `mode_valid` before they reach the device, in which case a
+synthesised mode could be rejected upstream and never arrive. That cannot be
+settled without a host attached, so M4 is what will show it.
 
 ### Register file
 
@@ -1006,15 +1017,6 @@ an HPS-up heartbeat holding it on screen -- is running.
 | done | heartbeat watchdog and host-state hint; `hps_alive` drives the overlay bank |
 | done | GUD control endpoint (15 requests), mode validation, PLL solver (6 ppm worst case) |
 | done | gadget stack built into the kernel (dwc2 dual-role, FunctionFS, configfs) -- for M4 |
-
-Bringing the transport up on hardware turned up three bugs, all now fixed in
-`rtl/blitscrt_bridge.v` and covered by `sim/tb_bridge.v`: the bridge captured the
-registered slave's read data a cycle early (a one-transaction lag); it never moved
-more than 16 bits, so the 32-bit `BCRT` ID read back half-shifted; and it sampled
-the asynchronous gp strobe without synchronising it, dropping the odd transfer.
-With those fixed the daemon reads the register block cleanly both ways -- confirmed
-with `blitscrt-peek` -- runs the heartbeat, and `hps_alive` latches, switching the
-overlay from the fabric's baked banner to the daemon's live text.
 
 The daemon writes its banner into all three overlay banks so it shows whatever
 mode the front panel has selected, and reports the timing the raster is really
@@ -1104,6 +1106,7 @@ board side, but GUD is **not configured and not running**.
 | done | gadget stack in the kernel: dwc2 dual-role, FunctionFS, configfs |
 | done | modeset path end to end: PLL, timing, geometry, ownership, confirmed against `LIVE_*` |
 | done | the four advertised modes all solve and all apply; `modelist_add` refuses anything `mode_check` would reject |
+| done | unadvertised modes accepted and applied, so Switchres needs no extra step |
 | done | a failed modeset is reported to the host as one; it used to answer OK regardless |
 | done | `blitscrt-peek -m` applies a modeline through the same path a host uses |
 | **todo** | **create the FunctionFS gadget over configfs (`gadget-setup.sh`)** |

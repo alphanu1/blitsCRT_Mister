@@ -92,8 +92,9 @@ is the whole point: the CRT stops being tied to an emulator pipeline and becomes
 display the OS can use for anything.
 
 GUD is a wire protocol rather than a Linux one, so the host end is not fixed. A
-Windows driver over IddCx would work against the same hardware unchanged; that is
-**M6**.
+Windows driver over IddCx would work against the same hardware unchanged -- that is
+**M6**, and it will most likely live in its own repository, since such a driver is
+useful to any GUD device and not just this one.
 
 This is a different approach from the emulator-driven path. There, a guest has
 to run something like GroovyMAME with exact modelines and beam-timed updates to
@@ -1238,14 +1239,33 @@ for something physically invisible. At frame rate it is 18.4 MB/s, full colour, 
 decompressor. Whether a host can be persuaded to do that is a DRM question and M4
 will answer it.
 
-**M6 -- Windows host. Not started.** GUD is a wire protocol, not a Linux one:
-request codes, a mode structure, a buffer format. Nothing about the board depends
-on what is at the other end, so a Windows host that speaks the same protocol works
-against this hardware unmodified. M6 is a driver project, not a hardware one.
+**M6 -- Windows host. Not started, and probably not here.** GUD is a wire
+protocol, not a Linux one: request codes, a mode structure, a buffer format.
+Nothing about the board depends on what is at the other end, so a Windows host
+that speaks the same protocol works against this hardware unmodified.
+
+That cuts both ways, and is the reason M6 belongs in its own repository with a
+link from here rather than inside this tree. A Windows GUD driver is not specific
+to blitsCRT in any way: it would drive a Pi Zero adapter, the STM32 reference
+device, or anything else implementing the protocol. Burying it in an FPGA CRT
+project would make it hard to find and hard to reuse, and would tie its release
+cycle to hardware it does not care about. The protocol is open by design -- "all
+that's needed is to add a USB vid:pid" -- so a host driver is a peer of the Linux
+one, not an accessory to this board.
+
+Nothing like it appears to exist. The GUD ecosystem is entirely Linux: the in-tree
+driver, the gadget side, Raspberry Pi images. The IddCx samples that do exist are
+all *virtual* displays -- they enumerate a monitor and discard the frames -- so the
+frame loop is demonstrated but the transport is not. Two references make it new
+work rather than a blank page. The GUD host driver is **deliberately MIT
+licensed**, in the author's words "to smooth the path for any BSD port", so its
+protocol logic is both readable and reusable. And Microsoft ships an IddCx sample
+for the Windows plumbing. The novel part is the join between them.
 
 | | |
 |---|---|
 | done | the protocol is host-agnostic; the device side needs no change for this |
+| **todo** | **stand it up as its own project and link it from here; it is useful to any GUD device** |
 | **todo** | **an IddCx user-mode driver, starting from Microsoft's sample** |
 | **todo** | **establish how a modeline reaches the driver; IddCx carries resolution and refresh, not porches** |
 | todo | most likely a Switchres backend for this driver, alongside its existing drmkms and adl ones |

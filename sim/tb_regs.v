@@ -38,6 +38,7 @@ module tb_regs;
         .clk_pix(clk_pix), .vid_cfg_rst_n(vid_rst_n), .vblank(vblank),
         .field(field), .pll_locked(pll_locked),
         .hdmi_configured(hdmi_configured),
+        .pll_locked_raw(1'b1), .pll_start_wr(1'b0), .pll_cnt_wr(1'b0),
         .pll_wait(1'b0), .pll_accept(1'b0), .bus_stalled(1'b0),
         .scanout_underrun_tog(1'b0), .scanout_beats(16'd0),
         .live_hsy(12'd60), .live_hbp(12'd76), .live_hact(12'd640), .live_hfp(12'd24),
@@ -92,7 +93,7 @@ module tb_regs;
 
         $display("identify");
         rd(14'h000); chk("ID reads BCRT", readdata == 32'h42435254);
-        rd(14'h004); chk("VERSION reads 3.6", readdata == 32'h0003_0006);
+        rd(14'h004); chk("VERSION reads 3.9", readdata == 32'h0003_0009);
 
         /* The PLL reconfig aperture at 0x1000 used to decode as register 0x00,
          * so a modeset wrote the M counter into H_SY, the C counter into H_BP

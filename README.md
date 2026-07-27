@@ -25,11 +25,11 @@ make world      # 2. build everything the installed tools allow
 make sd DEST=/path/to/mounted/card      # 3. copy rbf + kernel to the card, then set the u-boot env
 ```
 
-`make setup` is the first step: it installs the build dependencies through your
+`make setup` is the first step: it installs the build dependencies through the
 package manager and offers to clone a kernel tree. It does not install Quartus,
 which is a manual licensed download — see **Prerequisites**. `make world` then
 builds whatever it finds a toolchain for and skips the rest with a note naming
-what is missing, so a partial toolchain still gets you a partial build rather
+what is missing, so a partial toolchain still yields a partial build rather
 than an error. **Prerequisites** and **Build** have the detail.
 
 ## Lineage
@@ -183,16 +183,16 @@ out of the same VCO:
 ```
 
 Two VCOs cover all four, and within a VCO the 640 and 320 modes are one counter
-apart. All four solve to 0 ppm. That shapes the M2 PLL work: reconfigure M and N
+apart. All four solve to 0 ppm. That is how the PLL is driven: reconfigure M and N
 to swap VCO between NTSC and PAL, and take the two C outputs into the clock mux
-for 640-wide against 320-wide. Two muxed PLL outputs is exactly what
-`altclkctrl` allows.
+for 640-wide against 320-wide. Two muxed PLL outputs is exactly what `altclkctrl`
+allows.
 
 This is the advertised list, not a limit. A host can set a timing that was never
 in it, which is the Switchres case.
 
-What the fabric ships with today is three built-in modes, because it has two
-fixed pixel clocks until `altera_pll_reconfig` lands:
+The fabric has three built-in modes, driven from its two compiled pixel clocks.
+Anything beyond them is reached by reconfiguring the PLL at runtime:
 
 | | mode | pixel clock | line | field | for |
 |---|---|---|---|---|---|
@@ -268,14 +268,14 @@ at 60Hz is 55 MB/s, past what USB 2.0 bulk will carry. Damage rects mean that
 ceiling is rarely approached, and the 15kHz modes sit well inside it: 640x240 in
 RGB888 at 60Hz is 27 MB/s full-frame.
 
-## What the screen tells you at boot
+## What the screen reports at boot
 
 The board can be in three states, and the overlay distinguishes them so a dark
 or wrong screen points at the right layer.
 
 **Fabric only.** The FPGA is programmed and drawing the test card, but the HPS
 is silent: Linux has not booted, or `blitscrtd` is not running. The overlay
-shows a dedicated banner naming that state. This is the screen you get from
+shows a dedicated banner naming that state. This is the screen shown from
 u-boot loading the `.rbf` with nothing else up.
 
 **HPS up, no host.** The daemon is running and its heartbeat is fresh, but no
@@ -343,11 +343,12 @@ two outputs. Slots 0 and 1 of the mux go to the 50 MHz reference, which is a
 clock pin and keeps Quartus happy.
 
 The video pipeline is held in reset across a clock switch. Arbitrary Switchres
-clocks need `altera_pll_reconfig`, which arrives with M2.
+clocks come from `altera_pll_reconfig` retuning the PLL, which a modeset does
+before latching the new timing.
 
 ## The idle screen
 
-This is what you get from power-on until a host turns up. Enough to work out
+This is what appears from power-on until a host turns up. Enough to work out
 what is wrong without a serial cable:
 
 ```
@@ -382,8 +383,8 @@ The text lives in `char_ram.v` and comes up with no software running. At M2 the
 HPS gets a write port onto the same buffer and the `USB` line becomes live
 status.
 
-Mode is a compile-time macro in M1. It becomes runtime in M2, once the HPS is in
-the design and the PLL can be reconfigured.
+Mode was a compile-time macro in M1. It is runtime now: the mode table drives the
+raster until software claims it with `CTRL`'s `HPS_TIMING` bit.
 
 ## Layout
 
@@ -393,7 +394,7 @@ rtl/        the design
   video_timing.v    15kHz timing, progressive and interlaced
   testcard.v        colour bars, ramp, border, crosshair
   overlay.v         8x8 text compositor
-  char_ram.v        overlay character buffer (HPS write port lands here in M2)
+  char_ram.v        overlay character buffer, written from the HPS side
   font_rom.v        8x8 font
   mode_table.v      the three modes, detection and button cycling
   blitscrt_regs.v   Avalon-MM register file and the bus/video clock crossing
@@ -454,7 +455,7 @@ neither is a package: **Quartus Prime Lite** (a manual, licensed download — ti
 the Cyclone V device family during install) and the **kernel tree** itself,
 though it offers to clone one at the end.
 
-The full list, if you would rather install by hand:
+The full list, for installing by hand:
 
 | | | |
 |---|---|---|
@@ -484,7 +485,7 @@ toolchain** instead: download one, extract it, put its `bin/` on `PATH`.
   — pick the AArch32 hard-float target (`arm-none-linux-gnueabihf`).
 - Bootlin: <https://toolchains.bootlin.com> — armv7-eabihf, glibc.
 
-Or let the build fetch one for you:
+Or let the build fetch one:
 
 ```
 make get-toolchain      # download + extract a Bootlin ARM toolchain
@@ -499,13 +500,13 @@ build then auto-detects it there — no `PATH` edit needed — or add its printe
 It is a separate command from `make setup`, and on purpose: it downloads ~150 MB
 from a third-party server and drops a toolchain on disk, which should be a
 deliberate choice rather than a side effect of installing packages. `make setup`
-installs the small repo tools and points you here for the compiler. Either way
+installs the small repo tools and points here for the compiler. Either way
 the kernel step skips until a compiler is found — the fabric build never needs
 one.
 
 The stable build is chosen over bleeding-edge because its older kernel headers
 are the safer match: a toolchain's headers version wants to be no newer than the
-kernel you build against, and the MiSTer SoC kernel is not new.
+kernel being built against, and the MiSTer SoC kernel is not new.
 
 `make tools` reports what is present:
 
@@ -513,7 +514,7 @@ kernel you build against, and the MiSTer SoC kernel is not new.
 python3    Python 3.13.7
 iverilog   /usr/bin/iverilog
 Pillow     present
-quartus_sh /home/you/intelFPGA_lite/24.1std/quartus/bin/quartus_sh
+quartus_sh /home/ben/intelFPGA_lite/24.1std/quartus/bin/quartus_sh
 ```
 
 Quartus does not add itself to PATH when it installs. `make quartus-path`
@@ -536,7 +537,7 @@ make world      # everything: assets, testbenches, renders, bitstream, kernel, b
 
 Steps whose tool is missing are skipped instead of fatal, and the manifest at
 the end lists every output with its path and size. That is the single command
-if you want the lot.
+for the lot.
 
 The individual targets:
 
@@ -610,7 +611,7 @@ make bitstream QUARTUS_SH=/path/to/quartus_sh
 ```
 
 `make quartus-path` reports which it found, how many are installed, and the
-`export PATH=` line if you would rather set it yourself.
+`export PATH=` line for setting it by hand.
 
 Two version-sensitive things, both with a fix in `docs/BRINGUP.md`: the device
 family must have been ticked at install time, and a newer Quartus may refuse
@@ -793,9 +794,12 @@ line fetcher  18 checks against a memory model with latency and bubbles:
               base + y*stride, beat counts per format, burst splitting,
               column readback, no underrun
 register map  the 0x1000 aperture cannot reach CTRL, H_SY or H_BP
+pll reconfig  the real Intel IP driven through the real bridge: MODE writes
+              and reads back, and a full reconfiguration sequence reports
+              STATUS ready after START
 ```
 
-Seven testbenches, plus four software test binaries covering the PLL solver, the
+Eight testbenches, plus four software test binaries covering the PLL solver, the
 reconfiguration sequence, the mode list and the GUD request handling. `make lint`
 elaborates both scanout configurations; `make check-clk`, `check-pins`,
 `check-decl`, `check-ip` and `check-fit` catch the classes of mistake that
@@ -983,14 +987,14 @@ live.
 
 **M2 -- custom kernel and runtime control. Done.** The BlitsCRT kernel boots on
 hardware, the daemon reads and drives the fabric over the gp transport, and the
-live overlay -- mode, line and pixel rates read back from the register block, with
+live overlay -- mode, line and pixel rates read back from the raster itself, with
 an HPS-up heartbeat holding it on screen -- is running.
 
 ![M2 on hardware: the daemon driving the live overlay, HPS up, reporting the real 480i60 timing](docs/images/blitscrt_m2_hps_up.png)
 
 | | |
 |---|---|
-| **done** | **daemon reads `fabric v2.1` over gp, runs the heartbeat, drives the live overlay on hardware** |
+| **done** | **daemon reads the fabric version over gp, runs the heartbeat, drives the live overlay on hardware** |
 | done | BlitsCRT-0.10 kernel boots, mounts the card, writes the boot log |
 | done | dedicated u-boot boot: env programs the fabric and boots our kernel |
 | done | embedded initramfs: static init + busybox, exFAT/FAT mount, serial shell |
@@ -1013,14 +1017,17 @@ with `blitscrt-peek` -- runs the heartbeat, and `hps_alive` latches, switching t
 overlay from the fabric's baked banner to the daemon's live text.
 
 The daemon writes its banner into all three overlay banks so it shows whatever
-mode the front panel has selected, and reports the fabric's actual timing read
-back from the registers. `blitscrt_fabric_open()` is the seam; the daemon builds
+mode the front panel has selected, and reports the timing the raster is really
+running -- read from `LIVE_*`, which is post-mux, rather than from the staged
+registers, which describe what was asked for. `blitscrt_fabric_open()` is the seam; the daemon builds
 static for ARM and runs from the initramfs, or from a swappable copy on the card.
 
-**M3 -- scanout memory. Done, one bug outstanding.** Pixels live in HPS DDR3 and
-the fabric fetches them a line at a time over f2sdram. Confirmed on hardware at
-640x480: 160 beats a line, no underruns, and a rect written at 78 MB/s by `memcpy`
-with the register bus never touched.
+**M3 -- scanout memory. Done.** Pixels live in HPS DDR3 and the fabric fetches
+them a line at a time over f2sdram. Confirmed on hardware at 640x480: 160 beats a
+line, no underruns, and a rect written at 78 MB/s by `memcpy` with the register
+bus never touched. Custom pixel clocks work -- PAL 640x576i50 at 12.500 MHz, a
+clock the fabric was never compiled with, reached by reconfiguring the PLL with
+timing, geometry and ownership following it.
 
 | | |
 |---|---|
@@ -1040,40 +1047,51 @@ with the register bus never touched.
 | done | raster obeys the daemon's timing on `CTRL_HPS_TIMING`, front-panel table when clear |
 | done | 0x1000 aperture no longer aliases the register file; `tb_regs` holds it to account |
 | done | measured: gp 3.19 MB/s, uncached DDR3 writes 110 MB/s by `memcpy` |
-| **bug** | **PLL reconfiguration aperture reads back zeroes; arbitrary pixel clocks unreachable** |
+| done | PLL reconfig window reads and writes, verified against the real Intel IP in `tb_pll_reconfig` |
+| done | a reconfiguration completes on hardware and the PLL retunes |
+| done | custom clocks reachable from a modeset: PAL 640x576i50 at 12.500 MHz on hardware |
+| done | all four advertised modes reachable; three of them need reconfiguration |
 
-*The outstanding bug.* `altera_pll_reconfig`'s Avalon slave is wired and decoded at
-0x1000, and every register in that window reads `0x00000000` -- including `MODE`,
-which was just written. `blitscrt_fabric_pll_reconfig()` polls for a status that
-never arrives and reports failure, so any mode needing a pixel clock the fabric was
-not compiled with cannot be reached. 640x480i60 and 640x480p60 are unaffected.
+*Why DDR3 rather than more block RAM.* The pixels are already there: the gadget
+receives into DDR3, so the fabric goes to them instead of software pushing every
+pixel across a bridge. Measured on hardware, the ARM writes that window at
+110 MB/s by `memcpy` against USB 2.0's ~35 MB/s ceiling, and row-granular copies
+cost the same as one large one, so a narrow damage rect is not penalised. The gp
+transport manages 3.19 MB/s, which settles what it is for: control, never pixels.
 
-Ruled out: the aperture decode arithmetic, and read latency -- an extra flop on
-that path did make it latency 2 against the bridge's 1, and removing it in fabric
-3.5 changed nothing, confirmed on hardware. Not yet separated: a slave that never
-drops `waitrequest` from a decode that never reaches it, since both give zeroes
-from the HPS side. Fabric 3.6 adds `BUS_DIAG`, reporting that slave's
-`waitrequest` live and counting accepted accesses in the window, and the bridge now
-abandons a transaction after 255 cycles rather than wedging the transport and
-returning zeroes the same way a dead slave would. `blitscrt-peek -p` decodes it.
+`scanout_fetch.v` bursts one line into a double-buffered line buffer while the
+raster reads the other. The buffers hold raw bus beats and lane selection happens
+on the read side, so the fetch path is format-agnostic -- it moves bytes and never
+learns what a pixel is. Double buffering is not for throughput; a line is 1280
+bytes against 63.5 us. It is there so a late burst cannot swap a buffer under the
+raster.
 
-*A mode can appear to apply while this is broken.* The timing registers are staged
-before the reconfiguration, and the PLL losing lock resets `apply_ack` in the video
-domain while `apply_req` keeps its value in the bus domain -- so the handshake comes
-back disagreeing and the video side latches the staged timing spontaneously. A 576i
-modeline synced that way against the old 12.6 MHz clock: 15.75 kHz over 625 lines
-is 50.4 Hz, close enough to PAL that a tolerant display accepts it. `set_mode()`
-now decides success by reading `LIVE_*` rather than trusting the handshake.
+`rtl/mister/sysmem.sv` is MiSTer's, lifted whole. It is not a Platform Designer
+project but a flattened system checked in as SystemVerilog, so there is nothing to
+generate. Using theirs also matters because the f2sdram port configuration is
+latched by `APPLYCFG` while the SDRAM interface is idle -- the preloader's job at
+boot, and impossible from Linux -- so a different configuration would not match
+what is already latched.
 
-*Two things had to be fixed under timing ownership.* The video-domain configuration
-latch reset on `vid_rst_n`, which also drops for 256 cycles on every `clk_sel`
-change, so claiming timing and then touching the mode select silently reverted the
-host's mode to the reset defaults; it now resets on power-on only. And the clock
-select under host ownership pinned to slot 0, which on Cyclone V is a clock *pin*,
-not a PLL output -- `altclkctrl` takes PLL outputs on slots 2 and 3 only. That ran
-640x480i timing off 50 MHz, about 62 kHz of line rate, and the only symptom was a
-monitor refusing to sync. `tools/check_clk_sel.py` now checks the two constants
-agree, because nothing in simulation touches `altclkctrl` at all.
+`SCANOUT_SRC` picks where pixels live, in the same spirit as `BRIDGE` on
+`blitscrt_bridge`: one place knows and nothing downstream changes. Only one memory
+is instantiated, so a DDR3 build gets back the 43% of M10K the on-chip picture
+used.
+
+Software reads what it is talking to rather than assuming. `CAPS` reports which
+scanout source the bitstream has, because the two need different write paths and
+choosing wrong fails silently. `SCANOUT_GEOM` is writable and latches with the
+timing set. `SCANOUT_DIAG` reports beats moved for the last line and a saturating
+underrun count, and `LIVE_*` reports the timing `video_timing` is actually being
+fed -- which is what `blitscrt-peek -t` decodes, and what `set_mode()` confirms
+against rather than trusting a status bit.
+
+*Timing ownership.* The raster obeys the daemon's timing when `CTRL`'s
+`HPS_TIMING` bit is set and the front-panel mode table when it is clear. Clear at
+reset, so a picture exists before any software runs, and clearing it is the way
+back from a mode the display cannot show -- which works because gp runs on the
+50 MHz reference and stays reachable whatever the pixel clock is doing. That
+matters with `BTN_OSD` dead on this board.
 
 **M4 -- GUD USB host link. Not started.** The product goal: the board appearing to
 a host PC as a plug-and-play display, no driver to install. The kernel carries the
@@ -1084,7 +1102,9 @@ board side, but GUD is **not configured and not running**.
 |---|---|
 | done | GUD control endpoint, 15 requests, mode validation, PLL solver, `test_device` coverage |
 | done | gadget stack in the kernel: dwc2 dual-role, FunctionFS, configfs |
-| done | modeset path end to end: timing, geometry, ownership, confirmed against `LIVE_*` |
+| done | modeset path end to end: PLL, timing, geometry, ownership, confirmed against `LIVE_*` |
+| done | the four advertised modes all solve and all apply; `modelist_add` refuses anything `mode_check` would reject |
+| done | a failed modeset is reported to the host as one; it used to answer OK regardless |
 | done | `blitscrt-peek -m` applies a modeline through the same path a host uses |
 | **todo** | **create the FunctionFS gadget over configfs (`gadget-setup.sh`)** |
 | todo | set the OTG port to peripheral mode: `dr_mode = "peripheral"` in the device tree |
@@ -1093,6 +1113,16 @@ board side, but GUD is **not configured and not running**.
 | **todo** | **wire the bulk endpoint to `blitscrt_scanout_blit()` -- rects are drained and counted, never written** |
 | **todo** | **stop advertising RGB888, or gate the list on `CAPS` -- the DDR3 fetcher cannot read it** |
 | todo | A-to-A cable with VBUS cut on the board side (MiSTer Pi fits a Type-A host receptacle) |
+
+*A modeset that failed used to report success.* The commit path set
+`active_valid`, called `blitscrt_fabric_set_mode()`, discarded the return value
+and answered `GUD_STATUS_OK` unconditionally -- so a reconfiguration that timed
+out, a geometry that did not take, or a raster running something else were all
+reported to the host as a successful modeset, and the daemon then believed it was
+driving a mode it was not. `set_mode()` confirms against the live registers so
+that its answer means something; throwing it away wasted that. It now applies
+first, leaves `active_*` alone on failure so the overlay keeps describing what is
+really on screen, and returns `GUD_STATUS_PROTOCOL_ERROR`.
 
 *The bulk endpoint does not write pixels.* `gadget.c` drains the transfer and counts
 it so the host stays happy, and the rect never reaches memory. So a host will
@@ -1150,32 +1180,24 @@ is the 69-against-110 MB/s gap measured on the board.
   sample density. The scanout path now pixel-doubles 320-wide memory to fill it,
   so a true 320-wide active area is back for scanout; the test card is still
   generated at 640.
-- The overlay reports the timing in the register block rather than the raster's.
-  `LIVE_H1`..`LIVE_MISC` now carry what `video_timing` is actually being fed --
-  `blitscrt-peek -t` decodes it -- but the on-screen text has not been moved onto
-  them yet.
-
 - 640x240p is not a format HDMI sinks recognise. The transmitter sends it and a
   Direct Video DAC converts it, but a monitor may refuse to lock. Mode 1 is the
   HDMI default for that reason.
-- The fabric has two fixed pixel clocks, which is what limits it to three
-  built-in modes. Arbitrary clocks need `altera_pll_reconfig`. The solver that
-  would feed it is written and tested with nothing to write to.
+- The fabric has two compiled pixel clocks, 12.600 and 6.300 MHz, which is what
+  the three built-in modes use. Anything else is reached by reconfiguring the PLL
+  at runtime, so the advertised mode list depends on `altera_pll_reconfig` working
+  rather than treating it as an extra.
 - HDMI hot plug detect is inferred from the transmitter acking I2C. I never
   read its HPD register, because `rtl/i2c_master.v` is write-only.
-- The PLL reconfiguration aperture reads back zeroes; see M3. Arbitrary pixel
-  clocks are therefore unreachable, which caps the advertised mode list at the two
-  the fabric was compiled with.
-
 - `STAT_APPLYING` is not trustworthy across a PLL reconfiguration. The PLL losing
   lock resets `apply_ack` in the video domain while `apply_req` keeps its value in
-  the bus domain, so the toggle handshake can come back disagreeing -- which
-  latches the staged timing spontaneously and leaves the status bit describing a
-  transfer that no longer maps to anything. `set_mode()` works around it by
-  confirming against `LIVE_*` instead, and the underlying handshake is still
-  wrong. Reading `0x1004`, the reconfig block's own status, would say whether its
-  busy bit ever clears; that matters once a host changes mode repeatedly rather
-  than once.
+  the bus domain, so the toggle handshake can come back disagreeing and latch the
+  staged timing spontaneously. `set_mode()` works around it by confirming against
+  `LIVE_*`, and the underlying handshake is still wrong.
+
+- `MODE_640x480p` selects slot 3 expecting 25.200 MHz, and the PLL puts 6.300
+  there, so the 31 kHz diagnostic runs at 7.875. Left alone deliberately: it is
+  not a 15 kHz target, and putting 25.200 on `outclk_1` would cost 320x240p60.
 
 - The bulk endpoint drains pixel data and counts it. The fabric now unpacks all
   four pixel formats and scans memory out, and the rect write port is in, but

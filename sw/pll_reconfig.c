@@ -95,10 +95,11 @@ int pll_reconfig_build(const struct pll_config *p,
 
 	out->count = 0;
 
-	/* Polling mode. The alternative raises an interrupt we have nothing to
-	 * service, since this runs from userspace over /dev/mem. */
+	/* Polling mode -- 1, not 0. See PLL_RECONFIG_MODE in the header: 0 is
+	 * waitrequest mode, where the slave stalls on START and never enters the
+	 * LOCKED state that `status` reports. We poll STATUS, so we need 1. */
 	out->w[out->count].addr = PLL_RECONFIG_MODE;
-	out->w[out->count].data = 0;
+	out->w[out->count].data = PLL_MODE_POLL;
 	out->count++;
 
 	out->w[out->count].addr = PLL_RECONFIG_N;

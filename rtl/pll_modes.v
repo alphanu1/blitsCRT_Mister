@@ -4,18 +4,24 @@
 // pll_modes.v -- pixel clock generation and selection.
 //
 // Wraps the generated pll_pix (Altera PLL with reconfiguration enabled) and an
-// altclkctrl mux. The PLL comes up at 12.600 and 6.300 MHz; altera_pll_reconfig
-// shifts new counters in at runtime for anything else.
+// altclkctrl mux.
 //
-// altclkctrl on Cyclone V takes PLL outputs on inclk[2] and inclk[3] only;
-// inclk[0] and inclk[1] must be real clock pins. So the two PLL outputs go to
-// slots 2 and 3 and the reference fills 0 and 1.
+//   outclk_0   12.600 MHz   15.750 kHz at htotal 800 -- 640x480i60, 640x240p60
+//   outclk_1    6.300 MHz   15.750 kHz at htotal 400 -- 320x240p60
 //
-// Both advertised clock families reach every mode:
-//   outclk_0  full rate   640-wide modes and the 31kHz diagnostic
-//   outclk_1  half rate    320-wide modes
-// Reconfiguration retunes both together, since they share the VCO.
-// -----------------------------------------------------------------------------
+// Both are 15 kHz, which is the whole point of the project. Everything else in
+// the advertised list is reached by altera_pll_reconfig retuning outclk_0 at
+// runtime, which is what makes that block load-bearing rather than a nicety: the
+// mode list is larger than two clocks and altclkctrl offers only two PLL slots.
+// On Cyclone V it takes PLL outputs on inclk[2] and inclk[3] only; inclk[0] and
+// inclk[1] must be real clock pins, so the reference fills those.
+//
+// mode_table's MODE_640x480p selects CLK_25M2 -- slot 3, outclk_1 -- and expects
+// 25.200 MHz, so it runs at 6.3 and produces a 7.875 kHz line rate instead of
+// 31.5. That mode is the HDMI diagnostic and not a 15 kHz target, so it is left
+// alone: putting 25.2 on outclk_1 would cost 320x240p60, which is a real mode.
+// Reaching 31 kHz properly means reconfiguration, like every other mode beyond
+// these two.
 
 `default_nettype none
 

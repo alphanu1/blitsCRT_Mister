@@ -44,12 +44,18 @@ module blitscrt_regs #(
      *        latency 2 against the bridge's 1, so every read returned zero
      *   3.6  BUS_DIAG; the bridge gives up on a slave that never accepts
      *        instead of wedging the transport
+     *   3.7  blitscrt_pllbus between the bridge and the reconfig slave
+     *   3.9  BUS_DIAG carries the PLL's lock and counts START and counter
+     *        writes reaching the reconfig slave
+     *   3.8  pllbus takes the data on the accept cycle and stops asking.
+     *        Holding mgmt_read re-ran the slave's read FSM, whose readdata
+     *        alternates between the value and zero while it cycles
      *
      * Bump for a fix as well as a feature. 3.3 shipped twice -- once with the
      * clock select pointing at a clock pin and once without -- and the only way
      * to tell them apart was whether the monitor synced.
      */
-    parameter [31:0] VERSION = 32'h0003_0006,
+    parameter [31:0] VERSION = 32'h0003_0009,
 
     /* Scanout memory geometry, pixels. Zero on purpose: these MUST be passed by
      * whoever instantiates this. A plausible default here once hid a dropped
@@ -94,6 +100,9 @@ module blitscrt_regs #(
      * then stable for tens of thousands of bus clocks -- and it is a
      * diagnostic, not something anything sequences on. */
     /* Bus-side diagnostics, same clock as this block. */
+    input  wire        pll_locked_raw,    // reconfig_from_pll[16], the PLL's lock
+    input  wire        pll_start_wr,      // a START write reached the slave
+    input  wire        pll_cnt_wr,        // an N/M/C write reached the slave
     input  wire        pll_wait,          // the reconfig slave's waitrequest
     input  wire        pll_accept,        // an aperture access completed
     input  wire        bus_stalled,       // the bridge abandoned one
@@ -227,13 +236,17 @@ module blitscrt_regs #(
      * to zero would read as healthy. */
     reg        pll_wait_seen;
     reg [7:0]  pll_accepts;
+    reg [3:0]  pll_starts, pll_cnts;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pll_wait_seen <= 1'b0; pll_accepts <= 8'd0;
+            pll_starts <= 4'd0; pll_cnts <= 4'd0;
         end else begin
             if (pll_wait) pll_wait_seen <= 1'b1;
             if (pll_accept && pll_accepts != 8'hFF)
                 pll_accepts <= pll_accepts + 8'd1;
+            if (pll_start_wr && pll_starts != 4'hF) pll_starts <= pll_starts + 4'd1;
+            if (pll_cnt_wr   && pll_cnts   != 4'hF) pll_cnts   <= pll_cnts   + 4'd1;
         end
     end
 
@@ -402,8 +415,9 @@ module blitscrt_regs #(
                 8'h8C: readdata <= {4'd0, lv_vbp,  4'd0, lv_vsy};
                 8'h90: readdata <= {4'd0, lv_vfp,  4'd0, lv_vact};
                 8'h94: readdata <= {28'd0, lv_clksel, hps_timing_bus, lv_ilace};
-                8'h98: readdata <= {16'd0, pll_accepts,
-                                    5'd0, bus_stalled, pll_wait_seen, pll_wait};
+                8'h98: readdata <= {pll_cnts, pll_starts, pll_accepts,
+                                    4'd0, pll_locked_raw, bus_stalled,
+                                    pll_wait_seen, pll_wait};
                 default: readdata <= 32'd0;
             endcase
         end

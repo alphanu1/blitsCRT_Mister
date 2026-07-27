@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/mman.h>
 #include <errno.h>
 
@@ -228,16 +229,35 @@ struct blitscrt_fabric *blitscrt_fabric_open(void)
 		uint32_t g = blitscrt_fabric_read(f, BLITSCRT_REG_SCANOUT_GEOM);
 		f->sc_w = g & 0xffffu;
 		f->sc_h = (g >> 16) & 0xffffu;
-		/* A fabric older than 3.2 has no CAPS register, and an undecoded
-		 * offset reads back zero -- the same value a dropped parameter
-		 * would give. Say which it is rather than leaving the caller to
-		 * guess from a zero. */
+		/*
+		 * Version gates, and they are not all advisory.
+		 *
+		 * 3.2 added CAPS, SCANOUT_DIAG and a writable SCANOUT_GEOM. An
+		 * undecoded offset reads back zero, which is the same value a
+		 * dropped parameter gives, so an older fabric needs saying out
+		 * loud rather than leaving the caller to infer it.
+		 *
+		 * 3.4 added LIVE_*, and that one is a hard dependency:
+		 * set_mode() confirms a modeset by reading the raster back
+		 * rather than trusting STAT_APPLYING, which is not trustworthy
+		 * across a PLL reconfiguration. Below 3.4 those registers read
+		 * zero, the confirmation can never succeed, and every modeset
+		 * fails however well it actually went.
+		 */
 		uint32_t ver = blitscrt_fabric_read(f, BLITSCRT_REG_VERSION);
-		if (ver < 0x00030002u)
-			fprintf(stderr, "blitscrt: fabric %u.%u predates CAPS, "
-					"SCANOUT_DIAG and writable geometry "
-					"(needs 3.2) -- rect writes will use the "
-					"gp port\n", ver >> 16, ver & 0xffffu);
+		if (ver < 0x00030004u)
+			fprintf(stderr,
+				"blitscrt: fabric %u.%u is too old for this daemon "
+				"(needs 3.4)\n"
+				"  modesets will fail: set_mode confirms against "
+				"LIVE_*, which reads zero here\n",
+				ver >> 16, ver & 0xffffu);
+		else if (ver < 0x00030008u)
+			fprintf(stderr,
+				"blitscrt: fabric %u.%u; 3.8 fixes PLL reconfig "
+				"reads, so modes needing a clock the fabric was "
+				"not compiled with will fail\n",
+				ver >> 16, ver & 0xffffu);
 
 		/* Read twice and require agreement. This is cached for the life of
 		 * the handle and every write path keys off it, so a single bad
@@ -566,12 +586,21 @@ int blitscrt_fabric_pll_reconfig(struct blitscrt_fabric *f,
 {
 	struct pll_reconfig_seq q;
 	unsigned int i;
-	int spin;
 
 	if (!f || !p)
 		return -1;
 	if (pll_reconfig_build(p, 0, &q) < 0)
 		return -1;
+
+	/* Log exactly what goes out. blitscrt-peek -R sends what should be the
+	 * identical sequence and succeeds where this fails, so the bytes are
+	 * worth comparing rather than assumed equal. */
+	if (getenv("BLITSCRT_PLL_TRACE"))
+		for (i = 0; i < q.count; i++)
+			fprintf(stderr, "  pll write [0x%04x] word %u = 0x%08x\n",
+				(unsigned)(BLITSCRT_PLLRECFG_OFFSET +
+					   q.w[i].addr * 4),
+				q.w[i].addr, q.w[i].data);
 
 	for (i = 0; i < q.count; i++)
 		blitscrt_fabric_write(f, BLITSCRT_PLLRECFG_OFFSET +
@@ -581,31 +610,49 @@ int blitscrt_fabric_pll_reconfig(struct blitscrt_fabric *f,
 	 * microseconds later. The pixel clock is unusable in between, which is
 	 * why the caller holds the video pipeline in reset. */
 	{
+		/*
+		 * Wait, then look. Do not poll.
+		 *
+		 * Reading STATUS repeatedly while the core waits for lock stops
+		 * it ever reaching LOCKED -- proven on hardware: the identical
+		 * write sequence followed by a single read after a pause
+		 * succeeds every time, while the same sequence followed by a
+		 * tight poll never does, however long the poll runs. Two seconds
+		 * of it failed where one read at 500 ms worked.
+		 *
+		 * So this backs off instead of hammering: a short wait, one
+		 * read, and if it is not ready yet a longer wait. Returns as
+		 * soon as the PLL is ready, and touches the register a handful
+		 * of times rather than thousands.
+		 */
+		static const unsigned waits_ms[] = { 5, 10, 20, 40, 80, 160,
+						     320, 640 };
 		uint32_t st = 0;
-		/* A million 32-bit reads is two million gp commands, roughly
-		 * twenty minutes at 620 ns each. Nobody waits that long, so the
-		 * old limit meant "hang", not "time out". Ten thousand is about
-		 * twelve seconds, which is still far longer than a relock. */
-		for (spin = 0; spin < 10000; spin++) {
+		unsigned total = 0;
+		size_t i;
+
+		for (i = 0; i < sizeof waits_ms / sizeof waits_ms[0]; i++) {
+			usleep(waits_ms[i] * 1000u);
+			total += waits_ms[i];
 			st = blitscrt_fabric_read(f, BLITSCRT_PLLRECFG_OFFSET +
 						      (PLL_RECONFIG_STATUS * 4));
-			if (!(st & PLL_STATUS_BUSY) && (st & PLL_STATUS_LOCKED))
+			if (st & PLL_STATUS_READY) {
+				if (i > 1)
+					fprintf(stderr, "blitscrt: PLL ready after "
+						"%u ms\n", total);
 				return 0;
+			}
 		}
-		/* Say what was seen. Returning a bare -1 here sent us round the
-		 * houses twice: the mode visibly changed on screen while this
-		 * reported failure, and nothing distinguished "the block never
-		 * finished" from "the block is not answering at all". */
 		fprintf(stderr,
-			"blitscrt: PLL reconfig did not complete after %d polls\n"
-			"  STATUS  (0x%04x) = 0x%08x  busy=%d locked=%d\n"
+			"blitscrt: PLL reconfig did not complete after %u ms\n"
+			"  STATUS  (0x%04x) = 0x%08x  ready=%d\n"
 			"  MODE    (0x%04x) = 0x%08x\n"
-			"  a status of 0x00000000 means the reconfig block is not\n"
-			"  answering -- check the 0x1000 aperture decode, not the PLL\n",
-			spin,
+			"  STATUS is (state == LOCKED), and reading it while the\n"
+			"  core waits for lock stops it getting there -- so this\n"
+			"  waits between looks rather than polling.\n",
+			total,
 			BLITSCRT_PLLRECFG_OFFSET + PLL_RECONFIG_STATUS * 4, st,
-			(st & PLL_STATUS_BUSY) ? 1 : 0,
-			(st & PLL_STATUS_LOCKED) ? 1 : 0,
+			(st & PLL_STATUS_READY) ? 1 : 0,
 			BLITSCRT_PLLRECFG_OFFSET + PLL_RECONFIG_MODE * 4,
 			blitscrt_fabric_read(f, BLITSCRT_PLLRECFG_OFFSET +
 						PLL_RECONFIG_MODE * 4));

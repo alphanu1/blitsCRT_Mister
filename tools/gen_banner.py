@@ -102,7 +102,7 @@ def build(mode_name):
 
 
 def build_fabric_banner():
-    """Bank 3: shown when the daemon is not writing. This is the screen you get
+    """Bank 3: shown when the daemon is not writing. This is the screen shown
     when the fabric is programmed but Linux is not up or blitscrtd is not
     running -- distinct from the live banner's USB status line."""
     def put(grid, r, text):

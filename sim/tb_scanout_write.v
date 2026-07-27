@@ -65,6 +65,7 @@ module tb_scanout_write;
         .clk_pix(clk_pix), .vid_cfg_rst_n(vid_rst_n),
         .vblank(vblank), .field(field),
         .pll_locked(1'b1), .hdmi_configured(1'b1),
+        .pll_locked_raw(1'b1), .pll_start_wr(1'b0), .pll_cnt_wr(1'b0),
         .pll_wait(1'b0), .pll_accept(1'b0), .bus_stalled(1'b0),
         .scanout_underrun_tog(1'b0), .scanout_beats(16'd0),
         .live_hsy(12'd60), .live_hbp(12'd76), .live_hact(12'd640), .live_hfp(12'd24),
@@ -204,7 +205,7 @@ module tb_scanout_write;
         chk("GEOM reports 16x8                 ", readdata == {16'd8, 16'd16});
 
         rd(14'h004);
-        chk("VERSION reads 3.6                 ", readdata == 32'h0003_0006);
+        chk("VERSION reads 3.9                 ", readdata == 32'h0003_0009);
 
         rd(14'h07C);
         chk("CAPS reports the build            ", readdata == 32'h0000_0001);

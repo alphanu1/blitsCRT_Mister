@@ -229,12 +229,26 @@ module blitscrt_top #(
      * writes landed on H_SY, H_BP and CTRL, and the status poll read VERSION
      * and took its low bits for "not busy, locked". */
     wire        avm_is_pll = (reg_address[13:12] == 2'b01);
-    wire [5:0]  pll_avs_address    = reg_address[7:2];   // byte offset to word
-    wire        pll_avs_read       = reg_read  && avm_is_pll;
-    wire        pll_avs_write      = reg_write && avm_is_pll;
-    wire [31:0] pll_avs_writedata  = reg_writedata;
     wire [31:0] pll_avs_readdata;
     wire        pll_avs_waitrequest;
+    wire [5:0]  pll_avs_address;
+    wire        pll_avs_read, pll_avs_write;
+    wire [31:0] pll_avs_writedata;
+    wire [31:0] pll_rdata;
+    wire        pll_stall;
+
+    /* The bridge drops avm_read before sampling readdata, which a registered
+     * slave survives and a combinational one does not -- see blitscrt_pllbus.v.
+     * The adapter holds the request until the data has been taken. */
+    blitscrt_pllbus u_pllbus (
+        .clk(FPGA_CLK1_50), .rst_n(rst50_n),
+        .sel(avm_is_pll), .read(reg_read), .write(reg_write),
+        .address(reg_address[7:2]), .writedata(reg_writedata),
+        .readdata(pll_rdata), .waitrequest(pll_stall),
+        .m_read(pll_avs_read), .m_write(pll_avs_write),
+        .m_address(pll_avs_address), .m_writedata(pll_avs_writedata),
+        .m_readdata(pll_avs_readdata), .m_waitrequest(pll_avs_waitrequest)
+    );
 
     /*
      * Both slaves are read latency 1 and the mux into the bridge is
@@ -252,8 +266,8 @@ module blitscrt_top #(
      * and the bridge's readback and waitrequest had no driver at all. Quartus
      * ties an undriven wire to zero, so every register read came back 0x00000000
      * and the strobe echo never appeared: the fabric looked absent. */
-    assign reg_readdata    = avm_is_pll ? pll_avs_readdata : regs_readdata;
-    assign reg_waitrequest = avm_is_pll ? pll_avs_waitrequest : regs_waitrequest;
+    assign reg_readdata    = avm_is_pll ? pll_rdata : regs_readdata;
+    assign reg_waitrequest = avm_is_pll ? pll_stall : regs_waitrequest;
 
 
     pll_modes u_pll (
@@ -657,6 +671,15 @@ module blitscrt_top #(
         .hps_timing(r_hps_timing), .hps_timing_bus(r_hps_timing_bus),
         .sc_base(r_sc_base), .sc_stride(r_sc_stride),
         .sc_format(r_sc_format), .sc_w(r_sc_w), .sc_h(r_sc_h),
+        /* reconfig_from_pll[16] is the PLL's lock, the input the reconfig core
+         * gates everything on. Bringing it out separately distinguishes "the
+         * core is not being told the PLL is locked" from every other reason a
+         * reconfiguration might not start. */
+        .pll_locked_raw(reconfig_from_pll[16]),
+        .pll_start_wr(pll_avs_write && !pll_avs_waitrequest &&
+                      pll_avs_address == 6'd2),
+        .pll_cnt_wr(pll_avs_write && !pll_avs_waitrequest &&
+                    (pll_avs_address >= 6'd3) && (pll_avs_address <= 6'd5)),
         .pll_wait(pll_avs_waitrequest),
         .pll_accept((pll_avs_read || pll_avs_write) && !pll_avs_waitrequest),
         .bus_stalled(bus_stalled),

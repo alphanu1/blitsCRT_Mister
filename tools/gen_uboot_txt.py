@@ -39,7 +39,7 @@ def build(rbf, loadaddr, parts, cmds, bootdelay, linux, kernel, dtb, bootargs,
     out.append("#")
     out.append("# The load is attempted %d ways because MiSTer's u-boot is a fork with" % len(tries))
     out.append("# exFAT support and the partition layout varies. A serial console and")
-    out.append("# 'printenv' will tell you which one is real.")
+    out.append("# 'printenv' names whichever one is real.")
     out.append("")
     out.append("bootdelay=%d" % bootdelay)
     out.append("")

@@ -12,8 +12,24 @@
  * word-addressed, which is the standard map below. The Avalon interface exposes
  * these directly.
  */
-#define PLL_RECONFIG_MODE       0x0     /* 0 = poll busy, 1 = interrupt        */
-#define PLL_RECONFIG_STATUS     0x1     /* bit0 busy, bit1 locked              */
+/*
+ * MODE selects how completion is reported, and the sense is the opposite of what
+ * it looks like. In the IP this is `slave_mode`, compared against `mode_WR`:
+ *
+ *   0  waitrequest mode. Writing START stalls the Avalon slave until the
+ *      reconfiguration finishes. The state machine returns straight to IDLE and
+ *      never enters LOCKED, so `status` -- which is literally
+ *      `(current_state == LOCKED)` -- is never set.
+ *   1  polling mode. The machine parks in LOCKED and STATUS reads ready, and
+ *      stays there until the status read clears it.
+ *
+ * We poll, so we need 1. Writing 0 and then polling STATUS is a combination that
+ * can never succeed, and it looked exactly like a dead reconfiguration block.
+ */
+#define PLL_RECONFIG_MODE       0x0     /* register offset */
+#define PLL_MODE_WAITREQUEST    0u
+#define PLL_MODE_POLL           1u
+#define PLL_RECONFIG_STATUS     0x1     /* one bit: 1 = ready. see below        */
 #define PLL_RECONFIG_START      0x2     /* any write latches the counter set   */
 #define PLL_RECONFIG_N          0x3
 #define PLL_RECONFIG_M          0x4
@@ -21,8 +37,17 @@
 #define PLL_RECONFIG_PHASE      0x6
 #define PLL_RECONFIG_K          0x7     /* fractional M, unused here           */
 
-#define PLL_STATUS_BUSY         (1u << 0)
-#define PLL_STATUS_LOCKED       (1u << 1)
+/*
+ * STATUS is ONE bit, not two. The IP declares `reg status; //0=busy, 1=ready`
+ * and drives it from `status = (current_state == LOCKED)`, presented at bit 0.
+ * There is no separate lock bit.
+ *
+ * This header previously described bit 0 as busy and bit 1 as locked, so the
+ * completion test read `!busy && locked` -- which rejects 0x00000001, the only
+ * value that means ready. Every reconfiguration completed and every one was
+ * reported as a failure.
+ */
+#define PLL_STATUS_READY        (1u << 0)
 
 /*
  * Counter word layout. The high and low half-periods are eight bits each, so

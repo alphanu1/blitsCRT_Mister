@@ -223,6 +223,9 @@ sim: assets
 	vvp sim/tb_scanout_write.vvp
 	$(IV) -o sim/tb_scanout_fetch.vvp sim/tb_scanout_fetch.v rtl/scanout_fetch.v
 	vvp sim/tb_scanout_fetch.vvp
+	$(IV) -o sim/tb_pll_reconfig.vvp sim/tb_pll_reconfig.v rtl/blitscrt_bridge.v \
+	      rtl/blitscrt_pllbus.v sim/ip/*.v 2>/dev/null
+	vvp sim/tb_pll_reconfig.vvp
 
 # Elaborate the real top level with stand-ins for the Quartus primitives.
 .PHONY: lint

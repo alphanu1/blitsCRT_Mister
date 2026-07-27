@@ -198,7 +198,10 @@
 #define BLITSCRT_BUS_PLL_WAIT       (1u << 0)
 #define BLITSCRT_BUS_PLL_WAIT_SEEN  (1u << 1)
 #define BLITSCRT_BUS_STALLED        (1u << 2)
+#define BLITSCRT_BUS_PLL_LOCKED     (1u << 3) /* reconfig_from_pll[16] */
 #define BLITSCRT_BUS_PLL_ACCEPTS(v) (((v) >> 8) & 0xffu)
+#define BLITSCRT_BUS_PLL_STARTS(v)  (((v) >> 24) & 0xfu)
+#define BLITSCRT_BUS_PLL_CNTS(v)    (((v) >> 28) & 0xfu)
 #define BLITSCRT_LIVE_INTERLACE     (1u << 0)
 #define BLITSCRT_LIVE_HPS_TIMING    (1u << 1) /* the mux is on host timing */
 #define BLITSCRT_LIVE_CLKSEL(v)     (((v) >> 2) & 3u)

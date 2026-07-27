@@ -31,13 +31,15 @@ static void usage(const char *p)
 		"       %s -g                   report scanout source, geometry, fetch state\n"
 		"       %s -t                   report the timing the raster is really running\n"
 		"       %s -p                   dump the PLL reconfig window\n"
+		"       %s -R [ms] [pre]        reconfig by hand; 'pre' first does the register\n"
+		"                              writes set_mode makes before it\n"
 		"       %s -m <clk_khz> <hd> <hss> <hse> <ht> <vd> <vss> <vse> <vt> [i]\n"
 		"                              apply a modeline; PAL: -m 12500 640 668 732 800 576 580 586 625 i\n"
 		"       %s -c <w> <h>           configure geometry (and map DDR3 window)\n"
 		"       %s -f <x> <y> <w> <h> <rgb565>\n"
 		"                              fill a rect in scanout memory, timed\n"
 		"offsets and values are hex (0x64) or decimal. Kill blitscrtd first.\n",
-		p, p, p, p, p, p, p, p, p);
+		p, p, p, p, p, p, p, p, p, p);
 }
 
 static uint32_t parse(const char *s) { return (uint32_t)strtoul(s, NULL, 0); }
@@ -155,6 +157,16 @@ int main(int argc, char **argv)
 					     "M", "C", "PHASE", "K" };
 		int k;
 		uint32_t bd = blitscrt_fabric_read(f, BLITSCRT_REG_BUS_DIAG);
+		printf("pll lock   reconfig_from_pll[16] = %d%s\n",
+		       (bd & BLITSCRT_BUS_PLL_LOCKED) ? 1 : 0,
+		       (bd & BLITSCRT_BUS_PLL_LOCKED) ? ""
+		         : "   *** the core gates everything on this ***");
+		printf("writes     START=%u  N/M/C=%u%s\n",
+		       BLITSCRT_BUS_PLL_STARTS(bd), BLITSCRT_BUS_PLL_CNTS(bd),
+		       (BLITSCRT_BUS_PLL_STARTS(bd) &&
+		        BLITSCRT_BUS_PLL_CNTS(bd) < 3)
+		         ? "   *** START with fewer than three counter writes:"
+		           " usr_valid_changes would be false ***" : "");
 		printf("bus        waitrequest now=%d ever=%d  stalled=%d  "
 		       "aperture accepts=%u\n",
 		       (bd & BLITSCRT_BUS_PLL_WAIT) ? 1 : 0,
@@ -178,6 +190,59 @@ int main(int argc, char **argv)
 					 (v & 2) ? "   locked" : "   idle, not locked")
 				      : "");
 		}
+	} else if (!strcmp(argv[1], "-R")) {
+		/*
+		 * The reconfiguration sequence by hand, in one process, with a
+		 * chosen wait before a single STATUS read.
+		 *
+		 * Driven as separate peek invocations -- seconds apart, one read
+		 * each -- this sequence completes every time. Driven from
+		 * set_mode, which polls hard starting microseconds after START,
+		 * it never does. The writes are identical, so the difference is
+		 * either how soon the first read happens or how many reads there
+		 * are. This isolates that: -R 500 waits half a second and reads
+		 * once, which is what the working case does.
+		 */
+		unsigned wait_ms = (argc > 2) ? parse(argv[2]) : 500;
+		int pre = (argc > 3);        /* any third argument: do the
+					      * register writes set_mode makes
+					      * before the reconfiguration */
+		uint32_t st;
+
+		if (pre) {
+			/* Exactly what blitscrt_fabric_set_mode() writes before
+			 * calling the reconfiguration. All register-file, none
+			 * of it near the 0x1000 aperture -- but it is the only
+			 * thing that path does and this one does not. */
+			blitscrt_fabric_write(f, BLITSCRT_REG_H_SY,  64);
+			blitscrt_fabric_write(f, BLITSCRT_REG_H_BP,  68);
+			blitscrt_fabric_write(f, BLITSCRT_REG_H_ACT, 640);
+			blitscrt_fabric_write(f, BLITSCRT_REG_H_FP,  28);
+			blitscrt_fabric_write(f, BLITSCRT_REG_V_SY,  3);
+			blitscrt_fabric_write(f, BLITSCRT_REG_V_BP,  19);
+			blitscrt_fabric_write(f, BLITSCRT_REG_V_ACT, 288);
+			blitscrt_fabric_write(f, BLITSCRT_REG_V_FP,  2);
+			blitscrt_fabric_write(f, BLITSCRT_REG_MODE_FLAGS, 1);
+			blitscrt_fabric_write(f, BLITSCRT_REG_PLL_M, 16);
+			blitscrt_fabric_write(f, BLITSCRT_REG_PLL_N, 1);
+			blitscrt_fabric_write(f, BLITSCRT_REG_PLL_C, 64);
+			printf("(did the 12 register writes set_mode makes first)\n");
+		}
+
+		printf("MODE=1, N, M, C, START, wait %u ms, one STATUS read\n",
+		       wait_ms);
+		blitscrt_fabric_write(f, 0x1000, 1);          /* polling mode  */
+		blitscrt_fabric_write(f, 0x100C, 0x00010101); /* N = 1, bypass */
+		blitscrt_fabric_write(f, 0x1010, 0x00000808); /* M = 16        */
+		blitscrt_fabric_write(f, 0x1014, 0x00002020); /* C = 64, idx 0 */
+		blitscrt_fabric_write(f, 0x1008, 1);          /* START         */
+
+		usleep(wait_ms * 1000u);
+
+		st = blitscrt_fabric_read(f, 0x1004);
+		printf("STATUS = 0x%08x  %s\n", st,
+		       (st & 1) ? "READY -- the sequence works; polling is what breaks it"
+			        : "still not ready");
 	} else if (!strcmp(argv[1], "-m")) {
 		/*
 		 * Apply a Switchres/DRM-style modeline through the same path a

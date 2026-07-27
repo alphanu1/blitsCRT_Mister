@@ -135,50 +135,49 @@ void blitscrt_dev_refresh_overlay(struct blitscrt_dev *d)
 	 * that the live overlay, not the baked one, is on screen. */
 	blitscrt_fabric_overlay_line(d->fabric, 3, 4, "FABRIC  HPS UP");
 
-	if (d->active_valid) {
-		snprintf(line, sizeof line, "MODE   %uX%u%s %.2fHZ",
-			 d->active_mode.hdisplay, d->active_mode.vdisplay,
-			 (d->active_timing.mode_flags & 1) ? "I" : "P",
-			 d->active_timing.field_hz);
-		blitscrt_fabric_overlay_line(d->fabric, 4, 4, line);
-		snprintf(line, sizeof line, "LINE   %.3f KHZ",
-			 d->active_timing.line_hz / 1000.0);
-		blitscrt_fabric_overlay_line(d->fabric, 5, 4, line);
-		snprintf(line, sizeof line, "PIXEL  %.3f MHZ",
-			 d->active_timing.pll.actual_hz / 1e6);
-		blitscrt_fabric_overlay_line(d->fabric, 6, 4, line);
-	} else {
-		/* No host has set a mode, so report the fabric's own timing read back
-		 * from the register block -- what the CRT is actually being driven
-		 * with. Rates are derived the same way the baked banner computes
-		 * them, so the live overlay reads identically to the idle one. */
-		struct blitscrt_fabric *f = d->fabric;
-		unsigned hsy  = blitscrt_fabric_read(f, BLITSCRT_REG_H_SY)  & 0xFFF;
-		unsigned hbp  = blitscrt_fabric_read(f, BLITSCRT_REG_H_BP)  & 0xFFF;
-		unsigned hact = blitscrt_fabric_read(f, BLITSCRT_REG_H_ACT) & 0xFFF;
-		unsigned hfp  = blitscrt_fabric_read(f, BLITSCRT_REG_H_FP)  & 0xFFF;
-		unsigned vsy  = blitscrt_fabric_read(f, BLITSCRT_REG_V_SY)  & 0xFFF;
-		unsigned vbp  = blitscrt_fabric_read(f, BLITSCRT_REG_V_BP)  & 0xFFF;
-		unsigned vact = blitscrt_fabric_read(f, BLITSCRT_REG_V_ACT) & 0xFFF;
-		unsigned vfp  = blitscrt_fabric_read(f, BLITSCRT_REG_V_FP)  & 0xFFF;
-		unsigned khz  = blitscrt_fabric_read(f, BLITSCRT_REG_PCLK_KHZ);
-		int ilace     = blitscrt_fabric_read(f, BLITSCRT_REG_MODE_FLAGS) & 1;
+	/*
+	 * Report the raster, not the request.
+	 *
+	 * This used to read H_SY..V_FP, PCLK_KHZ and MODE_FLAGS -- all staged
+	 * registers, written by software or left at their reset values. They
+	 * describe what was asked for, which is not the same thing as what
+	 * video_timing is being fed: with the front-panel mode table owning
+	 * timing they are simply unrelated, and PCLK_KHZ is a number someone
+	 * wrote rather than the clock actually selected. An overlay that reads
+	 * plausibly while the screen shows something else is worse than no
+	 * overlay, and that exact gap cost a day of hardware debugging.
+	 *
+	 * LIVE_* is post-mux and derives the pixel clock from clk_sel, so it
+	 * cannot disagree with the picture.
+	 */
+	{
+		struct blitscrt_live lv;
 
-		unsigned h_tot = hsy + hbp + hact + hfp;
-		unsigned v_tot = vsy + vbp + vact + vfp;
-		unsigned frame_lines = ilace ? (2 * v_tot + 1) : v_tot;
-		double line_hz  = h_tot ? (double)khz * 1000.0 / h_tot : 0.0;
-		double field_hz = frame_lines
-			? (ilace ? line_hz * 2.0 / frame_lines : line_hz / frame_lines)
-			: 0.0;
+		if (blitscrt_fabric_live(d->fabric, &lv) == 0 && lv.h_total) {
+			snprintf(line, sizeof line, "MODE   %uX%u%s %.2fHZ",
+				 lv.h_act,
+				 lv.interlace ? lv.v_act * 2 : lv.v_act,
+				 lv.interlace ? "I" : "P", lv.field_hz);
+			blitscrt_fabric_overlay_line(d->fabric, 4, 4, line);
 
-		snprintf(line, sizeof line, "MODE   %uX%u%s %.2fHZ",
-			 hact, ilace ? vact * 2 : vact, ilace ? "I" : "P", field_hz);
-		blitscrt_fabric_overlay_line(d->fabric, 4, 4, line);
-		snprintf(line, sizeof line, "LINE   %.3f KHZ", line_hz / 1000.0);
-		blitscrt_fabric_overlay_line(d->fabric, 5, 4, line);
-		snprintf(line, sizeof line, "PIXEL  %.3f MHZ", khz / 1000.0);
-		blitscrt_fabric_overlay_line(d->fabric, 6, 4, line);
+			snprintf(line, sizeof line, "LINE   %.3f KHZ",
+				 lv.line_hz / 1000.0);
+			blitscrt_fabric_overlay_line(d->fabric, 5, 4, line);
+
+			snprintf(line, sizeof line, "PIXEL  %.3f MHZ%s",
+				 lv.pclk_hz / 1e6, lv.clk_sel < 2 ? " REF!" : "");
+			blitscrt_fabric_overlay_line(d->fabric, 6, 4, line);
+
+			/* Who is driving it. A host mode and a front-panel mode
+			 * can read identically, and knowing which is on is the
+			 * difference between a working host and a host being
+			 * quietly ignored. */
+			snprintf(line, sizeof line, "TIMING %s%s",
+				 lv.hps_timing ? "HOST" : "PANEL",
+				 (lv.hps_timing && !d->active_valid)
+				   ? " (STALE)" : "");
+			blitscrt_fabric_overlay_line(d->fabric, 7, 4, line);
+		}
 	}
 
 	snprintf(line, sizeof line, "USB    %s",
@@ -406,14 +405,34 @@ int blitscrt_handle_ctrl(struct blitscrt_dev *d,
 			d->last_status = GUD_STATUS_PROTOCOL_ERROR;
 			return -1;
 		}
+		/*
+		 * Apply first, and believe the result.
+		 *
+		 * This used to set active_valid, call set_mode(), discard the
+		 * return value and answer GUD_STATUS_OK unconditionally. So a
+		 * reconfiguration that timed out, a geometry that did not take,
+		 * or a raster that ended up running something else were all
+		 * reported to the host as a successful modeset -- and the daemon
+		 * then believed it was driving a mode it was not. set_mode()
+		 * confirms against the live registers precisely so that its
+		 * answer means something; throwing it away wasted that.
+		 */
+		if (d->fabric &&
+		    blitscrt_fabric_set_mode(d->fabric, &d->pending_timing,
+					     d->format) < 0) {
+			/* Leave active_* alone: whatever was on screen before is
+			 * still what is on screen, and saying so is better than
+			 * claiming a mode that did not happen. */
+			d->pending_valid = 0;
+			d->last_status = GUD_STATUS_PROTOCOL_ERROR;
+			blitscrt_dev_refresh_overlay(d);
+			return -1;
+		}
 		d->active_mode   = d->pending_mode;
 		d->active_timing = d->pending_timing;
 		d->active_valid  = 1;
 		d->pending_valid = 0;
 		d->stat_modeset++;
-		if (d->fabric)
-			blitscrt_fabric_set_mode(d->fabric, &d->active_timing,
-						 d->format);
 		blitscrt_dev_refresh_overlay(d);
 		d->last_status = GUD_STATUS_OK;
 		return 0;

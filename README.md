@@ -259,14 +259,24 @@ What fits on-chip, leaving headroom for the rest of the design:
 | 640x480i60 | 300 KB, single | 600 KB, off-chip | 900 KB, off-chip |
 | 640x480p60 | 300 KB, single | 600 KB, off-chip | 900 KB, off-chip |
 
-The 240p modes run entirely from block RAM. That is worth having: no controller,
-no refresh, no arbitration between host writes and the raster, and a scanout
-read that cannot be late.
+That table is about capacity, and capacity turned out not to be the constraint.
+The only way into block RAM is the gp rect write port, and gp measures 3.19 MB/s
+on hardware. A 320x240 frame in RGB565 is 153,600 bytes: 48 ms to fill, about 21
+frames a second. Sixty needs 9.2 MB/s, nearly three times what the transport
+gives, and f2sdram does not help -- that is the fabric reading DDR3, not a route
+into on-chip memory.
 
-Everything above that goes off-chip, either to the SDRAM module if it is fitted
-or to HPS DDR3 over f2sdram if it is not. DDR3 is the more interesting target —
-it is always present, it is 1 GB, and the latency is absorbed by a line FIFO in
-front of scanout. Capacity stops being a consideration at either.
+So the on-chip path is a bring-up and fallback tier rather than a delivery one.
+It comes up holding a preloaded pattern and needs no memory controller, no
+software and no host, which makes it the right thing to prove the scanout
+pipeline against and the right thing to fall back to. It is not where host pixels
+land.
+
+Everything a host sends goes to HPS DDR3 over f2sdram, at any resolution. The
+SDRAM module would serve as well for capacity but solves the wrong problem: the
+pixels arrive in DDR3 already, so writing them anywhere else means moving them
+twice. DDR3 is always present, it is 1 GB, and its latency is absorbed by the
+double-buffered line buffer in front of scanout.
 
 Bandwidth is the reason RGB565 stays on the list. A full 640x480 frame in RGB888
 at 60Hz is 55 MB/s, past what USB 2.0 bulk will carry. The 240p modes sit well
@@ -1042,7 +1052,7 @@ timing, geometry and ownership following it.
 | done | `scanout.v` unpacks RGB565 / RGB888 / XRGB8888 / RGB332 to RGB666, one clock, matching the test card |
 | done | source mux off `CTRL`; the five control bits stubbed through M2 are live |
 | done | pixel and line replication derived from geometry, giving a true 320-wide active area back |
-| done | on-chip M10K path (`scanout_ram.v`), preloaded so scanout works with no software at all |
+| done | on-chip M10K path (`scanout_ram.v`), preloaded so scanout works with no software at all -- a bring-up tier, not a delivery one: gp cannot fill it at 60 Hz |
 | done | rect write port: `SCANOUT_WADDR` seeks, `SCANOUT_WDATA` advances, one gp command per pixel |
 | done | `scanout_fetch.v` bursts a line into a double-buffered line buffer; raw beats, lane select on read |
 | done | `sysmem_lite` lifted from MiSTer; word-address and burstcount adaptation in `blitscrt_f2sdram.v` |

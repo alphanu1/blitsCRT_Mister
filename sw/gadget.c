@@ -13,7 +13,9 @@
 #define _GNU_SOURCE
 #include "gadget.h"
 #include "device.h"
+#include "fabric.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <poll.h>
 #include <fcntl.h>
@@ -194,36 +196,156 @@ static void handle_setup(struct blitscrt_gadget *g,
 
 /* ---------------- bulk pixel data ---------------- */
 
+/*
+ * Drain one rect and put it on screen.
+ *
+ * Two things this must not do. It must not block for the whole transfer: the
+ * fabric watchdog needs a heartbeat every few hundred milliseconds, and a
+ * blocking read of a 600 KB frame silently stops it -- the overlay reverts to
+ * NO HPS HEARTBEAT while the daemon is alive and simply waiting. And it must not
+ * return without draining, or the host's URB never completes and it gives up
+ * with ETIMEDOUT, taking the compositor with it.
+ *
+ * So it polls, takes what has arrived, and ticks the heartbeat between reads.
+ * The blit happens once the whole rect is in, because scanout is live: a
+ * partial copy would be visible as a torn band.
+ */
 static void handle_bulk(struct blitscrt_gadget *g)
 {
 	struct blitscrt_dev *d = g->dev;
-	ssize_t got;
-	size_t want;
+	struct pollfd pfd = { .fd = g->ep_out, .events = POLLIN };
+	size_t want, done = 0;
+	int idle = 0;
 
 	if (!d->buffer_valid)
 		return;
 
 	want = d->buffer.length;
-	if (want > BULK_BUF)
-		want = BULK_BUF;
-
-	got = read(g->ep_out, g->bulk, want);
-	if (got < 0) {
-		if (errno != EAGAIN && errno != EINTR && errno != ESHUTDOWN)
-			perror("bulk read");
+	if (want > BULK_BUF) {
+		fprintf(stderr, "blitscrtd: rect of %zu bytes exceeds the %d-byte "
+				"bulk buffer; dropping\n", want, BULK_BUF);
+		d->buffer_valid = 0;
 		return;
 	}
 
-	/*
-	 * The rect lands at buffer.x/y in scanout memory. Once the SDRAM
-	 * path exists this becomes a strided copy into scanout memory; for
-	 * now the transfer is drained and counted so the host stays happy.
-	 */
+	while (done < want) {
+		ssize_t got;
+		int pr = poll(&pfd, 1, 100);
+
+		if (pr == 0) {
+			/* Nothing yet. Keep the fabric alive and wait a little
+			 * longer; a host that has gone away is caught below. */
+			blitscrt_dev_heartbeat(d);
+			if (++idle > 20) {          /* ~2 s with no progress */
+				fprintf(stderr, "blitscrtd: bulk stalled after "
+						"%zu of %zu bytes; abandoning "
+						"the rect\n", done, want);
+				d->buffer_valid = 0;
+				return;
+			}
+			continue;
+		}
+		if (pr < 0) {
+			if (errno == EINTR) continue;
+			perror("bulk poll");
+			d->buffer_valid = 0;
+			return;
+		}
+
+		got = read(g->ep_out, g->bulk + done, want - done);
+		if (got < 0) {
+			if (errno == EAGAIN || errno == EINTR) continue;
+			if (errno != ESHUTDOWN) perror("bulk read");
+			d->buffer_valid = 0;
+			return;
+		}
+		if (got == 0) break;            /* host ended the transfer short */
+		done += (size_t)got;
+		idle = 0;
+	}
+
+	/* Into scanout memory. blit routes on CAPS, so this is a row-granular
+	 * memcpy into the DDR3 window on a DDR3 build and the gp rect port on an
+	 * on-chip one. Nothing has to tell the fabric: its line fetcher is
+	 * already reading that window, so the pixels simply appear. */
+	if (done == want && d->fabric)
+		blitscrt_scanout_blit(d->fabric,
+				      d->buffer.x, d->buffer.y,
+				      d->buffer.width, d->buffer.height,
+				      (const uint16_t *)g->bulk);
+
 	d->stat_flush++;
 	d->buffer_valid = 0;
 }
 
 /* ---------------- event loop ---------------- */
+
+/*
+ * The configfs gadget directory, which gadget-setup.sh creates. Writing a UDC
+ * name into its UDC file attaches the gadget to the controller; writing an empty
+ * string detaches it.
+ */
+#define GADGET_DIR "/sys/kernel/config/usb_gadget/blitscrt"
+
+static int udc_name(char *out, size_t n)
+{
+	DIR *d = opendir("/sys/class/udc");
+	struct dirent *e;
+	int found = 0;
+
+	if (!d) {
+		fprintf(stderr, "blitscrtd: /sys/class/udc missing -- no gadget "
+				"controller. dwc2 is probably still in host mode; "
+				"dr_mode must be peripheral.\n");
+		return -1;
+	}
+	while ((e = readdir(d))) {
+		if (e->d_name[0] == '.') continue;
+		snprintf(out, n, "%s", e->d_name);
+		found = 1;
+		break;
+	}
+	closedir(d);
+	if (!found)
+		fprintf(stderr, "blitscrtd: /sys/class/udc is empty -- no gadget "
+				"controller registered\n");
+	return found ? 0 : -1;
+}
+
+static int udc_write(const char *val)
+{
+	int fd = open(GADGET_DIR "/UDC", O_WRONLY);
+	ssize_t w;
+
+	if (fd < 0) return -1;
+	w = write(fd, val, strlen(val));
+	close(fd);
+	return w < 0 ? -1 : 0;
+}
+
+static void udc_bind(struct blitscrt_gadget *g)
+{
+	char name[NAME_MAX + 1];
+
+	(void)g;
+	if (udc_name(name, sizeof name) < 0)
+		return;
+	if (udc_write(name) < 0) {
+		fprintf(stderr, "blitscrtd: cannot bind %s (%s) -- is the gadget "
+				"staged? run gadget-setup.sh\n",
+			name, strerror(errno));
+		return;
+	}
+	fprintf(stderr, "blitscrtd: gadget bound to %s; a host should now "
+			"enumerate it\n", name);
+}
+
+static void udc_unbind(void)
+{
+	/* Detach cleanly so the next run can bind again. Leaving it attached
+	 * with no daemon behind it gives a host a device that never answers. */
+	(void)udc_write("\n");
+}
 
 struct blitscrt_gadget *blitscrt_gadget_open(const char *ffs_path,
 					     struct blitscrt_dev *dev)
@@ -250,6 +372,17 @@ struct blitscrt_gadget *blitscrt_gadget_open(const char *ffs_path,
 	g->ep_out = open(path, O_RDONLY);
 	if (g->ep_out < 0) { perror(path); goto fail; }
 
+	/*
+	 * Bind to the UDC now, not before.
+	 *
+	 * FunctionFS only produces the endpoint files once ep0 has taken the
+	 * descriptors, and binding is what makes the gadget visible to a host --
+	 * so binding earlier offers a host something with no endpoints behind
+	 * it. The daemon is the only thing that knows the descriptors are in,
+	 * which is why this lives here rather than in gadget-setup.sh.
+	 */
+	udc_bind(g);
+
 	g->running = 1;
 	return g;
 
@@ -261,6 +394,7 @@ fail:
 void blitscrt_gadget_close(struct blitscrt_gadget *g)
 {
 	if (!g) return;
+	udc_unbind();
 	if (g->ep_out >= 0) close(g->ep_out);
 	if (g->ep0 >= 0) close(g->ep0);
 	free(g->ep0buf);

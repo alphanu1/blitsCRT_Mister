@@ -9,7 +9,7 @@ RTL     := rtl/video_timing.v rtl/testcard.v rtl/overlay.v \
            rtl/char_ram.v rtl/font_rom.v \
            rtl/scanout.v rtl/scanout_ram.v
 
-.PHONY: all world manifest assets sim render render-i render-scanout render-scanout-i clean distclean tools setup setup-dry get-toolchain kernel-clone daemon bitstream bitstream-force ddrbench quartus-path lint check-pins check-decl check-ip uboot-txt preview linux build kernel-check kernel-config initramfs
+.PHONY: dr-mode all world manifest assets sim render render-i render-scanout render-scanout-i clean distclean tools setup setup-dry get-toolchain kernel-clone daemon bitstream bitstream-force ddrbench quartus-path lint check-pins check-decl check-ip uboot-txt preview linux build kernel-check kernel-config initramfs
 
 # iverilog and Pillow are for verification only. Neither is needed to build the
 # bitstream -- Quartus consumes rtl/ and the generated .hex files, nothing else.
@@ -406,6 +406,23 @@ KERNEL_DTB   := $(CARD_SUB)/blitscrt.dtb
 BLITSCRT_NAME    ?= BlitsCRT
 BLITSCRT_VERSION ?= 0.10
 
+# Kernel image revision, separate from the project version and bumped whenever
+# anything baked into the zImage changes -- the config fragments or the
+# initramfs init. It rides in LOCALVERSION, so `uname -r` on the board says
+# exactly which image is running.
+#
+# Without it every build produced 5.15.1-BlitsCRT-0.10 and there was no way to
+# tell a new kernel from the one already on the card. That is the same fault as
+# a fabric that does not bump its VERSION register: a fix that does not reach the
+# hardware looks identical to a fix that did not work.
+#
+#   k1  first custom kernel: exFAT, embedded initramfs, serial console
+#   k2  dr_mode patched to peripheral; g_ffs off so configfs can own FunctionFS;
+#       init stages the gadget and reports why when it cannot
+#   k3  init execs busybox by path for gadget-setup.sh -- there is no /bin/sh in
+#       the initramfs, so k2 failed the exec silently and logged nothing
+BLITSCRT_KREV    ?= k3
+
 # Proof-of-concept initramfs: a static init plus a static busybox for an
 # interactive debug shell, embedded into zImage via CONFIG_INITRAMFS_SOURCE.
 # Built by the 'initramfs' target.
@@ -511,6 +528,14 @@ bitstream-force:
 
 # Install the bitstream and its u-boot override onto a mounted MiSTer SD card.
 .PHONY: sd
+# Patch the staged device tree for peripheral mode, on its own.
+#
+# The kernel rule does this after staging the dtb, but that rule is skipped when
+# the kernel is already up to date -- so a later `make world` can leave the dtb
+# untouched. Running this directly is safe and repeatable.
+dr-mode:
+	@python3 tools/set_dr_mode.py $(KERNEL_DTB)
+
 sd:
 	@test -n "$(DEST)" || { echo "usage: make sd DEST=/path/to/mounted/sd"; exit 1; }
 	./tools/install_sd.sh "$(DEST)"
@@ -555,6 +580,23 @@ kernel-config: kernel-check
 	  $(CURDIR)/linux/blitscrt_gadget.config \
 	  $(CURDIR)/linux/blitscrt_boot.config
 	$(KPATH) $(MAKE) -C $(KERNEL_SRC) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) olddefconfig
+	@# Check the gadget options survived olddefconfig. A fragment can be
+	@# overridden by a select or a dependency and the build carries on
+	@# regardless -- and the symptom is EBUSY from configfs at run time, three
+	@# steps away from the cause.
+	@fail=0; \
+	if grep -q '^CONFIG_USB_FUNCTIONFS=' $(KERNEL_SRC)/.config; then \
+	  echo "ERROR: CONFIG_USB_FUNCTIONFS is set. That is the legacy g_ffs"; \
+	  echo "       gadget; it claims the FunctionFS instance at boot and"; \
+	  echo "       configfs then fails with EBUSY. It must be off."; \
+	  fail=1; \
+	fi; \
+	for o in CONFIG_USB_CONFIGFS_F_FS CONFIG_USB_CONFIGFS CONFIG_USB_LIBCOMPOSITE; do \
+	  grep -q "^$$o=y" $(KERNEL_SRC)/.config || { \
+	    echo "ERROR: $$o is not enabled; the gadget cannot work"; fail=1; }; \
+	done; \
+	test $$fail -eq 0 || exit 1; \
+	echo "gadget options verified in .config"
 
 # ---- Proof-of-concept initramfs ----
 #
@@ -575,9 +617,10 @@ $(INIT_BIN): $(INITRAMFS_SRC)
 	$(KPATH) $(CROSS_COMPILE)gcc -static -Os -Wall -Wextra -o $(INIT_BIN) \
 	  -DBLITSCRT_NAME='"$(BLITSCRT_NAME)"' \
 	  -DBLITSCRT_VERSION='"$(BLITSCRT_VERSION)"' \
+	  -DBLITSCRT_KREV='"$(BLITSCRT_KREV)"' \
 	  $(INITRAMFS_SRC)
 	@$(KPATH) $(CROSS_COMPILE)strip $(INIT_BIN) 2>/dev/null || true
-	@echo "built initramfs init: $(BLITSCRT_NAME) $(BLITSCRT_VERSION), $$(du -h $(INIT_BIN) | cut -f1), static ARM"
+	@echo "built initramfs init: $(BLITSCRT_NAME) $(BLITSCRT_VERSION)-$(BLITSCRT_KREV), $$(du -h $(INIT_BIN) | cut -f1), static ARM"
 
 # Static busybox for /bin/busybox. Cloned + built once, then cached. Configured
 # static + standalone shell; the tc applet is dropped (it does not build against
@@ -637,12 +680,14 @@ linux: kernel-check initramfs
 	  --set-val INITRAMFS_ROOT_GID 0
 	$(KPATH) $(MAKE) -C $(KERNEL_SRC) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) olddefconfig
 	$(KPATH) $(MAKE) -C $(KERNEL_SRC) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) \
-	  LOCALVERSION=-$(BLITSCRT_NAME)-$(BLITSCRT_VERSION) -j$$(nproc) zImage dtbs
+	  LOCALVERSION=-$(BLITSCRT_NAME)-$(BLITSCRT_VERSION)-$(BLITSCRT_KREV) \
+	  -j$$(nproc) zImage dtbs
 	@cp $(KERNEL_SRC)/arch/arm/boot/zImage $(KERNEL_IMAGE) && \
-	  echo "staged blitscrt/zImage ($(BLITSCRT_NAME)-$(BLITSCRT_VERSION), initramfs embedded)"
+	  echo "staged blitscrt/zImage ($(BLITSCRT_NAME)-$(BLITSCRT_VERSION)-$(BLITSCRT_KREV), initramfs embedded)"
 	@if cp $(KERNEL_SRC)/arch/arm/boot/dts/$(KERNEL_DTB_NAME) $(KERNEL_DTB) 2>/dev/null || \
 	     cp $(KERNEL_SRC)/arch/arm/boot/dts/*/$(KERNEL_DTB_NAME) $(KERNEL_DTB) 2>/dev/null; then \
 	  echo "staged blitscrt/blitscrt.dtb ($(KERNEL_DTB_NAME))"; \
+	  python3 tools/set_dr_mode.py $(KERNEL_DTB); \
 	else \
 	  echo "note: $(KERNEL_DTB_NAME) not found; set KERNEL_DTB_NAME= to your board's dtb"; \
 	fi

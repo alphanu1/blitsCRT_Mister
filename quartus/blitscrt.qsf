@@ -3,8 +3,10 @@
 # Build the interlaced variant by uncommenting the MODE macro below.
 
 set_global_assignment -name TOP_LEVEL_ENTITY blitscrt_top
-# No LAST_QUARTUS_VERSION here. The string is version-specific and Quartus
-# writes its own on first save. Built and tested against Prime Lite 24.1std.
+# LAST_QUARTUS_VERSION is at the end of this file. It is version-specific, which
+# is why it was left out originally -- but Quartus writes its own on first save,
+# so omitting it only meant the file showed as modified after every compile.
+# Carrying it is quieter. Built and tested against Prime Lite 24.1std.
 
 set_global_assignment -name GENERATE_RBF_FILE ON
 set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files

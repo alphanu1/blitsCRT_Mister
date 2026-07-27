@@ -34,6 +34,12 @@
 #ifndef BLITSCRT_VERSION
 #define BLITSCRT_VERSION "0.0"
 #endif
+/* Kernel image revision, bumped whenever anything baked into the zImage changes.
+ * Printed here as well as riding in LOCALVERSION, so the boot log says which
+ * image is running without needing uname. */
+#ifndef BLITSCRT_KREV
+#define BLITSCRT_KREV "k0"
+#endif
 
 #define FATDIR  "/media/fat"
 #define LOGPATH FATDIR "/blitscrt-boot.log"
@@ -195,7 +201,92 @@ static void debug_shell(void)
 }
 
 /*
- * Launch blitscrtd --no-gadget in the background to bring up the HPS<->fabric
+ * Stage the USB gadget before the daemon starts.
+ *
+ * gadget-setup.sh creates the configfs gadget and mounts FunctionFS; the daemon
+ * then opens ep0, writes its descriptors and binds the UDC itself. Split that
+ * way because only the daemon knows when the descriptors are in, and binding
+ * earlier offers a host a device with no endpoints behind it.
+ *
+ * A card copy wins so the script can be changed without rebuilding the kernel.
+ * Returns non-zero if FunctionFS came up, which is what decides whether the
+ * daemon runs with the gadget or falls back to --no-gadget.
+ */
+static int stage_gadget(void)
+{
+	static const char *paths[] = {
+		"/media/fat/blitscrt/gadget-setup.sh",
+		"/bin/gadget-setup.sh",
+		NULL
+	};
+	const char *sh = NULL;
+	pid_t pid;
+	int status = 0;
+
+	for (int i = 0; paths[i]; i++)
+		if (access(paths[i], R_OK) == 0) { sh = paths[i]; break; }
+	if (!sh) {
+		say("blitscrt: no gadget-setup.sh; running without the USB gadget.\n");
+		return 0;
+	}
+
+	pid = fork();
+	if (pid == 0) {
+		int fd = open("/media/fat/blitscrt-gadget.log",
+			      O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); if (fd > 2) close(fd); }
+		/*
+		 * busybox by path, not /bin/sh. The initramfs ships /bin/busybox
+		 * with no applet symlinks -- which is why the interactive shell
+		 * above is started the same way. Reaching for /bin/sh here failed
+		 * silently: execl returned, the child _exit(127)'d writing
+		 * nothing, and the log was created empty. An empty log next to a
+		 * daemon in fabric-only mode said nothing about which of the two
+		 * had gone wrong.
+		 */
+		execl("/bin/busybox", "sh", sh, (char *)NULL);
+		execl("/bin/sh", "sh", sh, (char *)NULL);   /* if a real one exists */
+		_exit(127);
+	}
+	if (pid < 0) return 0;
+	waitpid(pid, &status, 0);
+
+	/* The endpoint file is the honest test: configfs can be set up and still
+	 * produce nothing, so the script's exit status alone is not enough. */
+	if (access("/dev/ffs-blitscrt/ep0", F_OK) == 0) {
+		say("blitscrt: USB gadget staged; log in /media/fat/blitscrt-gadget.log\n");
+		return 1;
+	}
+
+	/* Say why on the console, not only in a log file. A staging failure used
+	 * to leave an empty log and a daemon quietly in fabric-only mode, with
+	 * nothing on screen or console connecting the two. */
+	{
+		char line[256];
+		int n;
+		if (WIFEXITED(status) && WEXITSTATUS(status) == 127)
+			n = snprintf(line, sizeof line,
+				"blitscrt: could not exec a shell for "
+				"gadget-setup.sh; running without the gadget.\n");
+		else if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
+			n = snprintf(line, sizeof line,
+				"blitscrt: gadget-setup.sh failed (exit %d); "
+				"running without the gadget. See "
+				"/media/fat/blitscrt-gadget.log\n",
+				WEXITSTATUS(status));
+		else
+			n = snprintf(line, sizeof line,
+				"blitscrt: gadget-setup.sh ran but "
+				"/dev/ffs-blitscrt/ep0 is absent; running "
+				"without the gadget. Check /sys/class/udc/ "
+				"names a controller.\n");
+		wr(2, line, (size_t)(n > 0 ? n : 0));
+	}
+	return 0;
+}
+
+/*
+ * Launch blitscrtd in the background to bring up the HPS<->fabric
  * register transport (M2). It reads the register block over gp and, on a match,
  * runs the heartbeat. gp writes are safe here because we own gp_out -- there is
  * no MiSTer hps_io on these wires -- so enable them. Output goes to a log on the
@@ -203,7 +294,7 @@ static void debug_shell(void)
  * on the card wins over the one baked into the initramfs, so the daemon can be
  * swapped without rebuilding the kernel.
  */
-static void launch_daemon(void)
+static void launch_daemon(int with_gadget)
 {
 	static const char *paths[] = {
 		"/media/fat/blitscrt/blitscrtd",   /* card copy, swappable */
@@ -232,14 +323,18 @@ static void launch_daemon(void)
 				close(fd);
 		}
 		setenv("BLITSCRT_GP_UNSAFE", "1", 1);   /* our fabric owns gp_out */
-		execl(bin, "blitscrtd", "--no-gadget", (char *)NULL);
+		if (with_gadget)
+			execl(bin, "blitscrtd", (char *)NULL);
+		else
+			execl(bin, "blitscrtd", "--no-gadget", (char *)NULL);
 		_exit(127);
 	}
 	if (pid > 0) {
 		char line[192];
 		int n = snprintf(line, sizeof line,
-			"blitscrt: launched %s --no-gadget (pid %d);"
-			" output in /media/fat/blitscrtd.log\n", bin, (int)pid);
+			"blitscrt: launched %s%s (pid %d);"
+			" output in /media/fat/blitscrtd.log\n",
+			bin, with_gadget ? "" : " --no-gadget", (int)pid);
 		wr(2, line, (size_t)(n > 0 ? n : 0));
 	}
 }
@@ -256,7 +351,7 @@ int main(void)
 	mkdir("/dev", 0755);
 	mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
 
-	say("\n=== " BLITSCRT_NAME " " BLITSCRT_VERSION
+	say("\n=== " BLITSCRT_NAME " " BLITSCRT_VERSION "-" BLITSCRT_KREV
 	    " initramfs: our kernel is alive ===\n");
 
 	if (slurp("/proc/version", kver, sizeof kver) < 0)
@@ -295,7 +390,7 @@ int main(void)
 			say("blitscrt: could not open " LOGPATH " for writing\n");
 		}
 		sync();          /* flush the record; leave it mounted for the shell */
-		launch_daemon(); /* M2: bring up the HPS<->fabric transport */
+		launch_daemon(stage_gadget()); /* M2: bring up the HPS<->fabric transport */
 	}
 
 	if (mounted)

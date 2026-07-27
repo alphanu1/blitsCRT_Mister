@@ -687,8 +687,16 @@ straight into BlitsCRT.
 ### The BlitsCRT kernel
 
 `make world` builds a branded kernel from the MiSTer kernel tree: a `zImage` with
-an embedded initramfs, plus the device tree, versioned `BlitsCRT-0.10`
-(`LOCALVERSION`, so `uname -r` reads `5.15.1-BlitsCRT-0.10`). The initramfs is a
+an embedded initramfs, plus the device tree, versioned `BlitsCRT-0.10-k2`
+(`LOCALVERSION`, so `uname -r` reads `5.15.1-BlitsCRT-0.10-k2`).
+
+`BLITSCRT_KREV` is a kernel image revision, separate from the project version and
+bumped whenever anything baked into the zImage changes -- the config fragments or
+the initramfs init. Without it every build produced the same version string and
+there was no way to tell a new kernel from the one already on the card, which is
+the same fault as a fabric that does not bump its `VERSION` register: a fix that
+did not reach the hardware looks exactly like a fix that did not work. Bumping it
+also forces a rebuild, since the version string is linked in. The initramfs is a
 single static `init` plus a static busybox, built into the image, so there is no
 separate rootfs to ship. On boot `init` brings up `/proc`, `/sys` and `devtmpfs`,
 mounts the card (exFAT on cards over 32 GB, FAT32 below), appends a stamped record
@@ -833,27 +841,33 @@ frame is both fields woven together:
 | **DE10-Nano or MiSTer Pi** | required | the board itself |
 | **Analog A/V board** | required | the only 15 kHz RGB output; without it there is HDMI and nothing else |
 | **microSD card** | required | dedicated to BlitsCRT, since it replaces the boot chain on it |
-| **micro-B to Type-A USB cable** | required for M4 | host link, into the board's OTG port |
+| **A-to-A USB cable, VBUS cut** | required for M4 | host link, into the board's Type-A OTG port |
 | **Serial console** | advisable | the HPS UART at 115200 is where the boot log and the daemon appear |
 | **SDRAM module** | not used | no controller in the design, and none planned |
-| USB hub board, RTC | not used | nothing here needs them, but see below |
+| **USB hub board** | must be removed | the gadget does not work with it fitted |
+| RTC board | not used | nothing here needs it |
 
 The host link goes into the board's USB OTG port, driven by the HPS `dwc2`
-controller in peripheral mode. On a DE10-Nano that is the micro-AB connector, and
-a MiSTer Pi carries the same one -- these boards are meant to be pin- and
-port-compatible. So an ordinary micro-B to Type-A cable does the job: the host
-supplies VBUS, which is what tells the gadget a host is there.
+controller in peripheral mode. On a DE10-Nano that is the micro-AB connector; a
+MiSTer Pi fits a **Type-A** receptacle instead, so the cable is A-to-A with VBUS
+cut on the board side -- both ends look like hosts and only one of them may supply
+power.
 
-The USB hub add-on hangs off that same controller -- confirmed on hardware, with
-`dmesg` showing `dwc2` enumerating a 7-port hub downstream -- so the two want the
-same connector and the hub has to come off before the gadget has anywhere to
-attach.
+The micro-USB visible on an assembled MiSTer Pi is easy to mistake for the OTG
+port and is not: it belongs to the USB hub add-on and is that hub's *upstream*
+input. A PC plugged into it becomes the hub's host and enumerates a 7-port hub,
+which looks like the gadget failing and is nothing of the kind.
 
-Later MiSTer Pi revisions have moved connectors around and one of the USB-C ports
-may now carry what the micro-USB used to. That changes nothing in the design: USB-C
-running USB 2.0 peripheral mode is perfectly ordinary and `dwc2` neither knows nor
-cares what shape the socket is. Which socket reaches it is a board question,
-answered on the board:
+The hub add-on has to come off. It reaches the same `dwc2` controller, so both it
+and the gadget end up on the bus the host is trying to enumerate, and the gadget
+does not work while it is fitted -- established on hardware, not inferred.
+
+That is the awkward part of this board for M4: the hub is what a normal MiSTer
+build uses for keyboards and joysticks, and it and the display gadget cannot both
+have the controller. Nothing in the design can arbitrate it; a USB device is a
+transceiver with a pull-up, and there are two of them on one pair.
+
+Which socket reaches the controller is a board question, answered on the board:
 
 ```
 ls /sys/class/udc/          # names the gadget controller, if one exists
@@ -1159,10 +1173,18 @@ back from a mode the display cannot show -- which works because gp runs on the
 50 MHz reference and stays reachable whatever the pixel clock is doing. That
 matters with `BTN_OSD` dead on this board.
 
-**M4 -- GUD USB host link. Not started.** The product goal: the board appearing to
-a host PC as a plug-and-play display, no driver to install. The kernel carries the
-gadget stack and everything a host modeset touches is in place and tested from the
-board side, but GUD is **not configured and not running**.
+**M4 -- GUD USB host link. Enumerating; pixels not yet on screen.** The product
+goal: the board appearing to a host PC as a plug-and-play display, no driver to
+install. A host now does exactly that -- `1d50:614d` enumerates, the in-tree `gud`
+driver binds, and a `/dev/dri/card*` appears for a 15 kHz CRT hanging off an
+FPGA. What is left is the pixel path.
+
+The first frame after enumeration failed with `Failed to flush framebuffer:
+error=-110`, and the board's overlay reverted to `NO HPS HEARTBEAT` at the same
+moment. One cause for both: `handle_bulk()` read the whole rect in one blocking
+call, so the fabric watchdog stopped being fed while it waited, and the host's URB
+never completed. It now polls, takes what has arrived, heartbeats between reads
+and blits once the rect is whole. Written and building; not yet run on hardware.
 
 | | |
 |---|---|
@@ -1173,13 +1195,13 @@ board side, but GUD is **not configured and not running**.
 | done | unadvertised modes accepted and applied, so Switchres needs no extra step |
 | done | a failed modeset is reported to the host as one; it used to answer OK regardless |
 | done | `blitscrt-peek -m` applies a modeline through the same path a host uses |
-| **todo** | **create the FunctionFS gadget over configfs (`gadget-setup.sh`)** |
-| **todo** | **set `dr_mode` to peripheral: confirmed on hardware that the base tree leaves `dwc2` in host mode, so `/sys/class/udc/` is empty and no gadget can exist** |
-| todo | launch `blitscrtd` with the gadget, not `--no-gadget` |
-| todo | have a host enumerate it as a GUD display |
-| **todo** | **wire the bulk endpoint to `blitscrt_scanout_blit()` -- rects are drained and counted, never written** |
+| done | `gadget-setup.sh` creates the configfs gadget and mounts FunctionFS; init runs it before the daemon |
+| done | `tools/set_dr_mode.py` patches the built dtb to peripheral mode; the stock tree leaves `dwc2` in host mode and `/sys/class/udc/` empty |
+| done | init stages the gadget, then launches `blitscrtd` with it, falling back to `--no-gadget` if FunctionFS did not come up |
+| done | **a host enumerates it as a GUD display.** Confirmed on hardware: `1d50:614d`, `gud 1.0.0` bound, `/dev/dri/card*` created |
+| **untested** | **the bulk endpoint drains without blocking and blits into scanout. Written, builds, not yet run on hardware** |
 | note | RGB888 is advertised first and the fetcher cannot read it yet; full ladder depth waits on the two-beat window in M5 |
-| todo | the USB hub off the OTG port, and a micro-B to Type-A cable; see the hardware notes |
+| done | A-to-A cable with VBUS cut into the Type-A OTG port, with the USB hub add-on removed |
 
 *A modeset that failed used to report success.* The commit path set
 `active_valid`, called `blitscrt_fabric_set_mode()`, discarded the return value
@@ -1393,9 +1415,14 @@ point of the whole design.
   assembled at the wrong stride. RGB565 is the format that works today. The
   two-beat read window that fixes it is M5 work.
 
-- The bulk endpoint drains pixel data and counts it. The fabric now unpacks all
-  four pixel formats and scans memory out, and the rect write port is in, but
-  nothing yet carries pixels from the bulk endpoint into it.
+- RGB888 is the format advertised first and the fetcher cannot read it, so a host
+  taking it gets a picture at the wrong stride. RGB565 works. See M5.
+
+- The USB hub add-on must be removed for the gadget to work. It reaches the same
+  `dwc2` controller, and a USB device is a transceiver with a pull-up: two of them
+  on one pair is not something software can arbitrate. So a board set up for
+  MiSTer in the usual way cannot also be a display without pulling the hub, and
+  keyboards and joysticks go with it.
 
 ## Credits and licensing
 

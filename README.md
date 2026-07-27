@@ -101,10 +101,10 @@ raster.
 A few specifics, since they are easy to assume wrong:
 
 - **No compression on the wire, for now.** GUD can negotiate LZ4 and the device
-  declines it. The 15kHz modes fit raw even full-frame: 640x240 RGB888 at 60 Hz
-  is 27 MB/s and 480i RGB565 is 18 MB/s, both inside USB 2.0's ~35 MB/s of bulk,
-  and damage rectangles cut the real figure well below that. Compression earns
-  its place only at the higher line rates — see **M5**.
+  declines it. The 240p modes fit raw with room to spare -- a 384x224p60 frame in
+  RGB565 is 10 MB/s against USB 2.0's ~35 MB/s of bulk, full-screen motion and
+  every pixel changing. The 640-wide modes are the ones that need help, and by
+  about five per cent. See **M5**.
 - **The transport is the general-purpose HPS port, not AXI or DMA.** Register
   and pixel access marshals through the 32-bit `gp` interface the board already
   brings out. The seam that carries it (`rtl/blitscrt_bridge.v`) can be switched
@@ -264,9 +264,9 @@ it is always present, it is 1 GB, and the latency is absorbed by a line FIFO in
 front of scanout. Capacity stops being a consideration at either.
 
 Bandwidth is the reason RGB565 stays on the list. A full 640x480 frame in RGB888
-at 60Hz is 55 MB/s, past what USB 2.0 bulk will carry. Damage rects mean that
-ceiling is rarely approached, and the 15kHz modes sit well inside it: 640x240 in
-RGB888 at 60Hz is 27 MB/s full-frame.
+at 60Hz is 55 MB/s, past what USB 2.0 bulk will carry. The 240p modes sit well
+inside it -- 384x224 in RGB565 is 10 MB/s full-frame -- and damage rects cut the
+real figure further for anything short of full-screen motion.
 
 ## What the screen reports at boot
 
@@ -1114,7 +1114,7 @@ board side, but GUD is **not configured and not running**.
 | todo | launch `blitscrtd` with the gadget, not `--no-gadget` |
 | todo | have a host enumerate it as a GUD display |
 | **todo** | **wire the bulk endpoint to `blitscrt_scanout_blit()` -- rects are drained and counted, never written** |
-| **todo** | **stop advertising RGB888, or gate the list on `CAPS` -- the DDR3 fetcher cannot read it** |
+| note | RGB888 is advertised first and the fetcher cannot read it yet; full ladder depth waits on the two-beat window in M5 |
 | todo | A-to-A cable with VBUS cut on the board side (MiSTer Pi fits a Type-A host receptacle) |
 
 *A modeset that failed used to report success.* The commit path set
@@ -1133,48 +1133,106 @@ enumerate, modeset correctly, negotiate a format and stream frames, and the scre
 will not change. Small now rather than large: `blitscrt_scanout_blit()` takes
 exactly the x/y/w/h a GUD `set_buffer` request carries, and routes itself.
 
-*RGB888 is advertised and the DDR3 fetcher cannot read it.* Three bytes per pixel
-straddles the 64-bit beat boundary -- pixel 2 spans bytes 6, 7 and 8 -- and the lane
-extractor handles 1, 2 and 4-byte formats only. A host choosing it gets a picture
-sheared by a byte per pixel, with no error anywhere. Advertise `XRGB8888` instead:
-same 8 bits per channel, aligned, one more byte on a wire where damage rects
-dominate. Worth doing before a host ever connects, because format negotiation
-happens long before anything would look suspicious.
+*RGB888 is advertised first and cannot be read yet.* It is offered ahead of the
+others for a good reason -- it is the only format that uses the whole 6/6/6 ladder,
+and truncating eight bits to six wastes nothing -- but three bytes per pixel
+straddles the 64-bit beat boundary, and `scanout_fetch.v` handles 1, 2 and 4-byte
+formats only. So a host negotiating it gets a picture assembled at the wrong
+stride. The fix is a two-beat read window in the fetcher, and it belongs in M5
+with the rest of the depth work; until then RGB565 is the format that works, at
+the cost of a bit on red and blue.
 
-**M5 -- higher line rates over USB 2.0. Not started.** 24kHz and 31kHz open up
-progressive modes above 240p, and every one is over the full-frame USB 2.0 budget
-even at RGB565.
+**M5 -- higher line rates over USB 2.0. Not started.** Every advertised mode
+works. What M5 is about is the worst case -- a full surface every refresh, which
+full-screen motion produces -- and only the 640-wide modes exceed the link there,
+by about five per cent. 24kHz and 31kHz add more modes of that shape. The lever is
+LZ4, which the protocol already negotiates.
 
 | | |
 |---|---|
-| done | RGB332 implemented, which fits everything at 18 MB/s |
-| done | damage rectangles, which carry most desktop work |
+| done | RGB332 implemented, and halves everything at no CPU cost |
+| done | damage rectangles, which carry anything short of full-screen motion |
 | done | LZ4 negotiation present in the protocol layer, declined in one line |
-| **todo** | **decide the lever against a real workload; pixel depth first** |
+| **todo** | **measure what a host actually sends for a 480i mode: 60 surface updates a second, or 30** |
+| todo | measure the real compression ratio on emulator output |
 | todo | LZ4 decompressor on the ARM, into a cached buffer then one `memcpy` to the window |
-| todo | measure the compression ratio on actual host traffic -- it cannot be known before M4 |
+| **todo** | **a two-beat read window in `scanout_fetch.v`, so RGB888 works: the only format that uses the whole ladder, and the only deep one that fits 640-wide with LZ4** |
+
+RGB565, a full surface every refresh, against about 35 MB/s of bulk in practice.
 
 ```
-640x480p60 RGB565  31kHz    37 MB/s    over ~35 MB/s bulk
-640x480p60 RGB888  31kHz    55 MB/s    well over
-512x384p60 RGB888  24kHz    35 MB/s    at the edge
+                                    MB/s          of budget
+                                 raw    LZ4     raw     LZ4
+256x224p60   NES, SNES, CPS      6.9    3.4     20%     10%
+320x224p60   Genesis, arcade     8.6    4.3     25%     12%
+384x224p60   CPS2, Neo Geo      10.3    5.2     29%     15%
+320x240p60   advertised          9.2    4.6     26%     13%
+320x288p50   PAL 240p            9.2    4.6     26%     13%
+640x480i60   PSX hi-res, PC     36.9   18.4    105%     53%
+640x576i50   PAL hi-res         36.9   18.4    105%     53%
+640x480p60   31kHz              36.9   18.4    105%     53%
 ```
 
-240p and 480i fit because one is half-height and the other sends one field per
-refresh; a progressive frame at these rates sends every pixel every refresh, and
-that is what blows the budget. Three non-exclusive levers close the gap: pixel
-depth, LZ4 (2-3x on desktop and UI, only 1.1-1.4x on video, and it needs a
-decompressor), and damage rectangles. For UI and desktop these modes are reachable
-now with RGB565 plus damage rects; for full-screen video or a 60fps game at 480p,
-only lower depth or a faster link actually fits.
+Almost the whole retro catalogue is 240p and lands around a quarter of the budget
+raw, full-screen motion and every pixel changing. The 640-wide modes are the only
+ones over, and only in this worst case: they run today, and damage rects keep the
+real figure below the table for anything that is not full-screen motion. With LZ4
+every mode sits at half the budget or less.
 
-LZ4 is weakest exactly where the link is tightest -- anything changing every pixel
-every frame defeats it and damage rects together. Where it earns its place is large
-updates of compressible content: scrolling, window drags, page repaints. It is also
-what puts 640x480 **RGB888** within reach for desktop use, needing 1.58x against a
-55 MB/s demand. Decompress into a cached buffer and `memcpy` to the uncached
-window; LZ4's short scattered copies are the worst case for write-combining, which
-is the 69-against-110 MB/s gap measured on the board.
+Interlacing saves nothing on the wire. GUD carries rects in the mode's coordinate
+space and DRM's `vdisplay` for 480i is 480, so the host sends the whole progressive
+surface and the device interleaves on read. What interlacing halves is what the
+CRT draws per field, not what crosses USB.
+
+That five per cent is why LZ4 is the right lever rather than pixel depth. The usual
+objection -- that it collapses to 1.1x on full-screen motion -- assumes photographic
+content: noise, grain, continuous gradients. Sprite-based output is flat colour
+fields and repeated tiles drawn from small palettes, so it should compress
+considerably better. **The 2x in the table is an assumption, not a measurement.**
+It cannot be measured before a host is generating real traffic, which is M4. Even
+at 1.15x, though, the 640-wide modes come in under budget, so the case does not
+rest on the estimate being right.
+
+*Colour depth.* The ladder is six bits a channel, so RGB565 gives away a bit on
+red and blue. Full depth costs more wire, and where that matters is narrower than
+it looks:
+
+```
+                              raw     of budget      LZ4     of budget
+384x224p60   RGB565          10.3        29%         5.2        15%
+             RGB888          15.5        44%         7.7        22%
+             XRGB8888        20.6        59%        10.3        29%
+640x480i60   RGB565          36.9       105%        18.4        53%
+             RGB888          55.3       158%        27.6        79%
+             XRGB8888        73.7       211%        36.9       105%
+```
+
+Every 240p mode carries the full ladder raw, no compression needed -- RGB565 buys
+nothing there and costs a bit of red and blue. It is the 640-wide modes where
+depth has a price.
+
+And there the fourth byte decides it. `RGB888` at three bytes fits with LZ4 at
+79% of budget; `XRGB8888` at four does not, needing better than 2.1x rather than
+2x. So RGB888 is both the format that wastes no ladder depth and the only deep one
+that fits a 640-wide mode at all.
+
+It is also the one `scanout_fetch.v` cannot read: three bytes straddles the 64-bit
+beat boundary, and the lane extractor handles 1, 2 and 4-byte formats. A two-beat
+read window fixes it -- hold the previous beat alongside the current one so a pixel
+spanning bytes 6, 7 and 8 can be assembled. Contained to the read side, with
+`scanout.v` and everything upstream unchanged, and it is what turns full depth from
+advertised into working.
+
+The cost is a decompressor on the ARM and a second pass over the data. Decompress
+into a cached buffer, then one `memcpy` to the uncached window: LZ4 emits short
+scattered literal and match copies, the worst case for write-combining, which is
+the 69-against-110 MB/s gap measured on the board.
+
+Before any of that, one measurement may remove the problem. A CRT shows a complete
+480i frame thirty times a second, so sending sixty full surfaces is twice the work
+for something physically invisible. At frame rate it is 18.4 MB/s, full colour, no
+decompressor. Whether a host can be persuaded to do that is a DRM question and M4
+will answer it.
 
 ## Known limitations
 
@@ -1201,6 +1259,12 @@ is the 69-against-110 MB/s gap measured on the board.
 - `MODE_640x480p` selects slot 3 expecting 25.200 MHz, and the PLL puts 6.300
   there, so the 31 kHz diagnostic runs at 7.875. Left alone deliberately: it is
   not a 15 kHz target, and putting 25.200 on `outclk_1` would cost 320x240p60.
+
+- RGB888 is advertised first, because it is the only format that uses the whole
+  6/6/6 ladder, and `scanout_fetch.v` cannot read it: three bytes per pixel
+  straddles the 64-bit beat boundary. A host negotiating it gets a picture
+  assembled at the wrong stride. RGB565 is the format that works today. The
+  two-beat read window that fixes it is M5 work.
 
 - The bulk endpoint drains pixel data and counts it. The fabric now unpacks all
   four pixel formats and scans memory out, and the rect write port is in, but

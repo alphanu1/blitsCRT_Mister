@@ -12,9 +12,15 @@
  *          describes it for a kernel driver, though the userspace daemon uses
  *          /dev/mem and does not need it.
  *
- * The USB gadget side is configured from userspace through configfs and needs
- * no nodes here beyond the controller being in peripheral mode, which the base
- * MiSTer/DE10 device tree already provides on the OTG port.
+ * The USB gadget side is configured from userspace through configfs, but the
+ * controller has to be in peripheral mode first and the base MiSTer/DE10 device
+ * tree does NOT provide that -- it leaves dwc2 in host mode, which is correct for
+ * MiSTer, where the OTG port carries the USB hub for keyboards and joysticks.
+ *
+ * Confirmed on hardware: /sys/class/udc/ is empty while dmesg shows dwc2
+ * enumerating that hub downstream. No UDC means no gadget, whatever configfs is
+ * told. An overlay setting dr_mode on the OTG node is the first M4 task, and the
+ * hub has to come off the port -- it and the gadget want the same connector.
  */
 
 /dts-v1/;

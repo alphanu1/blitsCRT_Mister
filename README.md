@@ -844,23 +844,25 @@ a MiSTer Pi carries the same one -- these boards are meant to be pin- and
 port-compatible. So an ordinary micro-B to Type-A cable does the job: the host
 supplies VBUS, which is what tells the gadget a host is there.
 
-Two things to check on a given board rather than assume. Later MiSTer Pi
-revisions have moved connectors around and one of the USB-C ports may now carry
-what the micro-USB used to; USB-C running USB 2.0 peripheral mode is perfectly
-ordinary and `dwc2` neither knows nor cares what shape the socket is, but which
-socket reaches it is a board question. And whatever else is fitted, the OTG port
-has to be free -- a USB hub add-on gives host ports for keyboards and joysticks,
-which is a different job, and depending on how a particular one attaches it may
-or may not be in the way.
+The USB hub add-on hangs off that same controller -- confirmed on hardware, with
+`dmesg` showing `dwc2` enumerating a 7-port hub downstream -- so the two want the
+same connector and the hub has to come off before the gadget has anywhere to
+attach.
 
-Both are settled in seconds on the board itself:
+Later MiSTer Pi revisions have moved connectors around and one of the USB-C ports
+may now carry what the micro-USB used to. That changes nothing in the design: USB-C
+running USB 2.0 peripheral mode is perfectly ordinary and `dwc2` neither knows nor
+cares what shape the socket is. Which socket reaches it is a board question,
+answered on the board:
 
 ```
-ls /sys/class/udc/          # names the gadget controller
-dmesg -w                    # then plug a host into each candidate in turn
+ls /sys/class/udc/          # names the gadget controller, if one exists
+dmesg | tail -20            # then plug a host in and compare
 ```
 
-The port wired to `dwc2` produces a connect or VBUS event. Nothing else will.
+An empty `/sys/class/udc/` means no gadget controller is registered at all, which
+is `dr_mode` rather than the cable. That is where this board stands today, and it
+is the first M4 task.
 
 The analog board is the one that matters. Its VGA is a six-bit resistor ladder per
 channel wired straight to FPGA pins -- there is no DAC chip in the path -- which is
@@ -1172,12 +1174,12 @@ board side, but GUD is **not configured and not running**.
 | done | a failed modeset is reported to the host as one; it used to answer OK regardless |
 | done | `blitscrt-peek -m` applies a modeline through the same path a host uses |
 | **todo** | **create the FunctionFS gadget over configfs (`gadget-setup.sh`)** |
-| todo | set the OTG port to peripheral mode: `dr_mode = "peripheral"` in the device tree |
+| **todo** | **set `dr_mode` to peripheral: confirmed on hardware that the base tree leaves `dwc2` in host mode, so `/sys/class/udc/` is empty and no gadget can exist** |
 | todo | launch `blitscrtd` with the gadget, not `--no-gadget` |
 | todo | have a host enumerate it as a GUD display |
 | **todo** | **wire the bulk endpoint to `blitscrt_scanout_blit()` -- rects are drained and counted, never written** |
 | note | RGB888 is advertised first and the fetcher cannot read it yet; full ladder depth waits on the two-beat window in M5 |
-| todo | the OTG port free and a micro-B to Type-A cable; see the hardware notes |
+| todo | the USB hub off the OTG port, and a micro-B to Type-A cable; see the hardware notes |
 
 *A modeset that failed used to report success.* The commit path set
 `active_valid`, called `blitscrt_fabric_set_mode()`, discarded the return value

@@ -81,15 +81,19 @@ out of the datapath:
 
 ## The goal
 
-A blit streamer that a Linux host treats as an ordinary display, driving a
-15kHz CRT with no emulator in the path.
+A blit streamer that a host treats as an ordinary display, driving a 15kHz CRT
+with no emulator in the path.
 
 The device implements GUD (Generic USB Display). On any Linux machine it
-enumerates as a `drm_device` — a real `/dev/dri/card*`. Nothing on the host
-knows or cares that the panel is a CRT hung off an FPGA. You can drag a window
-onto it, run a native Linux arcade port, or point Wayland at it, and the pixels
-come out at 15kHz. That is the whole point: the CRT stops being tied to an
-emulator pipeline and becomes a display the OS can use for anything.
+enumerates as a `drm_device` — a real `/dev/dri/card*`. Nothing on the host knows
+or cares that the panel is a CRT hung off an FPGA. Drag a window onto it, run a
+native arcade port, or point Wayland at it, and the pixels come out at 15kHz. That
+is the whole point: the CRT stops being tied to an emulator pipeline and becomes a
+display the OS can use for anything.
+
+GUD is a wire protocol rather than a Linux one, so the host end is not fixed. A
+Windows driver over IddCx would work against the same hardware unchanged; that is
+**M6**.
 
 This is a different approach from the emulator-driven path. There, a guest has
 to run something like GroovyMAME with exact modelines and beam-timed updates to
@@ -1233,6 +1237,50 @@ Before any of that, one measurement may remove the problem. A CRT shows a comple
 for something physically invisible. At frame rate it is 18.4 MB/s, full colour, no
 decompressor. Whether a host can be persuaded to do that is a DRM question and M4
 will answer it.
+
+**M6 -- Windows host. Not started.** GUD is a wire protocol, not a Linux one:
+request codes, a mode structure, a buffer format. Nothing about the board depends
+on what is at the other end, so a Windows host that speaks the same protocol works
+against this hardware unmodified. M6 is a driver project, not a hardware one.
+
+| | |
+|---|---|
+| done | the protocol is host-agnostic; the device side needs no change for this |
+| **todo** | **an IddCx user-mode driver, starting from Microsoft's sample** |
+| **todo** | **establish how a modeline reaches the driver; IddCx carries resolution and refresh, not porches** |
+| todo | most likely a Switchres backend for this driver, alongside its existing drmkms and adl ones |
+| todo | damage tracking from the desktop surface, which the Linux driver does for free |
+| todo | format conversion to RGB888 or RGB565 in the driver |
+| todo | driver signing: test-signed for a cabinet, attestation-signed to distribute |
+
+The framework is IddCx, the Indirect Display Driver class extension: user-mode
+only with no kernel component, running in Session 0, handed the desktop image as a
+DirectX surface. Microsoft names this exact case -- a USB dongle with a monitor
+attached -- and ships a sample that enumerates a monitor and runs the frame loop.
+
+Switchres stays where it is, in the emulator, as on Linux. What differs is how its
+output reaches the display. On Linux it adds the mode to DRM and GUD carries the
+whole modeline through `SET_STATE_CHECK`. Windows has no equivalent path: IddCx
+deals in a monitor mode list and EDID, so resolution and refresh reach a driver and
+porches do not. A normal indirect display does not generate its own timing and has
+no use for them. This one does.
+
+The existing Windows arrangement is a two-part one. A tool installs the resolution
+list into the driver ahead of time, and the emulator then adjusts timings at run
+time through a driver-specific interface -- ADL on AMD -- so every refresh rate
+does not have to be predefined. The first half maps straight onto IddCx, which
+reports a mode list already. The second half has no IddCx equivalent and is the
+real work of M6.
+
+Switchres has a pluggable backend for exactly this reason, with `drmkms` on Linux
+and `adl` and `powerstrip` on Windows, so another one for this driver is the shape
+the problem already has. That is the expected route rather than a settled one:
+where a Windows Switchres deposits a generated modeline, and whether it can be
+read rather than pushed, is the first thing M6 has to establish.
+
+Screen capture through the Desktop Duplication API would be a fraction of the
+effort and is not an option: it cannot switch resolution per game, which is the
+point of the whole design.
 
 ## Known limitations
 

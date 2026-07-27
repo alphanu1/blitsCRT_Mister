@@ -242,14 +242,19 @@ RGB888 is listed first because it uses the whole ladder.
 
 ### Scanout memory
 
-Three tiers are available on this board, which is a different situation from the
-Cyclone IV BlitCRT was built on.
+Two tiers are used, which is a different situation from the Cyclone IV BlitCRT
+was built on.
 
 | | size | notes |
 |---|---|---|
 | **M10K on-chip** | ~696 KB | no controller, lowest latency, no arbitration |
-| **SDRAM module** | 128 MB | optional add-on, fabric-side, 16-bit |
 | **HPS DDR3** | 1 GB | always fitted, reached over the f2sdram bridge |
+
+The MiSTer SDRAM module is deliberately not among them. Pixels arrive in DDR3
+because that is where the USB gadget receives them, so putting them in a
+fabric-side memory would mean reading them back out and pushing every one across
+a bridge into something smaller, slower and optional. There is no SDRAM
+controller in the design and none is planned.
 
 What fits on-chip, leaving headroom for the rest of the design:
 
@@ -272,11 +277,9 @@ software and no host, which makes it the right thing to prove the scanout
 pipeline against and the right thing to fall back to. It is not where host pixels
 land.
 
-Everything a host sends goes to HPS DDR3 over f2sdram, at any resolution. The
-SDRAM module would serve as well for capacity but solves the wrong problem: the
-pixels arrive in DDR3 already, so writing them anywhere else means moving them
-twice. DDR3 is always present, it is 1 GB, and its latency is absorbed by the
-double-buffered line buffer in front of scanout.
+Everything a host sends goes to HPS DDR3 over f2sdram, at any resolution. Its
+latency is absorbed by the double-buffered line buffer in front of scanout, which
+measures 160 beats a line with no underruns at 640 wide.
 
 Bandwidth is the reason RGB565 stays on the list. A full 640x480 frame in RGB888
 at 60Hz is 55 MB/s, past what USB 2.0 bulk will carry. The 240p modes sit well
@@ -823,6 +826,50 @@ frame is both fields woven together:
 
 ## Notes on the hardware
 
+### What is needed
+
+| | | |
+|---|---|---|
+| **DE10-Nano or MiSTer Pi** | required | the board itself |
+| **Analog A/V board** | required | the only 15 kHz RGB output; without it there is HDMI and nothing else |
+| **microSD card** | required | dedicated to BlitsCRT, since it replaces the boot chain on it |
+| **micro-B to Type-A USB cable** | required for M4 | host link, into the board's OTG port |
+| **Serial console** | advisable | the HPS UART at 115200 is where the boot log and the daemon appear |
+| **SDRAM module** | not used | no controller in the design, and none planned |
+| USB hub board, RTC | not used | nothing here needs them, but see below |
+
+The host link goes into the board's USB OTG port, driven by the HPS `dwc2`
+controller in peripheral mode. On a DE10-Nano that is the micro-AB connector, and
+a MiSTer Pi carries the same one -- these boards are meant to be pin- and
+port-compatible. So an ordinary micro-B to Type-A cable does the job: the host
+supplies VBUS, which is what tells the gadget a host is there.
+
+Two things to check on a given board rather than assume. Later MiSTer Pi
+revisions have moved connectors around and one of the USB-C ports may now carry
+what the micro-USB used to; USB-C running USB 2.0 peripheral mode is perfectly
+ordinary and `dwc2` neither knows nor cares what shape the socket is, but which
+socket reaches it is a board question. And whatever else is fitted, the OTG port
+has to be free -- a USB hub add-on gives host ports for keyboards and joysticks,
+which is a different job, and depending on how a particular one attaches it may
+or may not be in the way.
+
+Both are settled in seconds on the board itself:
+
+```
+ls /sys/class/udc/          # names the gadget controller
+dmesg -w                    # then plug a host into each candidate in turn
+```
+
+The port wired to `dwc2` produces a connect or VBUS event. Nothing else will.
+
+The analog board is the one that matters. Its VGA is a six-bit resistor ladder per
+channel wired straight to FPGA pins -- there is no DAC chip in the path -- which is
+why the design outputs RGB666 natively and why the format list is ordered the way
+it is. Without that board the fabric still runs and HDMI still works, but the
+15 kHz output that is the point of the project has nowhere to go.
+
+### The analog path
+
 VGA on the analog A/V board is a six-bit resistor ladder per channel wired
 straight to FPGA pins. There is no DAC chip in the path. The design outputs
 RGB666 natively.
@@ -1130,7 +1177,7 @@ board side, but GUD is **not configured and not running**.
 | todo | have a host enumerate it as a GUD display |
 | **todo** | **wire the bulk endpoint to `blitscrt_scanout_blit()` -- rects are drained and counted, never written** |
 | note | RGB888 is advertised first and the fetcher cannot read it yet; full ladder depth waits on the two-beat window in M5 |
-| todo | A-to-A cable with VBUS cut on the board side (MiSTer Pi fits a Type-A host receptacle) |
+| todo | the OTG port free and a micro-B to Type-A cable; see the hardware notes |
 
 *A modeset that failed used to report success.* The commit path set
 `active_valid`, called `blitscrt_fabric_set_mode()`, discarded the return value

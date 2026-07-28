@@ -974,6 +974,16 @@ to read the log from. `killall blitscrtd` stops it; init does not respawn it.
 
 Then:
 
+Which build is on the card, without running it:
+
+```
+grep -a -o 'blitscrtd-build=[a-z0-9]*' /media/fat/blitscrt/blitscrtd
+```
+
+Grep for the bare number instead and it will mislead: a static ARM binary carries
+the VFP register names `d0` to `d31` in its unwind tables, so searching for `d16`
+finds one of those.
+
 ```
 tail -40 /media/fat/trace.log          # what it is doing now
 grep -c 'LZ4 block bad' /media/fat/trace.log     # should be 0

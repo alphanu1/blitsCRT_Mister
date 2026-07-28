@@ -48,7 +48,10 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 #       no control request can be answered while a frame arrives, and if the host
 #       issues one during its flush both sides wait on each other -- which is
 #       what the indefinite hang was
-BLITSCRTD_BUILD ?= d18
+#   d18 LZ4 on by default in the daemon itself, not set by init
+#   d19 a greppable build tag in the binary, and main.o depends on the Makefile
+#       so bumping the number cannot leave a stale object behind
+BLITSCRTD_BUILD ?= d19
 CFLAGS  += -DBLITSCRTD_BUILD='"$(BLITSCRTD_BUILD)"'
 # -lpthread: the bulk endpoint runs on its own thread, so a blocking read cannot
 # stop ep0 being serviced. Static linking needs it named explicitly.
@@ -108,6 +111,11 @@ test_pll_reconfig: tests/test_pll_reconfig.c pll_reconfig.c pll.c
 
 test_modes: tests/test_modes.c modes.c pll.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+# main.o carries BLITSCRTD_BUILD, and make does not track CFLAGS changes -- so
+# bumping the build number alone would leave the old object in place and the
+# binary would report a version it is not. Depend on the Makefile so it cannot.
+main.o: Makefile
 
 test_lz4: tests/test_lz4.c lz4dec.c
 	$(CC) $(CFLAGS) -o $@ tests/test_lz4.c lz4dec.c

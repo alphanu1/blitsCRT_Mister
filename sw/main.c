@@ -49,6 +49,19 @@ static int run_no_gadget(struct blitscrt_dev *dev)
 	return 0;
 }
 
+/*
+ * A tag that can be found in the binary without running it.
+ *
+ * `grep -a -o 'blitscrtd-build=[a-z0-9]*' blitscrtd` identifies which build is
+ * on a card. The bare build number is no good for that -- a static ARM binary
+ * carries VFP register names d0..d31 in its unwind tables, so grepping for "d16"
+ * finds one of those and suggests a stale object that is not there.
+ *
+ * volatile and non-static so it survives the linker with nothing referring to it.
+ */
+volatile const char blitscrtd_build_tag[] =
+	"blitscrtd-build=" BLITSCRTD_BUILD;
+
 int main(int argc, char **argv)
 {
 	const char *ffs = "/dev/ffs-blitscrt";

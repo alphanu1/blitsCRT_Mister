@@ -93,7 +93,7 @@ display the OS can use for anything.
 
 GUD is a wire protocol rather than a Linux one, so the host end is not fixed. A
 Windows driver over IddCx would work against the same hardware unchanged -- that is
-**M6**, and it will most likely live in its own repository, since such a driver is
+**M7**, and it will most likely live in its own repository, since such a driver is
 useful to any GUD device and not just this one.
 
 This is a different approach from the emulator-driven path. There, a guest has
@@ -238,7 +238,10 @@ from BlitCRT does not map onto it at all. Three formats are offered:
 | RGB565 | 2 | 5/6/5 into 6/6/6 | gives up a bit on red and blue, halves the bandwidth |
 | RGB332 | 1 | 3/3/2 into 6/6/6 | for tight bandwidth |
 
-RGB888 is listed first because it uses the whole ladder.
+RGB888 would use the whole ladder and is not currently offered: `scanout_fetch.v`
+cannot read three bytes per pixel. RGB565 is what a host gets, and what the
+picture on the CRT is made of. See **M5** for the two-beat read window that
+brings it back.
 
 ### Scanout memory
 
@@ -437,8 +440,9 @@ sw/         GUD device daemon (M2 onward)
 quartus/    project, pin assignments, constraints
 sim/        testbenches and rendered output
 tools/      font, banner, PNG and u-boot override generators
-docs/       BRINGUP.md  step by step to first picture
-            BOOT.md     how the bitstream reaches the FPGA
+docs/       BRINGUP.md    step by step to first picture
+            BOOT.md       how the bitstream reaches the FPGA
+            UBOOT_ENV.md  importing the boot environment, and recovery
 ```
 
 **Bringing it up for the first time: `docs/BRINGUP.md`.**
@@ -951,6 +955,56 @@ the porches the CRT centres on.
 Unused pins are reserved as tri-stated inputs. The design cannot drive the
 SDRAM, the HPS GPIO, or anything else it has no assignment for.
 
+## Restarting the daemon with logging
+
+`init` starts `blitscrtd` at boot, writing to `/media/fat/blitscrtd.log`. LZ4 is
+on -- that is the daemon's own default rather than something the boot path sets,
+so it applies however the daemon is started. `BLITSCRT_LZ4=0` turns it off.
+
+To watch what it is doing, stop it and start it by hand:
+
+```
+killall blitscrtd
+BLITSCRT_TRACE=1 BLITSCRT_LZ4=1 BLITSCRT_GP_UNSAFE=1 \
+    /media/fat/blitscrt/blitscrtd > /media/fat/trace.log 2>&1 &
+```
+
+The `&` matters -- without it the daemon holds the console and there is no shell
+to read the log from. `killall blitscrtd` stops it; init does not respawn it.
+
+Then:
+
+```
+tail -40 /media/fat/trace.log          # what it is doing now
+grep -c 'LZ4 block bad' /media/fat/trace.log     # should be 0
+grep -c 'header said'   /media/fat/trace.log     # should be 0
+grep 'fps' /media/fat/trace.log | tail -5        # rate against the budget
+```
+
+**The trace slows it down, and enough to change what it measures.** It prints two
+lines per frame; at 60 Hz over a 115200 console that is far more than the line can
+carry, so the writes back up and the daemon waits on them. Frame rate drops, and
+the numbers in the report describe a machine that is busy logging. Redirecting to
+a file rather than the console helps but does not eliminate it -- the card is not
+fast either.
+
+So: use it to find out *what* is happening, not *how fast*. For rate, run without
+`BLITSCRT_TRACE`; the once-a-second line is still printed and reads
+
+```
+blitscrtd: 60.0 fps -- read 1.5 ms (overlapped), lz4 2.6 ms, blit 5.6 ms,
+           critical path 8.2 of 16.7 available
+```
+
+which is the useful measurement. `critical path` well under `available` means the
+daemon is idle waiting for frames, so a shortfall is the host rather than this
+end.
+
+One more thing worth knowing: a trace left running on a serial console has been
+seen to leave a `screen` session spinning at 100% CPU on the host afterwards. If
+frame rate is mysteriously poor, check `top` on the PC before suspecting the
+board.
+
 ## The GUD daemon
 
 `sw/` holds the device side of the Generic USB Display protocol. It answers
@@ -1173,18 +1227,11 @@ back from a mode the display cannot show -- which works because gp runs on the
 50 MHz reference and stays reachable whatever the pixel clock is doing. That
 matters with `BTN_OSD` dead on this board.
 
-**M4 -- GUD USB host link. Enumerating; pixels not yet on screen.** The product
-goal: the board appearing to a host PC as a plug-and-play display, no driver to
-install. A host now does exactly that -- `1d50:614d` enumerates, the in-tree `gud`
-driver binds, and a `/dev/dri/card*` appears for a 15 kHz CRT hanging off an
-FPGA. What is left is the pixel path.
-
-The first frame after enumeration failed with `Failed to flush framebuffer:
-error=-110`, and the board's overlay reverted to `NO HPS HEARTBEAT` at the same
-moment. One cause for both: `handle_bulk()` read the whole rect in one blocking
-call, so the fabric watchdog stopped being fed while it waited, and the host's URB
-never completed. It now polls, takes what has arrived, heartbeats between reads
-and blits once the rect is whole. Written and building; not yet run on hardware.
+**M4 -- GUD USB host link. Done.** The board appears to a host PC as a
+plug-and-play display, with no driver to install. Confirmed on hardware:
+`1d50:614d` enumerates, the in-tree `gud` driver binds, a `/dev/dri/card*`
+appears, and the desktop is on a 15 kHz CRT hanging off an FPGA -- wallpaper,
+taskbar, menus, at 640x480i60 and 15.750 kHz.
 
 | | |
 |---|---|
@@ -1199,8 +1246,10 @@ and blits once the rect is whole. Written and building; not yet run on hardware.
 | done | `tools/set_dr_mode.py` patches the built dtb to peripheral mode; the stock tree leaves `dwc2` in host mode and `/sys/class/udc/` empty |
 | done | init stages the gadget, then launches `blitscrtd` with it, falling back to `--no-gadget` if FunctionFS did not come up |
 | done | **a host enumerates it as a GUD display.** Confirmed on hardware: `1d50:614d`, `gud 1.0.0` bound, `/dev/dri/card*` created |
-| **untested** | **the bulk endpoint drains without blocking and blits into scanout. Written, builds, not yet run on hardware** |
-| note | RGB888 is advertised first and the fetcher cannot read it yet; full ladder depth waits on the two-beat window in M5 |
+| done | changing mode from the host works. It used to hang both ends -- the same read-size fault, since a modeset produces a differently sized flush |
+| done | the overlay hides itself while a host is attached and comes back when one leaves; the front-panel button stays authoritative |
+| note | composite sync is implemented and switchable at runtime on `CTRL` bit 3, but has not been tried on a set that needs it |
+| done | **pixels on screen.** The bulk endpoint drains a full frame per flush and blits it into scanout |
 | done | A-to-A cable with VBUS cut into the Type-A OTG port, with the USB hub add-on removed |
 
 *A modeset that failed used to report success.* The commit path set
@@ -1219,30 +1268,108 @@ enumerate, modeset correctly, negotiate a format and stream frames, and the scre
 will not change. Small now rather than large: `blitscrt_scanout_blit()` takes
 exactly the x/y/w/h a GUD `set_buffer` request carries, and routes itself.
 
-*RGB888 is advertised first and cannot be read yet.* It is offered ahead of the
-others for a good reason -- it is the only format that uses the whole 6/6/6 ladder,
-and truncating eight bits to six wastes nothing -- but three bytes per pixel
-straddles the 64-bit beat boundary, and `scanout_fetch.v` handles 1, 2 and 4-byte
-formats only. So a host negotiating it gets a picture assembled at the wrong
-stride. The fix is a two-beat read window in the fetcher, and it belongs in M5
-with the rest of the depth work; until then RGB565 is the format that works, at
-the cost of a bit on red and blue.
+*What it took, and the two that mattered.* The bulk endpoint delivered nothing for
+a long time while the entire control protocol worked -- descriptors, formats,
+connectors, modes, modeset, `SET_BUFFER`, every one answered with status 0. Two
+faults, both structural:
 
-**M5 -- higher line rates over USB 2.0. Not started.** Every advertised mode
-works. What M5 is about is the worst case -- a full surface every refresh, which
-full-screen motion produces -- and only the 640-wide modes exceed the link there,
-by about five per cent. 24kHz and 31kHz add more modes of that shape. The lever is
-LZ4, which the protocol already negotiates.
+**The endpoint needs its own thread.** A read on a FunctionFS endpoint blocks
+until the transfer completes, and doing that on the ep0 thread means no control
+request can be answered while a frame arrives. If the host issues one during its
+flush, both sides wait on each other -- an indefinite hang with no timeout at
+either end. Linux's own `ffs-test.c` runs a thread per endpoint for exactly this
+reason. `bulk_worker` now does, and fabric access is serialised with a mutex,
+since the gp transport carries a strobe parity across calls.
+
+**Gadget FIFO sizes were never set.** The stock socfpga node has none, being
+written for host mode, and dwc2's defaults left the bulk endpoint with nothing
+behind it -- an endpoint with nowhere to put data NAKs rather than stalling, so
+nothing errors. `set_dr_mode.py` now sets `g-rx-fifo-size`, `g-np-tx-fifo-size`
+and a `g-tx-fifo-size` entry for all 15 endpoints; dwc2 rejects a short list
+outright, which is how the second attempt was caught.
+
+Also ruled out along the way, each on hardware: the endpoint descriptor (`lsusb
+-v` shows `EP 1 OUT`, bulk, 512 bytes), the modeset, transfer size, `O_NONBLOCK`
+(worse -- a read is what queues the request, so `EAGAIN` means nothing is ever
+offered), and compression.
+
+**M5 -- bandwidth. Done; only RGB888 remains, and that is depth not rate.** The worst case is
+a full surface every refresh, which full-screen motion produces, and only the
+640-wide modes exceeded the link there -- by about five per cent. LZ4 closed it:
+RetroArch full-screen at 640x480i60 went from **51.98 fps to 60.01**, which is the
+vsync cap rather than a limit. Measured 2.57x on a desktop and 253x on a static
+screen, against the 1.2x the arithmetic needed.
+
+What remains is depth rather than rate. RGB888 is still not offered, and 24kHz and
+31kHz add more 640-wide modes.
 
 | | |
 |---|---|
 | done | RGB332 implemented, and halves everything at no CPU cost |
 | done | damage rectangles, which carry anything short of full-screen motion |
-| done | LZ4 negotiation present in the protocol layer, declined in one line |
-| **todo** | **measure what a host actually sends for a 480i mode: 60 surface updates a second, or 30** |
-| todo | measure the real compression ratio on emulator output |
-| todo | LZ4 decompressor on the ARM, into a cached buffer then one `memcpy` to the window |
+| done | LZ4 offered and decompressed. `sw/lz4dec.c`, block format, every read and write range-checked |
+| done | on by default in the daemon itself, so it applies however it is started; `BLITSCRT_LZ4=0` turns it off |
+| done | 640x480i60 full-screen runs at 51.98 fps uncompressed, 31.9 MB/s -- bandwidth-limited |
+| done | measured on real traffic: 2.58x on a desktop, 253x on a static screen. LZ4 reaches 60 fps |
+| done | LZ4 stable: read requests rounded to a packet boundary, so a transfer neither splits nor swallows the frames behind it |
+| done | the read overlaps the decompress and blit: two threads and a two-slot pool, so a frame costs `max(read, lz4 + blit)` |
+| done | decompression costs the ARM 2.1 ms on a quiet frame, 4.3 on a busy one -- a less compressible frame is both more to carry and more to expand |
+| done | measured on real traffic: 2.58x sustained, 253x on a static screen, and the daemon reports achieved fps against the frame budget |
 | **todo** | **a two-beat read window in `scanout_fetch.v`, so RGB888 works: the only format that uses the whole ladder, and the only deep one that fits 640-wide with LZ4** |
+
+Measured on hardware. Raw, RetroArch full-screen at 640x480i60 runs **51.98 fps**
+-- 614400 bytes a frame at 31.9 MB/s, bandwidth-limited against the ceiling below.
+With LZ4 the same content reached **60.01 fps**, the vsync cap, at 2.58x: 239 KB a
+frame, about 14 MB/s, well inside budget.
+
+*Getting the read size right took three attempts, and both obvious answers are
+wrong.* There is no framing on the bulk stream to resynchronise against --
+`gud_set_buffer_req` says how many bytes follow, and if that count is ever out by
+one transfer, every rect afterwards decodes against the wrong length.
+
+Ask for exactly `compressed_length` and the kernel splits a transfer that arrives
+slightly larger, leaving the remainder queued:
+
+```
+functionfs read size 9725 > requested size 9645, splitting request into multiple reads.
+```
+
+Ask for the whole buffer and the opposite happens -- one read returns everything
+queued, spanning many rects:
+
+```
+read 1048576, header said 4741
+```
+
+Rounding up to a packet boundary is the answer: enough slack to absorb a padded
+transfer, not enough to reach the frame behind it. `BLITSCRT_LZ4=1` turns
+compression on; it is opt-in until it has more hours on it.
+
+*Where the frame time goes*, measured with the breakdown the daemon prints:
+
+```
+read 1.5 ms   lz4 2.6 ms   blit 5.6 ms   total 9.5 ms   (16.7 available)
+read 4.9 ms   lz4 4.3 ms   blit 5.6 ms   total 14.7 ms  worst seen
+```
+
+The blit is the fixed cost -- 614400 bytes into the uncached DDR3 window at about
+110 MB/s, every frame whatever the content. Decompressing straight into that
+window does not help: LZ4 emits short scattered writes, the worst case for
+write-combining, which is the 69-against-110 MB/s gap measured on this board.
+
+Serially in one thread that left about two milliseconds of margin at worst, and
+jitter cost a frame -- 58.5 rather than 60. The read now runs on its own thread
+with a two-slot pool between, so it overlaps the decompress and blit of the frame
+before: a frame costs `max(read, lz4 + blit)` rather than the sum, and only the
+latter is on the critical path.
+
+Three threads, and the shape matters. The reader touches only the endpoint and
+the pool; the processor touches only the pool and the fabric; ep0 stays free
+throughout. The slot indices are never reset, only incremented -- clearing them on
+host detach let the processor's release overshoot, and an unsigned difference
+wrapping to a huge number made the reader believe the pool was permanently full.
+That hung the daemon on unplug and was found by reading the code rather than by
+running it.
 
 RGB565, a full surface every refresh, against about 35 MB/s of bulk in practice.
 
@@ -1274,10 +1401,17 @@ That five per cent is why LZ4 is the right lever rather than pixel depth. The us
 objection -- that it collapses to 1.1x on full-screen motion -- assumes photographic
 content: noise, grain, continuous gradients. Sprite-based output is flat colour
 fields and repeated tiles drawn from small palettes, so it should compress
-considerably better. **The 2x in the table is an assumption, not a measurement.**
-It cannot be measured before a host is generating real traffic, which is M4. Even
-at 1.15x, though, the 640-wide modes come in under budget, so the case does not
-rest on the estimate being right.
+considerably better. **The 2x in the table was an assumption; the measurement came
+in at 2.57x on a desktop**, so if anything it was conservative.
+
+The case never rested on it, and the margin was the reason. 640x480i60 needs
+36.9 MB/s raw against about 35, so **1.2x clears 60 fps** -- and 1.2x is roughly
+the figure for photographic video, all noise and continuous gradient. Sprite work
+is flat fields and repeated tiles from a small palette; if LZ4 managed only 1.2x
+on that it would be doing something wrong. The required ratio sits below the
+pessimistic floor for this content, which makes the decompressor worth building
+before the ratio is measured rather than after. Measuring it then says how much
+headroom there is, not whether it worked.
 
 *Colour depth.* The ladder is six bits a channel, so RGB565 gives away a bit on
 red and blue. Full depth costs more wire, and where that matters is narrower than
@@ -1320,12 +1454,75 @@ for something physically invisible. At frame rate it is 18.4 MB/s, full colour, 
 decompressor. Whether a host can be persuaded to do that is a DRM question and M4
 will answer it.
 
-**M6 -- Windows host. Not started, and probably not here.** GUD is a wire
+**M6 -- Switchres modes at boot. Not started.** Four modes are advertised today,
+hardcoded in `blitscrt_modelist_defaults()`, and they are the wrong four for most
+people. A Sony PVM, a Hantarex arcade chassis and a PAL television have different
+sync bands, and the list a host should see differs accordingly.
+
+So: at boot, read a monitor profile, run Switchres against it, and build a curated
+list of selectable resolutions from what it returns. The hardcoded four become the
+fallback for when there is no ini, not the answer.
+
+*It has to happen at startup, before a host attaches.* GUD asks for the mode list
+once, in `GET_CONNECTOR_MODES` during enumeration, and takes what it is given.
+There is no mechanism to grow the list afterwards short of forcing a re-enumerate.
+So generation runs when the daemon starts, the list is complete before the gadget
+binds its UDC, and the first host to connect sees the finished thing.
+
+This is the same job CRTPi does on the Pi, and the configuration should read the
+same on both -- one person operating both boards should not have to learn two
+vocabularies:
+
+```
+monitor_profile = arcade_15 | arcade_15_25_31 | ntsc | pal
+                | crt_range:<hfmin>-<hfmax>,<vfmin>-<vfmax>
+gud_heights     = 224,240,256,288,448i,480i,576i
+gud_refreshes   = 50,55,57,60
+gud_superres    = on
+profile_enforce = on
+```
+
+The profile does three jobs. It seeds the generated list, expanding height classes
+against refresh targets and keeping only what lands inside the band. It clamps
+whatever a host asks for afterwards, including the unadvertised modelines
+Switchres sends on the host side. And if mode-on-demand ever arrives, it is what
+the synthesizer works against.
+
+Overriding stays possible at every level: an extra-modes file appended to the
+generated list for the one mode a particular chassis wants, and unadvertised
+modelines still accepted at runtime exactly as they are now.
+
+| | |
+|---|---|
+| todo | read `blitscrt.ini` from the FAT partition, so it can be edited on any PC |
+| todo | the standard profiles as `blitscrt_sink_limits` instances, plus `crt_range:` for anything exotic |
+| todo | generate at daemon start: height classes x refresh targets, each solved through `pll.c` and kept only if it lands inside the band |
+| todo | fall back to the hardcoded four when there is no ini, so a card with no configuration still works |
+| todo | super-resolution variants, 2560 wide, so the host GPU does the horizontal scaling -- invisible on a CRT and cheap on the host |
+| todo | an extra-modes file appended to the generated list |
+| todo | `profile_enforce` wired to `mode_check`, refusing out-of-band timing rather than passing it to the deflection circuit |
+| note | the clamp is a safety feature, not a convenience. Fixed-frequency deflection can be damaged by sync outside its band, so it defaults on |
+
+*Much of this is already here in embryo.* `blitscrt_sink_limits` is a monitor
+profile with one hardcoded instance. `mode_check` is `profile_enforce` already
+written, and `BLITSCRT_MAX_MODES` already bounds the list. `pll.c` solves a
+modeline to a PLL configuration and reports the error in ppm, which is exactly the
+"can this monitor reach it" test a generator needs. `blitscrt_mode_from_modeline`
+takes Switchres-style modelines, so an extra-modes file needs no new parser. What
+is missing is reading the ini, the profiles themselves, and the expansion.
+
+*Whether to link libswitchres.* CRTPi does, on the device. The same would work
+here. But `pll.c` already produces what a modeline needs and the profiles are a
+dozen numbers, so generating directly from the profile may be enough -- worth
+deciding once the ini and the profiles exist, rather than committing to a
+dependency first.
+
+**M7 -- Windows host. Not started, and probably not here.** GUD is a wire
 protocol, not a Linux one: request codes, a mode structure, a buffer format.
 Nothing about the board depends on what is at the other end, so a Windows host
 that speaks the same protocol works against this hardware unmodified.
 
-That cuts both ways, and is the reason M6 belongs in its own repository with a
+That cuts both ways, and is the reason M7 belongs in its own repository with a
 link from here rather than inside this tree. A Windows GUD driver is not specific
 to blitsCRT in any way: it would drive a Pi Zero adapter, the STM32 reference
 device, or anything else implementing the protocol. Burying it in an FPGA CRT
@@ -1371,13 +1568,13 @@ list into the driver ahead of time, and the emulator then adjusts timings at run
 time through a driver-specific interface -- ADL on AMD -- so every refresh rate
 does not have to be predefined. The first half maps straight onto IddCx, which
 reports a mode list already. The second half has no IddCx equivalent and is the
-real work of M6.
+real work of M7.
 
 Switchres has a pluggable backend for exactly this reason, with `drmkms` on Linux
 and `adl` and `powerstrip` on Windows, so another one for this driver is the shape
 the problem already has. That is the expected route rather than a settled one:
 where a Windows Switchres deposits a generated modeline, and whether it can be
-read rather than pushed, is the first thing M6 has to establish.
+read rather than pushed, is the first thing M7 has to establish.
 
 Screen capture through the Desktop Duplication API would be a fraction of the
 effort and is not an option: it cannot switch resolution per game, which is the
@@ -1409,14 +1606,17 @@ point of the whole design.
   there, so the 31 kHz diagnostic runs at 7.875. Left alone deliberately: it is
   not a 15 kHz target, and putting 25.200 on `outclk_1` would cost 320x240p60.
 
-- RGB888 is advertised first, because it is the only format that uses the whole
-  6/6/6 ladder, and `scanout_fetch.v` cannot read it: three bytes per pixel
-  straddles the 64-bit beat boundary. A host negotiating it gets a picture
-  assembled at the wrong stride. RGB565 is the format that works today. The
-  two-beat read window that fixes it is M5 work.
+- RGB888 is not offered, though it is the only format that uses the whole 6/6/6
+  ladder. `scanout_fetch.v` cannot read three bytes per pixel: it straddles the
+  64-bit beat boundary, and the lane extractor handles 1, 2 and 4-byte formats.
+  It was advertised first until a host took it and produced a picture whose
+  stride drifted across every line. RGB565 is what works, at the cost of a bit on
+  red and blue. The two-beat read window that brings it back is M5 work.
 
-- RGB888 is the format advertised first and the fetcher cannot read it, so a host
-  taking it gets a picture at the wrong stride. RGB565 works. See M5.
+
+- `blitscrt.nogadget` on the kernel command line skips USB gadget staging and
+  boots as before M4: fabric, daemon, shell. Edit `blitsenv.txt` on the card; no
+  rebuild needed. Worth knowing while the gadget path is new.
 
 - The USB hub add-on must be removed for the gadget to work. It reaches the same
   `dwc2` controller, and a USB device is a transceiver with a pull-up: two of them

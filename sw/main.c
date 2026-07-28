@@ -92,6 +92,12 @@ int main(int argc, char **argv)
 	blitscrt_dev_on_host(&dev, 0);   /* test card until a host turns up */
 
 	fprintf(stderr, "blitscrtd: advertising %u modes\n", dev.n_modes);
+	/* Which binary this is. Without it there is no way to tell a rebuilt
+	 * daemon from the one already on the card, and a fix that never reached
+	 * the board looks exactly like a fix that did not work -- which has cost
+	 * several rounds already. Bumped whenever the daemon changes. */
+	fprintf(stderr, "blitscrtd: build %s (%s %s)\n",
+		BLITSCRTD_BUILD, __DATE__, __TIME__);
 
 	if (no_gadget) {
 		int rc;

@@ -17,7 +17,13 @@
 #include "blitscrt_regs.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+static void dev_tick(void *arg)
+{
+	blitscrt_dev_heartbeat((struct blitscrt_dev *)arg);
+}
 
 void blitscrt_dev_init(struct blitscrt_dev *d, struct blitscrt_fabric *f)
 {
@@ -25,6 +31,11 @@ void blitscrt_dev_init(struct blitscrt_dev *d, struct blitscrt_fabric *f)
 	d->fabric      = f;
 	d->last_status = GUD_STATUS_OK;
 	d->format      = GUD_PIXEL_FORMAT_RGB565;
+	/* Keep the watchdog fed through anything in the fabric layer that waits
+	 * -- a PLL reconfiguration takes over a second, and losing hps_alive
+	 * mid-modeset drops the raster back to the test card. */
+	blitscrt_fabric_set_tick(f, dev_tick, d);
+
 	blitscrt_modelist_defaults(d);
 }
 
@@ -52,6 +63,17 @@ int blitscrt_modelist_add(struct blitscrt_dev *d, const struct blitscrt_mode *m)
 void blitscrt_modelist_defaults(struct blitscrt_dev *d)
 {
 	struct blitscrt_mode m;
+	/*
+	 * All four modes. BLITSCRT_MODES=preferred narrows it to 640x480i60.
+	 *
+	 * The PREFERRED flag is sent correctly -- bit 10, matching
+	 * GUD_DISPLAY_MODE_FLAG_PREFERRED -- but a desktop is free to ignore it,
+	 * and KDE picks the largest instead, which is 640x576i50. The narrow list
+	 * is there for when a host must come up in a particular mode and stay
+	 * there.
+	 */
+	const char *want = getenv("BLITSCRT_MODES");
+	int only_preferred = want && strcmp(want, "preferred") == 0;
 
 	blitscrt_modelist_reset(d);
 
@@ -79,6 +101,12 @@ void blitscrt_modelist_defaults(struct blitscrt_dev *d)
 				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC |
 				    BLITSCRT_MF_PREFERRED);
 	blitscrt_modelist_add(d, &m);
+
+	if (only_preferred) {
+		fprintf(stderr, "blitscrtd: 640x480i60 only "
+				"(BLITSCRT_MODES=preferred)\n");
+		return;
+	}
 
 	/* 640x576i50 -- PAL, 15.625 kHz, 50.00 Hz field, 625 lines */
 	blitscrt_mode_from_modeline(&m, 12500, 640, 664, 724, 800,
@@ -193,6 +221,21 @@ void blitscrt_dev_on_host(struct blitscrt_dev *d, int attached)
 {
 	d->host_attached = attached ? 1 : 0;
 
+	/*
+	 * The overlay is for when there is nothing else to look at.
+	 *
+	 * It reports mode, line rate, pixel clock and whether the HPS is alive,
+	 * which is exactly what is wanted on an idle screen and exactly what is
+	 * not wanted painted over a desktop. So it goes when a host attaches and
+	 * comes back when one leaves.
+	 *
+	 * The front-panel button is ANDed with this in the fabric, so it still
+	 * hides the text whatever the daemon does -- and pressing it while a host
+	 * is connected does nothing visible, which is correct.
+	 */
+	if (d->fabric)
+		blitscrt_fabric_overlay_show(d->fabric, !d->host_attached);
+
 	if (!attached) {
 		/* Nothing is writing scanout memory any more. Show the card
 		 * rather than whatever was last left there. */
@@ -265,7 +308,35 @@ int blitscrt_handle_ctrl(struct blitscrt_dev *d,
 		 * control OUT with a payload, so it asks for a status request
 		 * after every SET */
 		r.flags       = GUD_DISPLAY_FLAG_STATUS_ON_SET;
-		r.compression = 0;              /* no LZ4, nothing to gain here */
+		/*
+		 * LZ4 offered. 640x480i60 full-frame is 36.9 MB/s raw against
+		 * about 35 of bulk, so 1.2x clears 60 fps -- and 1.2x is the
+		 * figure for photographic video, all noise and gradient. Sprite
+		 * output is flat fields and repeated tiles from a small palette
+		 * and does far better. The host decides per rect and says so in
+		 * gud_set_buffer_req, so an incompressible one costs nothing.
+		 */
+		/*
+		 * LZ4 on by default. BLITSCRT_LZ4=0 turns it off.
+		 *
+		 * It was opt-in for a while, when the header and data would stop
+		 * lining up under load and never recover. That turned out to be
+		 * the bulk read size rather than compression -- see the reader in
+		 * gadget.c -- and with it fixed this has run without a bad block.
+		 *
+		 * The default belongs here rather than in init: the daemon should
+		 * behave the same however it is started, and tying it to an
+		 * environment variable set by the boot path means running it by
+		 * hand quietly gets something else.
+		 *
+		 * Worth having on: 2.58x on real traffic takes a full-screen
+		 * 640x480i60 from 51.98 fps to 60.
+		 */
+		{
+			const char *e = getenv("BLITSCRT_LZ4");
+			int off = e && (e[0] == '0' || e[0] == 'n' || e[0] == 'N');
+			r.compression = off ? 0 : GUD_COMPRESSION_LZ4;
+		}
 		r.max_buffer_size = 0;
 		r.min_width  = 256; r.max_width  = blitscrt_limits_15khz.h_max;
 		r.min_height = 192; r.max_height = blitscrt_limits_15khz.v_max;
@@ -278,14 +349,27 @@ int blitscrt_handle_ctrl(struct blitscrt_dev *d,
 		/*
 		 * The DAC is a six-bit resistor ladder per channel, so RGB666
 		 * is what actually reaches the CRT. GUD has no RGB666 format.
-		 * RGB888 truncated to 666 uses the whole ladder and is listed
-		 * first for that reason; RGB565 gives up a bit on red and blue
-		 * but halves the bandwidth. RGB332 is there for the tight
-		 * cases. There is no indexed format in GUD at all, so the 4bpp
-		 * palette idea does not map.
+		 * RGB888 truncated to 666 would use the whole ladder, which is
+		 * why it was listed first. There is no indexed format in GUD at
+		 * all, so the 4bpp palette idea does not map.
+		 *
+		 * RGB888 is not offered, because scanout_fetch.v cannot read it:
+		 * three bytes per pixel straddles the 64-bit beat boundary, and
+		 * the lane extractor handles 1, 2 and 4-byte formats only. It
+		 * treats RGB888 as 4 bytes to keep the address arithmetic sane,
+		 * so a host packing at 3 gets a picture whose stride drifts
+		 * further out of phase across every line -- vertical striping
+		 * and colour fringing, worse toward the right. Seen on hardware
+		 * the first time a desktop reached the CRT.
+		 *
+		 * Advertising it first meant the host took it by default, so
+		 * the first working picture was also a broken one. It goes back
+		 * when the fetcher gets a two-beat read window; that is M5, and
+		 * it is worth doing since RGB888 is both the only format that
+		 * wastes no ladder depth and the only deep one that fits a
+		 * 640-wide mode with LZ4.
 		 */
-		uint8_t f[3] = { GUD_PIXEL_FORMAT_RGB888,
-				 GUD_PIXEL_FORMAT_RGB565,
+		uint8_t f[2] = { GUD_PIXEL_FORMAT_RGB565,
 				 GUD_PIXEL_FORMAT_RGB332 };
 		if (buflen < sizeof f) return -1;
 		memcpy(buf, f, sizeof f);

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Set dr_mode = "peripheral" on the HPS OTG controller in a built device tree.
+"""Patch the HPS OTG controller in a built device tree for gadget mode.
 
 blitscrt.dtb is the stock socfpga_cyclone5_de10_nano.dtb, copied and renamed, and
 that tree leaves dwc2 in host mode. Correct for MiSTer, where the OTG port carries
@@ -31,6 +31,34 @@ import tempfile
 from pathlib import Path
 
 WANT = "peripheral"
+
+# Gadget-mode FIFO split, in 32-bit words out of the 8064 the core reports.
+#
+# The stock socfpga node sets none of these: it was written for host mode, where
+# they are unused. In gadget mode dwc2 falls back to defaults that can leave a
+# bulk endpoint enabled with no usable FIFO behind it -- and the symptom is not
+# an error but silence, because an endpoint with nowhere to put data NAKs
+# forever rather than stalling. Control transfers keep working throughout, since
+# ep0 is budgeted separately, so enumeration and the whole protocol succeed while
+# bulk never moves a byte.
+#
+# One bulk OUT endpoint is all this device has, so the RX side gets the room.
+# 512 + 256 + (4 x 256) = 1792 words, comfortably inside 8064.
+FIFOS = {
+    "g-rx-fifo-size": 512,
+    "g-np-tx-fifo-size": 256,
+}
+
+# One TX FIFO size per IN endpoint, and dwc2 wants an entry for *every* endpoint
+# the core has, not just the ones in use. This core reports 16 EPs, so 15 entries
+# for EP1..EP15; leaving the tail at zero is rejected outright:
+#
+#   dwc2_check_param_tx_fifo_sizes: Invalid parameter g_tx_fifo_size[5]=0
+#
+# This device has one bulk OUT endpoint and no IN endpoints beyond ep0, so these
+# are almost all unused -- they simply have to be valid. 15 x 128 = 1920 words,
+# plus 512 + 256, against the 8064 the core reports. Room to spare.
+FIFO_TX = [128] * 15
 
 
 def die(msg):
@@ -102,18 +130,59 @@ def patch(text):
             continue
 
         indent = re.match(r'^(\s*)', lines[start]).group(1) + "\t"
+
+        # FIFO sizes first, so dr_mode stays the last thing added and the node
+        # reads in a sensible order.
+        #
+        # Replace rather than skip when a property is already there. Skipping is
+        # how a dtb patched by an older version of this script keeps its stale
+        # values while the run reports success -- which cost a boot: a four-entry
+        # g-tx-fifo-size stayed in place and dwc2 went on rejecting it.
+        def setprop(blob, prop, text, shown):
+            pat = r'[ \t]*\b%s\s*=[^;]*;\n?' % re.escape(prop)
+            m = re.search(pat, blob)
+            if m:
+                # dtc prints numbers in hex, so compare the values rather than
+                # the text; otherwise every run claims to have replaced
+                # something it did not.
+                had = [int(x, 0) for x in re.findall(r'0x[0-9a-fA-F]+|\d+',
+                                                     m.group(0).split("=", 1)[1])]
+                new_vals = [int(x, 0) for x in re.findall(r'0x[0-9a-fA-F]+|\d+',
+                                                          text)]
+                if had == new_vals:
+                    return blob, None          # already exactly right
+                blob = re.sub(pat, "", blob, count=1)
+                note = "%s %d entries -> %d" % (prop, len(had), len(new_vals)) \
+                       if len(had) != len(new_vals) else \
+                       "%s replaced -> %s" % (prop, shown)
+            else:
+                note = "%s = %s" % (prop, shown)
+            blob = blob.replace("{", "{\n%s%s = %s;" % (indent, prop, text), 1)
+            return blob, note
+
+        for prop, val in FIFOS.items():
+            blob, note = setprop(blob, prop, "<%d>" % val, str(val))
+            if note:
+                touched.append((addr, note))
+
+        vals = " ".join(str(v) for v in FIFO_TX)
+        blob, note = setprop(blob, "g-tx-fifo-size", "<%s>" % vals,
+                             "%d entries" % len(FIFO_TX))
+        if note:
+            touched.append((addr, note))
+
         cur = re.search(r'dr_mode\s*=\s*"([^"]+)"', blob)
         if cur:
             if cur.group(1) == WANT:
-                touched.append((addr, "already " + WANT))
+                touched.append((addr, "dr_mode already " + WANT))
             else:
                 blob = re.sub(r'dr_mode\s*=\s*"[^"]+"',
                               'dr_mode = "%s"' % WANT, blob, count=1)
-                touched.append((addr, "%s -> %s" % (cur.group(1), WANT)))
+                touched.append((addr, "dr_mode %s -> %s" % (cur.group(1), WANT)))
         else:
             # No dr_mode at all: add one just inside the node.
             blob = blob.replace("{", '{\n%sdr_mode = "%s";' % (indent, WANT), 1)
-            touched.append((addr, "unset -> %s" % WANT))
+            touched.append((addr, "dr_mode unset -> %s" % WANT))
 
         out.extend(blob.split("\n"))
 
@@ -144,7 +213,7 @@ def main():
     recompile(patched, dtb)
 
     for addr, what in touched:
-        print("  usb@%s: dr_mode %s" % (addr, what))
+        print("  usb@%s: %s" % (addr, what))
     print("  /sys/class/udc/ should name a controller after boot. The USB hub")
     print("  add-on must come off that port -- it and the gadget want the same")
     print("  connector.")

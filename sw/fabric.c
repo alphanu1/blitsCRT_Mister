@@ -31,6 +31,8 @@
 enum fabric_transport { XPORT_LWH2F, XPORT_GP };
 
 struct blitscrt_fabric {
+	void   (*tick_fn)(void *);          /* fed during long waits */
+	void    *tick_arg;
 	int      fd;
 	enum fabric_transport xport;
 	volatile uint8_t *base;             /* LWH2F: the register span */
@@ -581,6 +583,19 @@ long blitscrt_scanout_fill(struct blitscrt_fabric *f,
 	return n;
 }
 
+void blitscrt_fabric_set_tick(struct blitscrt_fabric *f,
+			      void (*fn)(void *), void *arg)
+{
+	if (!f) return;
+	f->tick_fn  = fn;
+	f->tick_arg = arg;
+}
+
+static void fabric_tick(struct blitscrt_fabric *f)
+{
+	if (f && f->tick_fn) f->tick_fn(f->tick_arg);
+}
+
 int blitscrt_fabric_pll_reconfig(struct blitscrt_fabric *f,
 				 const struct pll_config *p)
 {
@@ -632,7 +647,16 @@ int blitscrt_fabric_pll_reconfig(struct blitscrt_fabric *f,
 		size_t i;
 
 		for (i = 0; i < sizeof waits_ms / sizeof waits_ms[0]; i++) {
-			usleep(waits_ms[i] * 1000u);
+			/* Slice the wait and feed the watchdog between slices;
+			 * a second of silence drops hps_alive and the raster
+			 * falls back to the test card mid-modeset. */
+			unsigned left = waits_ms[i];
+			while (left) {
+				unsigned slice = left > 50 ? 50 : left;
+				usleep(slice * 1000u);
+				left -= slice;
+				fabric_tick(f);
+			}
 			total += waits_ms[i];
 			st = blitscrt_fabric_read(f, BLITSCRT_PLLRECFG_OFFSET +
 						      (PLL_RECONFIG_STATUS * 4));
@@ -751,6 +775,16 @@ int blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 				lv.interlace ? " i" : "", lv.clk_sel);
 	}
 	return -1;
+}
+
+void blitscrt_fabric_overlay_show(struct blitscrt_fabric *f, int on)
+{
+	uint32_t c;
+	if (!f) return;
+	c = blitscrt_fabric_read(f, BLITSCRT_REG_CTRL);
+	if (on) c |=  BLITSCRT_CTRL_OVERLAY;
+	else    c &= ~BLITSCRT_CTRL_OVERLAY;
+	blitscrt_fabric_write(f, BLITSCRT_REG_CTRL, c);
 }
 
 void blitscrt_fabric_enable(struct blitscrt_fabric *f, int on)

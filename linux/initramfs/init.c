@@ -26,6 +26,7 @@
 #include <fcntl.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <sys/wait.h>
 
 #ifndef BLITSCRT_NAME
@@ -188,6 +189,19 @@ static void debug_shell(void)
 	for (;;) {
 		pid_t pid = fork();
 		if (pid == 0) {
+			/*
+			 * Inherit init's descriptors and nothing more.
+			 *
+			 * An earlier version called setsid() and tried to claim
+			 * /dev/console as a controlling terminal, to silence the
+			 * "can't access tty; job control turned off" notice. That
+			 * was a mistake: setsid() detaches unconditionally, so if
+			 * the open or the TIOCSCTTY then failed the shell was
+			 * left with no controlling terminal at all and would not
+			 * take input -- worse than the cosmetic warning it was
+			 * meant to remove. Job control off is harmless; a shell
+			 * that ignores the keyboard during bring-up is not.
+			 */
 			execl("/bin/busybox", "sh", "-i", (char *)NULL);
 			_exit(127);
 		}
@@ -212,8 +226,27 @@ static void debug_shell(void)
  * Returns non-zero if FunctionFS came up, which is what decides whether the
  * daemon runs with the gadget or falls back to --no-gadget.
  */
+/* Anything in the kernel command line. Cheap, and it means a bad boot can be
+ * recovered by editing blitsenv.txt on the card rather than reflashing. */
+static int cmdline_has(const char *word)
+{
+	char buf[1024];
+	if (slurp("/proc/cmdline", buf, sizeof buf) < 0)
+		return 0;
+	return strstr(buf, word) != NULL;
+}
+
 static int stage_gadget(void)
 {
+	/* blitscrt.nogadget on the kernel command line skips all of this and
+	 * boots the way it did before M4: fabric, daemon, shell. Worth having
+	 * while the gadget path is new -- if staging ever wedges the boot, the
+	 * way out should not be a rebuild. */
+	if (cmdline_has("blitscrt.nogadget")) {
+		say("blitscrt: blitscrt.nogadget set; skipping the USB gadget.\n");
+		return 0;
+	}
+
 	static const char *paths[] = {
 		"/media/fat/blitscrt/gadget-setup.sh",
 		"/bin/gadget-setup.sh",
@@ -323,6 +356,25 @@ static void launch_daemon(int with_gadget)
 				close(fd);
 		}
 		setenv("BLITSCRT_GP_UNSAFE", "1", 1);   /* our fabric owns gp_out */
+
+		/*
+		 * LZ4 is not set here. It is the daemon's own default, so it
+		 * applies however the daemon is started -- including by hand,
+		 * which is when getting something different would be most
+		 * confusing. BLITSCRT_LZ4=0 turns it off.
+		 */
+
+		/*
+		 * BLITSCRT_TRACE deliberately not set.
+		 *
+		 * It was invaluable while the bulk path was being brought up,
+		 * when every failure looked like nothing happening. Now that
+		 * frames flow it prints two lines per frame at 60 Hz, which is
+		 * far more than a 115200 console can carry -- the writes back up,
+		 * the daemon waits on them, and it costs the frame rate it is
+		 * meant to be measuring. See the README for how to turn it on by
+		 * hand when something needs looking at.
+		 */
 		if (with_gadget)
 			execl(bin, "blitscrtd", (char *)NULL);
 		else

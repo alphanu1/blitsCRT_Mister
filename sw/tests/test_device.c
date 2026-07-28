@@ -37,16 +37,23 @@ int main(void)
 		check("magic is 0x1d50614d", r.magic == GUD_DISPLAY_MAGIC);
 		check("STATUS_ON_SET set for the Linux gadget",
 		      (r.flags & GUD_DISPLAY_FLAG_STATUS_ON_SET) != 0);
-		check("compression declined", r.compression == 0);
+		/* On unless BLITSCRT_LZ4=0; see blitscrt_handle_ctrl. */
+		check("LZ4 offered by default",
+		      r.compression == GUD_COMPRESSION_LZ4);
 		printf("        %ux%u .. %ux%u\n", r.min_width, r.min_height,
 		       r.max_width, r.max_height);
 	}
 
 	n = req(GUD_REQ_GET_FORMATS, 0, NULL, 0);
-	check("GET_FORMATS offers RGB888 first, matching the RGB666 ladder",
-	      n == 3 && buf[0] == GUD_PIXEL_FORMAT_RGB888);
-	check("RGB565 and RGB332 also offered",
-	      buf[1] == GUD_PIXEL_FORMAT_RGB565 && buf[2] == GUD_PIXEL_FORMAT_RGB332);
+	/* RGB888 is deliberately absent: scanout_fetch.v cannot read three bytes
+	 * per pixel, and advertising it first meant a host took it and got a
+	 * picture whose stride drifted across every line. It returns with the
+	 * two-beat read window in M5. */
+	check("GET_FORMATS offers only what the fetcher can read",
+	      n == 2 && buf[0] == GUD_PIXEL_FORMAT_RGB565);
+	check("RGB888 is not offered", n == 2 &&
+	      buf[0] != GUD_PIXEL_FORMAT_RGB888 &&
+	      buf[1] != GUD_PIXEL_FORMAT_RGB888);
 
 	n = req(GUD_REQ_GET_CONNECTORS, 0, NULL, 0);
 	{
@@ -69,6 +76,7 @@ int main(void)
 		struct gud_display_mode_req m[BLITSCRT_MAX_MODES];
 		unsigned i;
 		memcpy(m, buf, n);
+		/* Four by default; BLITSCRT_MODES=preferred narrows it to one. */
 		check("four modes advertised", count == 4);
 		check("640x480i60 is first and PREFERRED, the first-connect mode",
 		      m[0].hdisplay == 640 && m[0].vdisplay == 480 &&

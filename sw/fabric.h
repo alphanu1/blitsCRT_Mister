@@ -57,6 +57,17 @@ long blitscrt_scanout_fill(struct blitscrt_fabric *f,
 			   uint16_t colour);
 
 /* Reprogram the pixel clock. Returns 0 once the PLL reports lock again. */
+/*
+ * Called during waits long enough to starve the fabric watchdog -- the PLL
+ * reconfiguration backoff runs to about 1.3 s. Without it the raster reverts to
+ * the front-panel test card mid-modeset, which looks like the daemon having died
+ * when it is only waiting for a PLL to relock.
+ *
+ * A callback, so fabric.c need not know about the device layer.
+ */
+void blitscrt_fabric_set_tick(struct blitscrt_fabric *f,
+			      void (*fn)(void *), void *arg);
+
 int blitscrt_fabric_pll_reconfig(struct blitscrt_fabric *f,
 				 const struct pll_config *p);
 
@@ -64,6 +75,11 @@ int blitscrt_fabric_pll_reconfig(struct blitscrt_fabric *f,
 int  blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 			      const struct blitscrt_timing *t, uint8_t format);
 void blitscrt_fabric_enable(struct blitscrt_fabric *f, int on);
+
+/* Show or hide the text overlay (CTRL bit 2). The front-panel button is ANDed
+ * with this in the fabric and stays authoritative, so a button press still hides
+ * the text whatever software wants. */
+void blitscrt_fabric_overlay_show(struct blitscrt_fabric *f, int on);
 
 /* Write a line of text into the overlay character buffer. */
 void blitscrt_fabric_overlay_line(struct blitscrt_fabric *f,

@@ -421,7 +421,23 @@ BLITSCRT_VERSION ?= 0.10
 #       init stages the gadget and reports why when it cannot
 #   k3  init execs busybox by path for gadget-setup.sh -- there is no /bin/sh in
 #       the initramfs, so k2 failed the exec silently and logged nothing
-BLITSCRT_KREV    ?= k3
+#   k4  the shell gets a controlling terminal, and the console is quietened to
+#       loglevel=4: kernel messages were drowning it just when it was needed
+#   k5  BLITSCRT_TRACE on by default, so the log says which control request the
+#       host stopped at rather than going silent after "host attached"
+#   k6  revert k4's controlling-terminal change, which broke shell input;
+#       blitscrt.nogadget on the command line skips gadget staging
+#   k7  gadget FIFO sizes in the device tree. Without them dwc2 leaves the bulk
+#       endpoint enabled with no usable FIFO, so it NAKs forever: control works,
+#       enumeration works, and bulk silently never moves
+#   k8  a TX FIFO size for every endpoint the core has, not just the used ones --
+#       dwc2 rejects a short list outright, leaving the sizes unapplied
+#   k9  set_dr_mode.py replaces existing FIFO properties instead of skipping
+#       them; a dtb patched by an earlier version kept its stale values while
+#       the run reported success
+#   k10 the trace is no longer forced on -- it costs more than it tells once
+#       frames are flowing. LZ4 is the daemon's own default, not set here
+BLITSCRT_KREV    ?= k10
 
 # Proof-of-concept initramfs: a static init plus a static busybox for an
 # interactive debug shell, embedded into zImage via CONFIG_INITRAMFS_SOURCE.
@@ -500,17 +516,25 @@ $(UBOOT_TXT): tools/gen_uboot_txt.py
 RTL_SRCS := $(wildcard rtl/*.v rtl/*.sv rtl/*/*.v rtl/*/*.sv rtl/*.hex) \
             quartus/blitscrt.qsf quartus/blitscrt.sdc
 
+# Whether to recompile follows the *content* of the fabric sources, not their
+# timestamps. A tree that arrives as an archive has every mtime set to the time
+# of extraction, so a timestamp check sees everything as newer than the .rbf and
+# runs Quartus for minutes over a release that only changed the daemon. The hash
+# is written beside the .rbf after a successful compile.
+RTL_HASH := quartus/output_files/blitscrt.rtlhash
+
 bitstream: assets
 	@if [ -z "$(QUARTUS_SH)" ]; then \
 	  $(MAKE) --no-print-directory quartus-path; exit 1; \
 	fi
 	@if [ -z "$(FORCE_BITSTREAM)" ] && [ -f $(RBF) ] && \
-	   [ -z "$$(find $(RTL_SRCS) -newer $(RBF) 2>/dev/null)" ]; then \
-	  echo "bitstream up to date ($(RBF) newer than all RTL); skipping Quartus."; \
+	   python3 tools/rtl_hash.py --check $(RTL_HASH); then \
+	  echo "bitstream up to date (fabric sources unchanged); skipping Quartus."; \
 	  echo "  force a rebuild with: make bitstream FORCE_BITSTREAM=1"; \
 	else \
 	  echo "using $(QUARTUS_SH)"; \
-	  ( cd quartus && $(QUARTUS_SH) --flow compile blitscrt ); \
+	  ( cd quartus && $(QUARTUS_SH) --flow compile blitscrt ) && \
+	  python3 tools/rtl_hash.py --write $(RTL_HASH); \
 	fi
 	@python3 tools/check_fit.py quartus/output_files
 	@python3 tools/gen_uboot_txt.py $(UBOOT_TXT) $(UBOOT_FLAG)

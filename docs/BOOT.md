@@ -154,7 +154,7 @@ manual.
 `bootcore` cannot automate it. `fpga_load_rbf(cfg.bootcore)` passes no `cfg`,
 so the `.txt` is skipped and the hand-off never fires. Unattended boot means
 repointing u-boot with `saveenv`, which drops MiSTer from the picture
-altogether.
+altogether -- see `UBOOT_ENV.md` for that procedure.
 
 ## The standalone card, later
 

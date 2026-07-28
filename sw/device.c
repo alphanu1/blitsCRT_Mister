@@ -13,6 +13,7 @@
  */
 
 #include "device.h"
+#include "edid.h"
 #include "fabric.h"
 #include "blitscrt_regs.h"
 
@@ -427,10 +428,59 @@ int blitscrt_handle_ctrl(struct blitscrt_dev *d,
 		return (int)need;
 	}
 
-	case GUD_REQ_GET_CONNECTOR_EDID:
-		/* no EDID; the mode list is authoritative */
+	case GUD_REQ_GET_CONNECTOR_EDID: {
+		/*
+		 * Off unless BLITSCRT_EDID=1.
+		 *
+		 * The block carries a name so a host stops calling this
+		 * "VGA-1-unknown", and a sync range so it knows what the
+		 * deflection circuit will take. It deliberately carries no
+		 * timings, on the reasoning that a host cannot prefer a mode it
+		 * has not been given.
+		 *
+		 * That reasoning was wrong. Tested on hardware, a host offered
+		 * this EDID picks a mode wider than the raster and loses frames:
+		 * the range limits alone are enough to change how it chooses,
+		 * without a single timing in the block. Whatever it does with
+		 * them, it is not simply reading the mode list.
+		 *
+		 * So the name is not worth it by default. The mode list stays the
+		 * only thing a host is told, which is the arrangement that works.
+		 */
+		/*
+		 *   unset  no EDID at all. The connector reads
+		 *          "VGA-1-unknown" and the picture is right.
+		 *   name   the name descriptor only -- nothing a host can
+		 *          compute a mode from.
+		 *   full   name and range limits. Known to make a host pick a
+		 *          mode wider than the raster; kept for investigating
+		 *          why.
+		 */
+		const char *mode = getenv("BLITSCRT_EDID");
+		int want_name  = mode && (mode[0] == 'n' || mode[0] == 'f' ||
+					  mode[0] == '1');
+		int want_range = mode && mode[0] == 'f';
+		size_t n;
+
+		if (!want_name) {
+			d->last_status = GUD_STATUS_OK;
+			return 0;
+		}
+
+		{
+			const struct blitscrt_sink_limits *L =
+				&blitscrt_limits_15khz;
+			n = blitscrt_edid_build(buf, buflen, "blitsCRT",
+						want_range,
+						L->line_hz_min / 1000,
+						(L->line_hz_max + 999) / 1000,
+						L->field_hz_min,
+						L->field_hz_max,
+						L->pclk_khz_max);
+		}
 		d->last_status = GUD_STATUS_OK;
-		return 0;
+		return (int)n;
+	}
 
 	case GUD_REQ_SET_BUFFER: {
 		const struct gud_set_buffer_req *r = data;

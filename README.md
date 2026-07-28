@@ -442,7 +442,7 @@ sim/        testbenches and rendered output
 tools/      font, banner, PNG and u-boot override generators
 docs/       BRINGUP.md    step by step to first picture
             BOOT.md       how the bitstream reaches the FPGA
-            UBOOT_ENV.md  importing the boot environment, and recovery
+            UBOOT_ENV.md  the boot environment: importing, changing, recovery
 ```
 
 **Bringing it up for the first time: `docs/BRINGUP.md`.**
@@ -1258,6 +1258,7 @@ taskbar, menus, at 640x480i60 and 15.750 kHz.
 | done | **a host enumerates it as a GUD display.** Confirmed on hardware: `1d50:614d`, `gud 1.0.0` bound, `/dev/dri/card*` created |
 | done | changing mode from the host works. It used to hang both ends -- the same read-size fault, since a modeset produces a differently sized flush |
 | done | the overlay hides itself while a host is attached and comes back when one leaves; the front-panel button stays authoritative |
+| note | no EDID sent, so the connector reads `VGA-1-unknown`. Both variants tried on hardware break mode selection; the likely reason is that they contain no timings at all. See the limitation below |
 | note | composite sync is implemented and switchable at runtime on `CTRL` bit 3, but has not been tried on a set that needs it |
 | done | **pixels on screen.** The bulk endpoint drains a full frame per flush and blits it into scanout |
 | done | A-to-A cable with VBUS cut into the Type-A OTG port, with the USB hub add-on removed |
@@ -1615,6 +1616,28 @@ point of the whole design.
 - `MODE_640x480p` selects slot 3 expecting 25.200 MHz, and the PLL puts 6.300
   there, so the 31 kHz diagnostic runs at 7.875. Left alone deliberately: it is
   not a 15 kHz target, and putting 25.200 on `outclk_1` would cost 320x240p60.
+
+- The connector shows as `VGA-1-unknown` on a host, because no EDID is sent. One
+  is implemented in `sw/edid.c` -- a monitor name and a sync range, and no timings
+  at all, on the reasoning that a host cannot prefer a mode it has not been given.
+  That reasoning did not survive contact with hardware. Offered the block, a host
+  picks a mode wider than the raster and loses frames -- and it does so with the
+  range limits (`BLITSCRT_EDID=full`) *and* with a bare name descriptor
+  (`=name`), so it is not the limits. Any EDID at all changes what the host does.
+
+  Which points at the thing both variants share: **neither contains a single
+  timing.** An EDID with no preferred timing descriptor is legal but very unusual,
+  and a host that expects one and finds none may well fall back to a default
+  rather than deferring to the mode list. That would produce exactly what was
+  seen, a mode wider than the raster.
+
+  So the experiment not yet run is the opposite of the one that failed: an EDID
+  carrying *one* detailed timing descriptor, matching the preferred 640x480i60
+  mode, instead of none. Interlaced DTDs are fiddly to get right, which is why it
+  was avoided, but it is the variant with a reason to work.
+
+  Until then the default sends nothing, which is the arrangement that works.
+  `sw/edid.c` and its tests stay for whoever picks this up.
 
 - RGB888 is not offered, though it is the only format that uses the whole 6/6/6
   ladder. `scanout_fetch.v` cannot read three bytes per pixel: it straddles the

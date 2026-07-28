@@ -49,9 +49,17 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 #       issues one during its flush both sides wait on each other -- which is
 #       what the indefinite hang was
 #   d18 LZ4 on by default in the daemon itself, not set by init
+#   d23 BLITSCRT_EDID=name sends the name descriptor alone, without the range
+#       limits -- the half a host was seen to act on
+#   d22 EDID off by default -- a host given one picks a mode wider than the
+#       raster and drops frames, even with no timings in the block
+#   d21 blitscrt-peek links $(CORE) instead of a hand-written object list, so a
+#       new core file reaches every target rather than just the daemon
+#   d20 an EDID with a monitor name and the sync range, so a host stops calling
+#       this "VGA-1-unknown". No timings in it -- the mode list is authoritative
 #   d19 a greppable build tag in the binary, and main.o depends on the Makefile
 #       so bumping the number cannot leave a stale object behind
-BLITSCRTD_BUILD ?= d19
+BLITSCRTD_BUILD ?= d23
 CFLAGS  += -DBLITSCRTD_BUILD='"$(BLITSCRTD_BUILD)"'
 # -lpthread: the bulk endpoint runs on its own thread, so a blocking read cannot
 # stop ep0 being serviced. Static linking needs it named explicitly.
@@ -71,7 +79,7 @@ else
 LDFLAGS ?=
 endif
 
-CORE := device.c modes.c pll.c pll_reconfig.c fabric.c
+CORE := edid.c device.c modes.c pll.c pll_reconfig.c fabric.c
 OBJ  := lz4dec.o $(CORE:.c=.o) gadget.o main.o
 
 .PHONY: all test clean
@@ -86,13 +94,16 @@ blitscrtd: $(OBJ)
 blitscrt-ddrbench: ddrbench.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-blitscrt-peek: peek.o fabric.o pll_reconfig.o pll.o modes.o device.o
+# $(CORE) rather than a hand-written list: peek links the same core objects the
+# daemon does, so adding a file to CORE reaches both. Spelling them out here
+# meant edid.c was added in one place and the tool failed to link in another.
+blitscrt-peek: peek.o $(CORE:.c=.o)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-test: test_pll test_pll_reconfig test_modes test_device test_lz4
+test: test_pll test_pll_reconfig test_modes test_device test_lz4 test_edid
 	@echo ""
 	@./test_pll
 	@echo ""
@@ -102,6 +113,7 @@ test: test_pll test_pll_reconfig test_modes test_device test_lz4
 	@echo ""
 	@./test_device
 	@./test_lz4
+	@./test_edid
 
 test_pll: tests/test_pll.c pll.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
@@ -116,6 +128,9 @@ test_modes: tests/test_modes.c modes.c pll.c
 # bumping the build number alone would leave the old object in place and the
 # binary would report a version it is not. Depend on the Makefile so it cannot.
 main.o: Makefile
+
+test_edid: tests/test_edid.c edid.c
+	$(CC) $(CFLAGS) -o $@ tests/test_edid.c edid.c
 
 test_lz4: tests/test_lz4.c lz4dec.c
 	$(CC) $(CFLAGS) -o $@ tests/test_lz4.c lz4dec.c

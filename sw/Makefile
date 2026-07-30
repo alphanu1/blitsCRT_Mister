@@ -49,6 +49,14 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 #       issues one during its flush both sides wait on each other -- which is
 #       what the indefinite hang was
 #   d18 LZ4 on by default in the daemon itself, not set by init
+#   d26 doubling copy in the decompressor. Small offsets -- a repeated pixel or
+#       pixel pair, most of sprite data -- used a byte loop; now every copy is
+#       memcpy and the gap doubles. 1.37x on x86, more expected on the A9
+#   d25 report the running mode on every fps line -- peek cannot read it while
+#       the daemon runs, and stopping the daemon clears HPS_TIMING
+#   d24 split the bulk read into waiting and transferring, and report the rate
+#       while bytes are moving -- a slow link and a slow host look the same in
+#       the total and are different problems
 #   d23 BLITSCRT_EDID=name sends the name descriptor alone, without the range
 #       limits -- the half a host was seen to act on
 #   d22 EDID off by default -- a host given one picks a mode wider than the
@@ -59,7 +67,7 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 #       this "VGA-1-unknown". No timings in it -- the mode list is authoritative
 #   d19 a greppable build tag in the binary, and main.o depends on the Makefile
 #       so bumping the number cannot leave a stale object behind
-BLITSCRTD_BUILD ?= d23
+BLITSCRTD_BUILD ?= d26
 CFLAGS  += -DBLITSCRTD_BUILD='"$(BLITSCRTD_BUILD)"'
 # -lpthread: the bulk endpoint runs on its own thread, so a blocking read cannot
 # stop ep0 being serviced. Static linking needs it named explicitly.

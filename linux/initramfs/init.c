@@ -401,6 +401,11 @@ int main(void)
 	mkdir("/sys", 0555);
 	mount("sysfs", "/sys", "sysfs", 0, NULL);
 	mkdir("/dev", 0755);
+
+	/* A writable scratch directory. Nothing here needs one, but every script
+	 * anyone writes on the board assumes it exists, and its absence shows up
+	 * as "can't create /tmp/..." halfway through something unrelated. */
+	mkdir("/tmp", 01777);
 	mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
 
 	say("\n=== " BLITSCRT_NAME " " BLITSCRT_VERSION "-" BLITSCRT_KREV

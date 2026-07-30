@@ -199,18 +199,24 @@ What remains is depth rather than rate. RGB888 is still not offered, and 24kHz a
 | done | damage rectangles, which carry anything short of full-screen motion |
 | done | LZ4 offered and decompressed. `sw/lz4dec.c`, block format, every read and write range-checked |
 | done | on by default in the daemon itself, so it applies however it is started; `BLITSCRT_LZ4=0` turns it off |
-| done | 640x480i60 full-screen runs at 51.98 fps uncompressed, 31.9 MB/s -- bandwidth-limited |
+| done | 640x480i60 full-screen runs at 60 fps with LZ4, 51.98 without |
 | done | measured on real traffic: 2.58x on a desktop, 253x on a static screen. LZ4 reaches 60 fps |
 | done | LZ4 stable: read requests rounded to a packet boundary, so a transfer neither splits nor swallows the frames behind it |
 | done | the read overlaps the decompress and blit: two threads and a two-slot pool, so a frame costs `max(read, lz4 + blit)` |
-| done | decompression costs the ARM 2.1 ms on a quiet frame, 4.3 on a busy one -- a less compressible frame is both more to carry and more to expand |
+| done | decompression costs 3.3 ms for a 640x480 RGB565 frame, 186 MB/s of output. Small offsets use a doubling copy rather than a byte loop -- 1.37x on x86, more on the A9 |
 | done | measured on real traffic: 2.58x sustained, 253x on a static screen, and the daemon reports achieved fps against the frame budget |
 | **todo** | **a two-beat read window in `scanout_fetch.v`, so RGB888 works: the only format that uses the whole ladder, and the only deep one that fits 640-wide with LZ4** |
 
-Measured on hardware. Raw, RetroArch full-screen at 640x480i60 runs **51.98 fps**
--- 614400 bytes a frame at 31.9 MB/s, bandwidth-limited against the ceiling below.
-With LZ4 the same content reached **60.01 fps**, the vsync cap, at 2.58x: 239 KB a
-frame, about 14 MB/s, well inside budget.
+Measured on hardware. Raw, RetroArch full-screen at 640x480i60 runs **51.98 fps**;
+with LZ4 the same content reaches **60.01**, the vsync cap, at 2.58x compression.
+
+The daemon reports its own achieved rate as well, which is worth using in
+preference to a host-side counter -- it also prints where the frame time goes, so
+a shortfall can be attributed rather than guessed at. Note that the device is
+rarely the limit: it uses roughly 9 ms of a 16.7 ms budget, so `critical path`
+well under `available` means the frames are not arriving, and the cause is
+upstream. A flaky USB hub on the host produced exactly that, and no amount of
+work on this side would have helped.
 
 *Getting the read size right took three attempts, and both obvious answers are
 wrong.* There is no framing on the bulk stream to resynchronise against --

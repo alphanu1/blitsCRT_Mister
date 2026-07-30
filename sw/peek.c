@@ -30,6 +30,7 @@ static void usage(const char *p)
 		"       %s -b [off]            beat a register (default 0x64) for ~5s\n"
 		"       %s -g                   report scanout source, geometry, fetch state\n"
 		"       %s -t                   report the timing the raster is really running\n"
+		"       %s -i                   I/O board buttons and LEDs, live and sticky\n"
 		"       %s -p                   dump the PLL reconfig window\n"
 		"       %s -R [ms] [pre]        reconfig by hand; 'pre' first does the register\n"
 		"                              writes set_mode makes before it\n"
@@ -39,7 +40,7 @@ static void usage(const char *p)
 		"       %s -f <x> <y> <w> <h> <rgb565>\n"
 		"                              fill a rect in scanout memory, timed\n"
 		"offsets and values are hex (0x64) or decimal. Kill blitscrtd first.\n",
-		p, p, p, p, p, p, p, p, p, p);
+		p, p, p, p, p, p, p, p, p, p, p);
 }
 
 static uint32_t parse(const char *s) { return (uint32_t)strtoul(s, NULL, 0); }
@@ -50,6 +51,22 @@ int main(int argc, char **argv)
 	int i;
 
 	if (argc < 2) { usage(argv[0]); return 2; }
+
+	/*
+	 * Check the option before opening the fabric.
+	 *
+	 * strtoul("-i") is 0 with no error, so an unrecognised option used to
+	 * fall through to the register read and print the magic at 0x0000 -- a
+	 * plausible-looking answer to a question nobody asked, and how a stale
+	 * binary on the card passed for a working one. Doing it here rather than
+	 * at the end of the chain also means the message is about the option
+	 * rather than about there being no fabric.
+	 */
+	if (argv[1][0] == '-' && !strchr("wbgtipRmcf", argv[1][1])) {
+		fprintf(stderr, "%s: unknown option '%s'\n\n", argv[0], argv[1]);
+		usage(argv[0]);
+		return 2;
+	}
 
 	/* We own gp_out on this board, so gp access is safe; the transport gates it
 	 * behind this, so set it here rather than making the caller prefix it. */
@@ -148,6 +165,34 @@ int main(int argc, char **argv)
 				         ? "   *** does not match the raster ***" : "");
 			}
 		}
+	} else if (!strcmp(argv[1], "-i")) {
+		/*
+		 * The I/O board pins. Everything is active low, so a pressed
+		 * button and a lit LED both read as 0 at the pin -- printed here
+		 * as "pressed" and "lit" so the inversion does not have to be
+		 * held in the head.
+		 */
+		uint32_t v = blitscrt_fabric_read(f, BLITSCRT_REG_IO_DIAG);
+		unsigned btn  =  v        & 7;
+		unsigned seen = (v >> BLITSCRT_IO_SEEN_SHIFT) & 7;
+		unsigned led  = (v >> BLITSCRT_IO_LED_SHIFT)  & 7;
+		static const char *bn[3] = { "USER", "OSD ", "RESET" };
+		static const char *ln[3] = { "USER", "HDD ", "POWER" };
+		int i;
+
+		printf("IO_DIAG = 0x%08x\n", v);
+		printf("  buttons   now        since last read\n");
+		for (i = 0; i < 3; i++)
+			printf("    %-6s  %-9s  %s\n", bn[i],
+			       (btn  >> i) & 1 ? "-" : "pressed",
+			       (seen >> i) & 1 ? "pressed" : "-");
+		printf("  LEDs being driven\n");
+		for (i = 0; i < 3; i++)
+			printf("    %-6s  %s\n", ln[i],
+			       (led >> i) & 1 ? "off" : "lit");
+		printf("\n  All active low. A button reads 0 while held; an LED\n"
+		       "  lights when the fabric pulls its pin to ground.\n");
+
 	} else if (!strcmp(argv[1], "-p")) {
 		/* The reconfig block's own registers, read through the 0x1000
 		 * aperture. All zeroes means the aperture is not reaching the

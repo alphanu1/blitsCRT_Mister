@@ -80,6 +80,48 @@ int main(void)
 		    blitscrt_lz4_decompress(b, sizeof b, out, 3) == -1);
 	}
 
+	/*
+	 * Small offsets, which the doubling copy handles differently from large
+	 * ones. Offsets of 2 and 4 are a repeated pixel or pixel pair and are
+	 * most of what sprite data is made of, so they are worth checking
+	 * explicitly rather than trusting the general case.
+	 */
+	{
+		/* two literals, then offset 2 with match 15+3+4 = 22:
+		 * "ab" repeated to 24 bytes total */
+		uint8_t b[6];
+		b[0] = 0x2F;            /* 2 literals, match nibble 15 */
+		b[1] = 'a'; b[2] = 'b';
+		b[3] = 0x02; b[4] = 0x00;   /* offset 2 */
+		b[5] = 3;                   /* match 15 + 3 + 4 = 22 */
+		n = blitscrt_lz4_decompress(b, sizeof b, out, sizeof out);
+		chk("offset 2 repeats a pixel pair", n == 24);
+		{
+			int i, ok = 1;
+			for (i = 0; i < 24; i++)
+				if (out[i] != (i & 1 ? 'b' : 'a')) ok = 0;
+			chk("  and every byte is right", ok);
+		}
+	}
+
+	{
+		/* four literals, offset 4, match 15+1+4 = 20 -> 24 bytes */
+		uint8_t b[8];
+		b[0] = 0x4F;
+		b[1] = 'w'; b[2] = 'x'; b[3] = 'y'; b[4] = 'z';
+		b[5] = 0x04; b[6] = 0x00;
+		b[7] = 1;
+		n = blitscrt_lz4_decompress(b, sizeof b, out, sizeof out);
+		chk("offset 4 repeats a 32-bit group", n == 24);
+		{
+			int i, ok = 1;
+			const char *pat = "wxyz";
+			for (i = 0; i < 24; i++)
+				if (out[i] != pat[i & 3]) ok = 0;
+			chk("  and every byte is right", ok);
+		}
+	}
+
 	if (fails)
 		printf("\nFAIL  %d checks\n", fails);
 	else

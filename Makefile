@@ -210,6 +210,8 @@ sim: assets
 	cd rtl && vvp ../sim/tb_timing.vvp
 	$(IV) -o sim/tb_i2c.vvp sim/tb_i2c.v rtl/adv7513_init.v rtl/i2c_master.v
 	vvp sim/tb_i2c.vvp
+	$(IV) -o sim/tb_mcp23009.vvp sim/tb_mcp23009.v rtl/mcp23009.v rtl/i2c_master.v
+	vvp sim/tb_mcp23009.vvp
 	$(IV) -o sim/tb_modes.vvp sim/tb_modes.v rtl/video_timing.v rtl/mode_table.v
 	vvp sim/tb_modes.vvp
 	$(IV) -o sim/tb_regs.vvp sim/tb_regs.v rtl/blitscrt_regs.v
@@ -437,7 +439,12 @@ BLITSCRT_VERSION ?= 0.10
 #       the run reported success
 #   k10 the trace is no longer forced on -- it costs more than it tells once
 #       frames are flowing. LZ4 is the daemon's own default, not set here
-BLITSCRT_KREV    ?= k10
+#   k11 init creates /tmp -- scripts assume it and its absence surfaces as an
+#       unrelated-looking failure halfway through something else
+#   k12 the gadget RX FIFO raised from 2 KB to 16 KB. Four packets of buffering
+#       throttled the bulk endpoint to 21.5 MB/s against 35-40 available, with no
+#       error anywhere -- just NAKs while the daemon drained it
+BLITSCRT_KREV    ?= k12
 
 # Proof-of-concept initramfs: a static init plus a static busybox for an
 # interactive debug shell, embedded into zImage via CONFIG_INITRAMFS_SOURCE.
@@ -793,6 +800,7 @@ build: assets $(UBOOT_TXT) daemon peek
 	fi
 	@mkdir -p $(CARD_SUB)
 	@cp tools/gadget-setup.sh $(CARD_SUB)/ && echo "staged blitscrt/gadget-setup.sh"
+	@cp tools/find-io.sh $(CARD_SUB)/ && echo "staged blitscrt/find-io.sh"
 	@cp tools/blitscrt-startup.sh $(CARD_SUB)/ && echo "staged blitscrt/blitscrt-startup.sh"
 	@cp linux/blitscrt_gadget.config $(CARD_SUB)/ 2>/dev/null || true
 	@if [ -f sw/blitscrtd ]; then \

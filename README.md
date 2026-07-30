@@ -9,7 +9,7 @@ clock is synthesised on the board for whatever mode is asked for, so a timing th
 fabric was never compiled for still works.
 
 Running on hardware today: 640x480i60 at a 15.750 kHz line rate from a 12.600 MHz
-pixel clock, over USB with LZ4 compression, at the vsync cap.
+pixel clock, over USB with LZ4 compression, full-screen at 60 fps.
 
 Both outputs carry the same pixel stream. Analog RGB666 goes out of the A/V
 board's VGA connector for a CRT, and the same raster goes out of HDMI as Direct
@@ -764,6 +764,25 @@ to read the log from. `killall blitscrtd` stops it; init does not respawn it.
 
 Then:
 
+The report leads with the running mode and the achieved rate:
+
+```
+blitscrtd: 640x480i host timing -- 45.9 fps -- wait 6.6 ms, xfer 0.0 ms,
+           lz4 3.0 ms, blit 5.6 ms, critical path 8.6 of 21.8 available
+```
+
+`critical path` against `available` is the question worth asking. The device uses
+roughly 9 ms of a 16.7 ms budget, so if `available` is much larger than that the
+frames are simply not arriving and the cause is upstream -- a flaky USB hub on the
+host produced exactly that, and nothing on this side would have helped. `wait` is time between asking for a rect and the first
+byte arriving; `xfer` is first byte to last. `xfer 0.0` means the frame was
+already buffered when the read was issued -- no transfer bottleneck at all.
+
+The mode is on the line because there is no other way to see it while the daemon
+runs: `blitscrt-peek` needs the daemon stopped, and stopping it clears
+`HPS_TIMING`, so a peek always reports the front-panel table whatever was on
+screen. The overlay would say, but it hides itself when a host attaches.
+
 Which build is on the card, without running it:
 
 ```
@@ -804,6 +823,27 @@ One more thing worth knowing: a trace left running on a serial console has been
 seen to leave a `screen` session spinning at 100% CPU on the host afterwards. If
 frame rate is mysteriously poor, check `top` on the PC before suspecting the
 board.
+
+### Checking what the host thinks it has
+
+Desktop settings panels show resolution and refresh and little else -- KDE does
+not display interlace or preferred flags at all, which makes it easy to conclude
+something is wrong when it is not. `modetest` shows what DRM actually has:
+
+```
+sudo modetest -c | grep -A3 640x480
+```
+
+```
+#0 640x480i 60.00 640 664 724 800 480 486 492 525 12600 flags: nhsync, nvsync, interlace; type: preferred, driver
+#1 640x576i 50.00 640 664 724 800 576 582 588 625 12500 flags: nhsync, nvsync, interlace; type: driver
+#2 320x288   50.08 320 332 362 400 288 291 294 312  6250 flags: nhsync, nvsync; type: driver
+#3 320x240   60.11 320 332 362 400 240 243 246 262  6300 flags: nhsync, nvsync; type: driver
+```
+
+Every advertised mode, with its timings, its sync polarity, and `interlace` on
+the two that carry it. That is the authority on the host side; `blitscrt-peek -t`
+is the authority on the board, reading the `LIVE_*` registers after the mux.
 
 ## The GUD daemon
 
@@ -870,6 +910,32 @@ Detail, including what each milestone cost to get working, is in
 - `MODE_640x480p` selects slot 3 expecting 25.200 MHz, and the PLL puts 6.300
   there, so the 31 kHz diagnostic runs at 7.875. Left alone deliberately: it is
   not a 15 kHz target, and putting 25.200 on `outclk_1` would cost 320x240p60.
+
+- **The I/O board LEDs and buttons do not work on a MiSTer Pi.** They are behind
+  an **MCP23009 I2C GPIO expander**, not on the GPIO pins this project drives.
+
+  MiSTer's `sys_top.v` instantiates an `mcp23009` module bit-banging I2C on
+  `IO_SCL`/`IO_SDA`, and when the expander answers, everything moves: the buttons
+  come from it rather than `BTN_*`, and the `LED_*` pins are reused for other
+  signals -- `LED_USER` becomes `VGA_TX_CLK` outright. So on such a board those
+  pins are not merely unused, they mean something else, which is why
+  `blitscrt-peek -i` shows the fabric driving them correctly to no effect.
+
+  Note the bus is FPGA-side, bit-banged by the fabric. Looking for it in
+  `/sys/bus/i2c` finds only the RTC board and gets nowhere.
+
+  **`rtl/mcp23009.v` implements the device side**, with `rtl/i2c_master.v`
+  extended for single-byte reads, and `sim/tb_mcp23009.v` checks it against a
+  model expander -- the init sequence, LED bit order, button decoding, and that
+  an absent expander reports nothing pressed rather than phantom presses.
+  Register layout follows MiSTer's `sys/mcp23009.sv`, (C) 2019 Alexey Melnikov,
+  GPL-2.0-or-later.
+
+  **Not yet wired up**: `IO_SCL`/`IO_SDA` need pin assignments, and those are in
+  MiSTer's `sys/sys.tcl` rather than anywhere this project can derive them. Once
+  they are in `pins.tcl`, the module needs instantiating in `blitscrt_top.v` with
+  its `btn` output feeding the existing button logic and `present` selecting
+  between it and the GPIO pins.
 
 - The connector shows as `VGA-1-unknown` on a host, because no EDID is sent. One
   is implemented in `sw/edid.c` -- a monitor name and a sync range, and no timings

@@ -195,6 +195,22 @@
  * as a decode that does not reach it. Bit 0 tells the two apart in one read.
  */
 #define BLITSCRT_REG_BUS_DIAG       0x0098u
+
+/*
+ * IO_DIAG -- the I/O board pins, so they can be seen rather than guessed at.
+ *
+ *   [2:0]   live button state, active low: reset, osd, user
+ *   [6:4]   sticky: set when a button has been seen low since the last read of
+ *           this register, and cleared by reading it. A press is far shorter
+ *           than the gap between two peeks, so live state alone would miss it.
+ *   [10:8]  what the fabric is driving at the LED pins, also active low
+ */
+#define BLITSCRT_REG_IO_DIAG        0x009Cu
+#define BLITSCRT_IO_BTN_RESET       (1u << 2)
+#define BLITSCRT_IO_BTN_OSD         (1u << 1)
+#define BLITSCRT_IO_BTN_USER        (1u << 0)
+#define BLITSCRT_IO_SEEN_SHIFT      4
+#define BLITSCRT_IO_LED_SHIFT       8
 #define BLITSCRT_BUS_PLL_WAIT       (1u << 0)
 #define BLITSCRT_BUS_PLL_WAIT_SEEN  (1u << 1)
 #define BLITSCRT_BUS_STALLED        (1u << 2)

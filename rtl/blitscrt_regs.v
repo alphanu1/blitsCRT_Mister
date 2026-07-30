@@ -45,6 +45,8 @@ module blitscrt_regs #(
      *   3.6  BUS_DIAG; the bridge gives up on a slave that never accepts
      *        instead of wedging the transport
      *   3.7  blitscrt_pllbus between the bridge and the reconfig slave
+     *   3.10 IO_DIAG at 0x9C: the I/O board buttons and LEDs, live and sticky,
+     *        so a dead LED can be told from a wrong pin without a scope
      *   3.9  BUS_DIAG carries the PLL's lock and counts START and counter
      *        writes reaching the reconfig slave
      *   3.8  pllbus takes the data on the accept cycle and stops asking.
@@ -55,7 +57,7 @@ module blitscrt_regs #(
      * clock select pointing at a clock pin and once without -- and the only way
      * to tell them apart was whether the monitor synced.
      */
-    parameter [31:0] VERSION = 32'h0003_0009,
+    parameter [31:0] VERSION = 32'h0003_000A,
 
     /* Scanout memory geometry, pixels. Zero on purpose: these MUST be passed by
      * whoever instantiates this. A plausible default here once hid a dropped
@@ -106,6 +108,17 @@ module blitscrt_regs #(
     input  wire        pll_wait,          // the reconfig slave's waitrequest
     input  wire        pll_accept,        // an aperture access completed
     input  wire        bus_stalled,       // the bridge abandoned one
+
+    /*
+     * The I/O board pins, so software can see them.
+     *
+     * The LEDs and buttons do not work with this fabric and do with a MiSTer
+     * card, and with no way to read the pins there is no telling a wrong pin
+     * assignment from wrong logic from a board that is not connected. These make
+     * it a single register read: press a button and watch the sticky bit.
+     */
+    input  wire [2:0]  io_btn,            // raw, synchronised: reset, osd, user
+    input  wire [2:0]  io_led,            // what is being driven at the pins
 
     input  wire        scanout_underrun_tog,
     input  wire [15:0] scanout_beats,
@@ -290,6 +303,25 @@ module blitscrt_regs #(
         end
     end
 
+    /*
+     * Sticky button capture for IO_DIAG.
+     *
+     * The buttons are active low, so a bit is set when its pin is seen low and
+     * stays set until IO_DIAG is read. A press lasts a tenth of a second at
+     * best and two register reads are seconds apart, so live state alone would
+     * essentially never catch one.
+     */
+    reg [2:0] btn_seen;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            btn_seen <= 3'b000;
+        else begin
+            btn_seen <= btn_seen | ~io_btn;
+            if (read && (address[7:0] == 8'h9C))
+                btn_seen <= 3'b000 | ~io_btn;
+        end
+    end
+
     // -------------------------------------------------------------------
     // writes
     // -------------------------------------------------------------------
@@ -418,6 +450,15 @@ module blitscrt_regs #(
                 8'h98: readdata <= {pll_cnts, pll_starts, pll_accepts,
                                     4'd0, pll_locked_raw, bus_stalled,
                                     pll_wait_seen, pll_wait};
+                /*
+                 * IO_DIAG. Live pin state in the low bits, and a sticky record
+                 * of any button seen low since the last read in bits 8..10 --
+                 * a button press is far shorter than the gap between two peeks,
+                 * so live alone would almost never catch one.
+                 */
+                8'h9C: readdata <= {16'd0, 1'b0, io_led,
+                                    1'b0, btn_seen,
+                                    1'b0, io_btn};
                 default: readdata <= 32'd0;
             endcase
         end

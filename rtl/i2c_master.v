@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // -----------------------------------------------------------------------------
-// i2c_master.v -- minimal write-only I2C master
+// i2c_master.v -- minimal I2C master: register writes, and single-byte reads
 //
 // Enough to push {device, register, value} triples at an ADV7513 and nothing
 // more. Open drain throughout: lines are either driven low or released, never
@@ -21,6 +21,15 @@ module i2c_master #(
     input  wire [6:0] dev_addr,
     input  wire [7:0] reg_addr,
     input  wire [7:0] data,
+
+    /*
+     * rd = 1 reads instead of writing: address the device, send reg_addr, then
+     * a repeated START, address it again for reading, take one byte and NACK it.
+     * rd = 0 behaves exactly as before, which is what the HDMI transmitter path
+     * relies on.
+     */
+    input  wire       rd,
+    output reg  [7:0] rdata,
 
     output reg        busy,
     output reg        done,           // one-clock pulse
@@ -49,12 +58,15 @@ module i2c_master #(
         end
     end
 
-    localparam [3:0] S_IDLE  = 4'd0,
-                     S_START = 4'd1,
-                     S_BIT   = 4'd2,
-                     S_ACK   = 4'd3,
-                     S_STOP  = 4'd4,
-                     S_DONE  = 4'd5;
+    localparam [3:0] S_IDLE   = 4'd0,
+                     S_START  = 4'd1,
+                     S_BIT    = 4'd2,
+                     S_ACK    = 4'd3,
+                     S_STOP   = 4'd4,
+                     S_DONE   = 4'd5,
+                     S_RSTART = 4'd6,   // repeated START before the read
+                     S_RBIT   = 4'd7,   // shifting the byte in
+                     S_RNACK  = 4'd8;   // NACK it, so the slave stops
 
     reg [3:0]  state;
     reg [1:0]  phase;
@@ -62,6 +74,7 @@ module i2c_master #(
     reg [1:0]  bytec;
     reg [7:0]  shreg;
     reg        scl_r, sda_r;
+    reg        rd_l;               // latched at start, so it cannot move mid-transfer
 
     assign scl     = scl_r;
     assign sda_out = sda_r;
@@ -78,6 +91,8 @@ module i2c_master #(
             busy  <= 1'b0;
             done  <= 1'b0;
             nack  <= 1'b0;
+            rd_l  <= 1'b0;
+            rdata <= 8'd0;
         end else begin
             done <= 1'b0;
 
@@ -93,6 +108,7 @@ module i2c_master #(
                     state <= S_START;
                     busy  <= 1'b1;
                     nack  <= 1'b0;
+                    rd_l  <= rd;
                 end
             end else if (tick) begin
                 phase <= phase + 2'd1;
@@ -130,7 +146,18 @@ module i2c_master #(
                             2'd3: begin
                                 scl_r <= 1'b0;
                                 bitc  <= 3'd7;
-                                if (bytec == 2'd2) begin
+                                /*
+                                 * A read stops after the register address and
+                                 * turns the bus around; a write carries on and
+                                 * sends the data byte.
+                                 */
+                                if (bytec == 2'd3) begin
+                                    /* that was the read address; the slave
+                                     * drives the next eight bits */
+                                    state <= S_RBIT;
+                                end else if (rd_l && bytec == 2'd1) begin
+                                    state <= S_RSTART;
+                                end else if (bytec == 2'd2) begin
                                     state <= S_STOP;
                                 end else begin
                                     shreg <= (bytec == 2'd0) ? reg_addr : data;
@@ -138,6 +165,47 @@ module i2c_master #(
                                     state <= S_BIT;
                                 end
                             end
+                        endcase
+                    end
+
+                    /* Repeated START: SDA released high, then pulled low with
+                     * SCL high, without a STOP in between. */
+                    S_RSTART: begin
+                        case (phase)
+                            2'd0: sda_r <= 1'b1;
+                            2'd1: scl_r <= 1'b1;
+                            2'd2: sda_r <= 1'b0;
+                            2'd3: begin
+                                scl_r <= 1'b0;
+                                shreg <= {dev_addr, 1'b1};   // read
+                                bitc  <= 3'd7;
+                                bytec <= 2'd3;               // marks the read address
+                                state <= S_BIT;
+                            end
+                        endcase
+                    end
+
+                    S_RBIT: begin
+                        case (phase)
+                            2'd0: sda_r <= 1'b1;             // let the slave drive
+                            2'd1: scl_r <= 1'b1;
+                            2'd2: rdata <= {rdata[6:0], sda_in};
+                            2'd3: begin
+                                scl_r <= 1'b0;
+                                if (bitc == 3'd0) state <= S_RNACK;
+                                else              bitc <= bitc - 3'd1;
+                            end
+                        endcase
+                    end
+
+                    /* NACK the byte: SDA held high through the ninth clock, which
+                     * tells the slave not to send another. */
+                    S_RNACK: begin
+                        case (phase)
+                            2'd0: sda_r <= 1'b1;
+                            2'd1: scl_r <= 1'b1;
+                            2'd2: ;
+                            2'd3: begin scl_r <= 1'b0; state <= S_STOP; end
                         endcase
                     end
 

@@ -90,6 +90,7 @@ if [ -f "$KDIR/zImage" ]; then
     [ -f "$KDIR/blitscrt-peek" ]        && cp -v "$KDIR/blitscrt-peek"        "$DEST/blitscrt/blitscrt-peek"
     [ -f "$KDIR/blitscrt-ddrbench" ]    && cp -v "$KDIR/blitscrt-ddrbench"    "$DEST/blitscrt/blitscrt-ddrbench"
     [ -f "$KDIR/gadget-setup.sh" ]      && cp -v "$KDIR/gadget-setup.sh"      "$DEST/blitscrt/gadget-setup.sh"
+    [ -f "$KDIR/find-io.sh" ]           && cp -v "$KDIR/find-io.sh"           "$DEST/blitscrt/find-io.sh"
     echo "kernel + device tree copied under blitscrt/"
 fi
 sync

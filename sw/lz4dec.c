@@ -92,26 +92,33 @@ long blitscrt_lz4_decompress(const void *src, size_t src_len,
 		/*
 		 * A match may overlap the write position -- offset 1 with length
 		 * 20 is one byte repeated twenty times, which is how LZ4 encodes
-		 * runs -- so memcpy is undefined here and a byte loop is correct.
+		 * runs -- so a plain memcpy of the whole thing is undefined.
 		 *
-		 * But only when it overlaps. With the source eight or more bytes
-		 * back, an eight-byte chunk can never reach the bytes being
-		 * written, so the copy is safe in words and much faster on a
-		 * Cortex-A9. Runs still take the byte path. No overcopy past the
-		 * match end either, so the destination needs no slack.
+		 * But a copy no longer than the gap cannot overlap, and every
+		 * such copy doubles the gap. So the run is filled in
+		 * exponentially larger memcpys: off, 2*off, 4*off, and so on.
+		 * Twenty bytes at offset 1 becomes five memcpys rather than
+		 * twenty byte stores, and offsets of 2 and 4 -- a repeated pixel
+		 * or pixel pair, which is most of what sprite data is made of --
+		 * reach wide copies almost immediately.
+		 *
+		 * memcpy is the right primitive here rather than a hand-rolled
+		 * loop: the C library's is NEON-accelerated on this core, and
+		 * nothing written by hand will beat it.
 		 */
 		{
-			const uint8_t *m = out - off;
+			size_t gap = off;
 
-			if (off >= 8) {
-				while (match >= 8) {
-					memcpy(out, m, 8);
-					out += 8;
-					m += 8;
-					match -= 8;
-				}
+			while (match) {
+				size_t n = gap < match ? gap : match;
+
+				/* n <= gap, so source and destination cannot
+				 * overlap however small the offset is. */
+				memcpy(out, out - gap, n);
+				out   += n;
+				match -= n;
+				gap   += n;
 			}
-			while (match--) *out++ = *m++;
 		}
 	}
 

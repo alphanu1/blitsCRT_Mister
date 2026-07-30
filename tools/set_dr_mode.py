@@ -42,10 +42,21 @@ WANT = "peripheral"
 # ep0 is budgeted separately, so enumeration and the whole protocol succeed while
 # bulk never moves a byte.
 #
-# One bulk OUT endpoint is all this device has, so the RX side gets the room.
-# 512 + 256 + (4 x 256) = 1792 words, comfortably inside 8064.
+# One bulk OUT endpoint is all this device has, so the RX side gets the room --
+# and it needs a great deal more of it than the first guess allowed.
+#
+# 512 words is 2048 bytes: four 512-byte packets of buffering for a sustained
+# bulk stream. When it fills, the controller NAKs until the daemon drains it, and
+# every NAK costs a microframe. Measured effect: 614400 bytes took 28.6 ms, which
+# is 21.5 MB/s against the 35-40 a high-speed bulk endpoint should manage. No
+# errors, no stalls, just half rate -- the hardest kind of problem to see.
+#
+# 4096 words is 16 KB, thirty-two packets, and the core has 8064 words to hand
+# out. Using 6272 of them leaves the transmit side untouched and still has room
+# spare. There is no reason to be frugal here: nothing else on this device needs
+# the space.
 FIFOS = {
-    "g-rx-fifo-size": 512,
+    "g-rx-fifo-size": 4096,
     "g-np-tx-fifo-size": 256,
 }
 

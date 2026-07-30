@@ -102,7 +102,7 @@ struct blitscrt_gadget {
 	 * without the lock. A torn double would misprint one line and nothing
 	 * else depends on it; taking the lock on every frame to tidy a log
 	 * message would be the worse trade. */
-	double   ms_read;
+	double   ms_read, ms_wait, ms_xfer, mbs;
 	pthread_cond_t slot_free, slot_full;
 
 	/*
@@ -352,7 +352,7 @@ static uint64_t now_us(void)
 static void *bulk_worker(void *arg)
 {
 	struct blitscrt_gadget *g = arg;
-	uint64_t t_read = 0;
+	uint64_t t_read = 0, t_wait = 0, t_xfer = 0, t_bytes = 0, t_first;
 	unsigned frames = 0;
 
 	for (;;) {
@@ -397,6 +397,7 @@ static void *bulk_worker(void *arg)
 		      r.width, r.height, r.x, r.y, want, r.length, r.compression);
 
 		t0 = now_us();
+		t_first = 0;
 
 		/*
 		 * The request size has to be judged, not guessed, and both
@@ -446,10 +447,24 @@ static void *bulk_worker(void *arg)
 			}
 			if (got == 0)
 				break;          /* host gave up mid-rect */
+			/*
+			 * When the first bytes land, split the wait from the
+			 * transfer. A slow link and a host that is slow to start
+			 * look identical in the total, and they are entirely
+			 * different problems.
+			 */
+			if (!t_first)
+				t_first = now_us();
 			done += (size_t)got;
 		}
 
-		t_read += now_us() - t0;
+		{
+			uint64_t now = now_us();
+			t_wait  += (t_first ? t_first : now) - t0;
+			t_xfer  += t_first ? (now - t_first) : 0;
+			t_bytes += done;
+			t_read  += now - t0;
+		}
 
 		if (done != want)
 			TRACE("  read %zu, header said %zu\n", done, want);
@@ -467,7 +482,12 @@ static void *bulk_worker(void *arg)
 
 		if (++frames >= 60) {
 			g->ms_read = t_read / 60000.0;
-			t_read = 0;
+			g->ms_wait = t_wait / 60000.0;
+			g->ms_xfer = t_xfer / 60000.0;
+			/* MB/s while bytes were actually moving. */
+			g->mbs     = t_xfer ? (double)t_bytes / (double)t_xfer
+					    : 0.0;
+			t_read = t_wait = t_xfer = t_bytes = 0;
 			frames = 0;
 		}
 	}
@@ -553,12 +573,29 @@ static void *blit_worker(void *arg)
 			 */
 			double wall = (now_us() - t_wall) / 1e6;
 
-			fprintf(stderr, "blitscrtd: %.1f fps -- read %.1f ms "
-					"(overlapped), lz4 %.1f ms, blit %.1f "
-					"ms, critical path %.1f of %.1f "
-					"available\n",
+			/*
+			 * The mode, on every line. blitscrt-peek cannot be used
+			 * while the daemon runs, and stopping it clears
+			 * HPS_TIMING -- so a peek always reports the front-panel
+			 * table whatever was actually on screen. The overlay
+			 * would say, but it hides itself when a host attaches.
+			 * This is the only place the running mode is visible.
+			 */
+			fprintf(stderr, "blitscrtd: %ux%u%s %s -- ",
+				d->active_valid ? d->active_mode.hdisplay : 0,
+				d->active_valid ? d->active_mode.vdisplay : 0,
+				(d->active_valid &&
+				 (d->active_mode.flags & BLITSCRT_MF_INTERLACE))
+					? "i" : "p",
+				d->active_valid ? "host timing" : "NO MODE SET");
+
+			fprintf(stderr, "%.1f fps -- wait %.1f ms, "
+					"xfer %.1f ms at %.1f MB/s, lz4 %.1f ms, "
+					"blit %.1f ms, critical path %.1f of "
+					"%.1f available\n",
 				wall > 0 ? 60.0 / wall : 0.0,
-				g->ms_read, t_lz4 / 60000.0, t_blit / 60000.0,
+				g->ms_wait, g->ms_xfer, g->mbs,
+				t_lz4 / 60000.0, t_blit / 60000.0,
 				(t_lz4 + t_blit) / 60000.0,
 				wall > 0 ? wall * 1000.0 / 60.0 : 0.0);
 			fflush(stderr);

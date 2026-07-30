@@ -64,10 +64,28 @@ set_instance_assignment -name CURRENT_STRENGTH_NEW 8MA -to VGA_*
 #============================================================
 # I/O board buttons and LEDs
 #============================================================
-set_location_assignment PIN_Y15  -to LED_USER
+# The I/O board header, from the MiSTer schematics:
+#
+#   P1-1  GPIO_1[0]   PIN_AG28   User LED
+#   P1-3  GPIO_1[2]   PIN_AA15   Disk LED
+#   P1-5  GPIO_1[4]   PIN_Y15    Power LED
+#
+# USER and POWER were swapped here until it was checked against the schematic,
+# which is why the power LED never lit: the pin carrying ~pll_locked was wired to
+# the user LED instead.
+#
+# Active low. The LEDs sit between +5V and these pins, so the FPGA lights one by
+# pulling it to ground -- which is why every assignment in blitscrt_top.v is
+# inverted.
+set_location_assignment PIN_AG28 -to LED_USER
 set_location_assignment PIN_AA15 -to LED_HDD
-set_location_assignment PIN_AG28 -to LED_POWER
+set_location_assignment PIN_Y15  -to LED_POWER
 
+# Buttons, same header: OSD on pin 13, User on 15, Reset on 17. AG25 and AG23
+# are confirmed against the MiSTer sources; AH24 follows the same pattern and has
+# not been checked as closely.
+#
+# Pressed pulls to ground, hence the pull-ups below.
 set_location_assignment PIN_AH24 -to BTN_USER
 set_location_assignment PIN_AG25 -to BTN_OSD
 set_location_assignment PIN_AG23 -to BTN_RESET

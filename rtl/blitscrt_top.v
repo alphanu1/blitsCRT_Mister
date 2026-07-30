@@ -683,6 +683,9 @@ module blitscrt_top #(
         .pll_wait(pll_avs_waitrequest),
         .pll_accept((pll_avs_read || pll_avs_write) && !pll_avs_waitrequest),
         .bus_stalled(bus_stalled),
+        /* Raw pins for IO_DIAG, synchronised into the bus domain. */
+        .io_btn({btn_sync_rst, btn_sync_osd, btn_sync_usr}),
+        .io_led({LED_POWER, LED_HDD, LED_USER}),
         .scanout_underrun_tog(sc_underrun), .scanout_beats(sc_beats),
         /* Post-mux, so this reports what the raster is really running on
          * rather than what was asked for. */
@@ -811,6 +814,28 @@ module blitscrt_top #(
         end
     end
     wire mode_blink = (blink_i < ((cur_mode + 3'd1) << 1)) & ~blink_i[0];
+
+    /*
+     * Active low: the LEDs sit between +5V and the GPIO pins, so one lights when
+     * the FPGA pulls its pin to ground. Hence the inversions.
+     *
+     * These do nothing on a MiSTer Pi. That board puts the LEDs and buttons
+     * behind an MCP23009 I2C expander on IO_SCL/IO_SDA, and MiSTer's sys_top
+     * repurposes these pins entirely when it detects one -- LED_USER becomes
+     * VGA_TX_CLK. Driving them here is correct for a DE10-Nano with a classic
+     * I/O board and inert otherwise. See the README.
+     */
+    /* Two flops each, so IO_DIAG reports something stable rather than a pin
+     * caught mid-bounce. */
+    reg [1:0] sy_rst, sy_osd, sy_usr;
+    always @(posedge FPGA_CLK1_50) begin
+        sy_rst <= {sy_rst[0], BTN_RESET};
+        sy_osd <= {sy_osd[0], BTN_OSD};
+        sy_usr <= {sy_usr[0], BTN_USER};
+    end
+    wire btn_sync_rst = sy_rst[1];
+    wire btn_sync_osd = sy_osd[1];
+    wire btn_sync_usr = sy_usr[1];
 
     assign LED_POWER = ~pll_locked;
     assign LED_HDD   = ~mode_blink;

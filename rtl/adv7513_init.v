@@ -96,6 +96,8 @@ module adv7513_init #(
         .clk(clk), .rst_n(rst_n),
         .start(i2c_start), .dev_addr(DEV),
         .reg_addr(i2c_reg), .data(i2c_dat),
+        .rd(1'b0), .rdata(),            /* writes only; the transmitter is
+                                         * configured, never interrogated */
         .busy(i2c_busy), .done(i2c_done), .nack(i2c_nack),
         .scl(scl), .sda_out(sda_out), .sda_in(sda_in)
     );

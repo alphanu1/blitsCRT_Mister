@@ -196,8 +196,10 @@ out of the same VCO:
 320x288p50    6.250 MHz   VCO  800   C=128
 ```
 
-Two VCOs cover all four, and within a VCO the 640 and 320 modes are one counter
-apart. All four solve to 0 ppm. That is how the PLL is driven: reconfigure M and N
+Two VCOs cover those four, and within a VCO the 640 and 320 modes are one counter
+apart. All four solve to 0 ppm. Two more are advertised alongside them --
+720x576i50 at 13.500 MHz, the true PAL BT.601 timing, and 1280x240p60 at 25.200
+MHz for super-resolution -- making six in all. That is how the PLL is driven: reconfigure M and N
 to swap VCO between NTSC and PAL, and take the two C outputs into the clock mux
 for 640-wide against 320-wide. Two muxed PLL outputs is exactly what `altclkctrl`
 allows.
@@ -633,13 +635,63 @@ is compiled in.
 | | | |
 |---|---|---|
 | **DE10-Nano or MiSTer Pi** | required | the board itself |
-| **Analog A/V board** | required | the only 15 kHz RGB output; without it there is HDMI and nothing else |
+| **Analog A/V board** | required | the only 15 kHz RGB output; without it there is HDMI and nothing else. Which board matters -- see below |
 | **microSD card** | required | dedicated to BlitsCRT, since it replaces the boot chain on it |
 | **A-to-A USB cable, VBUS cut** | required for M4 | host link, into the board's Type-A OTG port |
 | **Serial console** | advisable | the HPS UART at 115200 is where the boot log and the daemon appear |
 | **SDRAM module** | not used | no controller in the design, and none planned |
 | **USB hub board** | must be removed | the gadget does not work with it fitted |
 | RTC board | not used | nothing here needs it |
+
+### Which A/V board
+
+There are two, and they are not interchangeable.
+
+**The older analog I/O board (v6.x and similar)** takes RGB666 straight off the
+FPGA pins into a passive resistor ladder. No ICs on the video path. This is what
+the fabric was originally written for.
+
+**The newer A/V board** carries an Analog Devices ADV712x video DAC -- a 48-pin
+QFP, plainly visible on the board. A DAC latches nothing without a clock, so it
+needs three signals the older board did not: a pixel clock, a data enable, and a
+sync control. MiSTer puts them on the pins the older board used for the three
+status LEDs, and this fabric does the same:
+
+| pin | ball | older board | newer board |
+|---|---|---|---|
+| `LED_USER` | Y15 | user LED | `VCLK`, the DAC's latch clock |
+| `LED_POWER` | AG28 | power LED | `BLANK*`, driven by data enable |
+| `LED_HDD` | AA15 | disk LED | `SYNC*`, composite sync |
+
+The balls come from MiSTer's `sys/sys_analog.tcl`, which is the authority --
+forum posts on this differ and at least one has them wrong.
+
+The colour data is `VGA_R/G/B[5:0]` on the same pins as the older board, so
+RGB666 reaches the DAC's top six bits. The remaining two bits per channel travel
+on the secondary SD card pins, which this fabric does not yet drive:
+
+```verilog
+assign {SDIO_CLK,SDIO_CMD,SDIO_DAT} = ... {vga_g,vga_r,vga_b};   // MiSTer
+```
+
+So colour is 6-bit here rather than 8, with the DAC's low bits floating.
+
+`CTRL` bit 7 selects, and it is **on by default** because that is the board this
+was brought up against. On the older board clear it, or the LEDs stay dark and
+the ladder gets video signals it does not want:
+
+```
+blitscrt-peek -w 0x08 <ctrl & ~0x80>
+```
+
+Two consequences worth knowing. On the newer board the I/O board LEDs and buttons
+do not work here at all -- those pins are carrying video, and the real ones are
+behind an MCP23009 I2C expander this fabric has a driver for but has not wired
+up. And `CTRL` bit 8 inverts the DAC's latch clock, on by default: the ADV712x
+samples on the rising edge and our data changes there, so half a period of setup
+rather than none.
+
+### USB
 
 The host link goes into the board's USB OTG port, driven by the HPS `dwc2`
 controller in peripheral mode. On a DE10-Nano that is the micro-AB connector; a
@@ -873,10 +925,10 @@ How the solver and the reconfiguration work is in `docs/DESIGN.md`.
 
 | | |
 |---|---|
-| **M1** fabric only | done -- 15kHz out of both connectors |
+| **M1** fabric only | done -- 15kHz out of the analog board and HDMI |
 | **M2** custom kernel and runtime control | done -- own kernel, own init, registers over gp |
 | **M3** scanout memory | done -- HPS DDR3 over f2sdram, custom pixel clocks by PLL reconfiguration |
-| **M4** GUD USB host link | done -- a host enumerates it as a display and drives it |
+| **M4** GUD USB host link | done -- a host enumerates it as a display and drives it. One open bug: unplugging the cable leaves the last frame frozen |
 | **M5** bandwidth | done -- LZ4, 60 fps full-screen. RGB888 still needs a two-beat read window |
 | **M6** Switchres modes at boot | not started -- monitor profiles and a generated mode list |
 | **M7** Windows host | not started, and probably its own repository |
@@ -887,11 +939,11 @@ Detail, including what each milestone cost to get working, is in
 
 ## Known limitations
 
-- Mode 0 is **640**x240, not 320x240. It went 640 wide when I dropped to two
-  clocks. Same raster, 15.750 kHz and 262 lines, just twice the horizontal
-  sample density. The scanout path now pixel-doubles 320-wide memory to fill it,
-  so a true 320-wide active area is back for scanout; the test card is still
-  generated at 640.
+- The **front-panel mode table's** mode 0 is 640x240, not 320x240. It went 640
+  wide when the design dropped to two compiled clocks. Same raster, 15.750 kHz
+  and 262 lines, just twice the horizontal sample density. This affects only what
+  the board shows with no host; the test card and scanout follow the live raster,
+  so a host asking for 320x240 gets a true 320-wide active area.
 - 640x240p is not a format HDMI sinks recognise. The transmitter sends it and a
   Direct Video DAC converts it, but a monitor may refuse to lock. Mode 1 is the
   HDMI default for that reason.
@@ -945,6 +997,44 @@ Detail, including what each milestone cost to get working, is in
   Both variants lack any timing descriptor, which is the likely cause and is
   written up in `sw/edid.c`. `BLITSCRT_EDID=name` or `=full` for anyone
   investigating.
+
+- The A/V board defaults assume the **newer board with a DAC**. `CTRL` resets
+  with `AV_DAC` and `CSYNC` set, because that board latches nothing without a
+  pixel clock and a 15 kHz set reached through SCART takes sync on the HS pin.
+
+  On that board the three pins the older one used for LEDs carry video instead --
+  clock, data enable and sync -- which is what MiSTer's `sys_top.v` does when it
+  finds the I2C expander. It is also why the I/O board LEDs and buttons do not
+  work here: those pins are not LEDs on this hardware, and the real ones are
+  behind an MCP23009 this fabric has a driver for but has not yet wired up.
+
+  A DE10-Nano with the older resistor-ladder board wants `AV_DAC` clear:
+  `blitscrt-peek -w 0x08 <ctrl & ~0x80>`.
+
+- **Unplugging the host leaves the last frame frozen on screen** (M4). It should
+  fall back to the test card and pick up again when the cable returns; instead
+  the picture stays, and replugging enumerates on the host while the board stays
+  stuck, which looks like a crash.
+
+  The revert is driven by `FUNCTIONFS_DISABLE`, and dwc2 raises that from VBUS
+  going away. The A-to-A cable this board needs has **VBUS cut on the board
+  side** -- both ends are hosts and only one may supply power -- so the gadget
+  never sees the disconnect, no event fires, and `blitscrt_dev_on_host(dev, 0)`
+  is never reached. The daemon still believes a host is attached.
+
+  Two ways out, neither tried. `/sys/class/udc/<name>/state` reports
+  `configured` or `not attached` independently of the FunctionFS event stream,
+  and `udc_name()` already finds that path; polling it from the tick callback
+  would catch the disconnect. Or treat a long silence as a detach -- though a
+  genuinely static screen sends nothing either, so that needs a timeout long
+  enough not to fire on an idle desktop.
+
+- **1280x480i60, 1280x576i50 and 1280x288p50 were advertised and withdrawn.**
+  The two interlaced ones are 73.7 MB/s of RGB565 against a link carrying about
+  35; even at 2.58x compression that leaves nothing spare, and on hardware the
+  picture updates as far down as the data reaches while the rest lags. A mode
+  that cannot hold a frame is worse than no mode. `1280x240p60` is half the data
+  and stays.
 
 - RGB888 is not offered, though it is the only format that uses the whole 6/6/6
   ladder. `scanout_fetch.v` cannot read three bytes per pixel: it straddles the

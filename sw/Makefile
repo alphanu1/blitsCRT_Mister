@@ -49,6 +49,10 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 #       issues one during its flush both sides wait on each other -- which is
 #       what the indefinite hang was
 #   d18 LZ4 on by default in the daemon itself, not set by init
+#   d28 refuse modes wider than the scanout line buffer, which the fabric now
+#       reports. A 1280 mode on a 1024 buffer scans out wrapped lines
+#   d27 five more modes: true PAL 720x576i50, and 1280-wide super-resolution at
+#       240p60, 480i60, 288p50 and 576i50. h_max raised to 1280
 #   d26 doubling copy in the decompressor. Small offsets -- a repeated pixel or
 #       pixel pair, most of sprite data -- used a byte loop; now every copy is
 #       memcpy and the gap doubles. 1.37x on x86, more expected on the A9
@@ -67,7 +71,9 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 #       this "VGA-1-unknown". No timings in it -- the mode list is authoritative
 #   d19 a greppable build tag in the binary, and main.o depends on the Makefile
 #       so bumping the number cannot leave a stale object behind
-BLITSCRTD_BUILD ?= d26
+#   d34 withdrew 1280x480i60, 1280x576i50 and 1280x288p50 -- 73.7 MB/s against
+#       a link carrying 35, so they could not hold a frame
+BLITSCRTD_BUILD ?= d34
 CFLAGS  += -DBLITSCRTD_BUILD='"$(BLITSCRTD_BUILD)"'
 # -lpthread: the bulk endpoint runs on its own thread, so a blocking read cannot
 # stop ep0 being serviced. Static linking needs it named explicitly.

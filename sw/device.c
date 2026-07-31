@@ -56,6 +56,29 @@ int blitscrt_modelist_add(struct blitscrt_dev *d, const struct blitscrt_mode *m)
 	if (blitscrt_mode_check(m, &blitscrt_limits_15khz, &t) != BLITSCRT_MODE_OK)
 		return -1;
 
+	/*
+	 * Nor anything wider than the scanout line buffer.
+	 *
+	 * A mode past that scans out wrapped lines -- two pictures side by side,
+	 * with nothing to suggest a buffer is the cause. The fabric reports its
+	 * own width so this cannot be got wrong by editing a parameter in one
+	 * place and having it overridden in another, which is exactly how a
+	 * 1024-pixel buffer survived being "raised" to 1280.
+	 *
+	 * A fabric too old to report it returns 0, and is left alone rather than
+	 * having every mode refused.
+	 */
+	if (d->fabric) {
+		unsigned maxw = blitscrt_fabric_max_width(d->fabric);
+
+		if (maxw && m->hdisplay > maxw) {
+			fprintf(stderr, "blitscrtd: %ux%u not advertised -- the "
+					"scanout line buffer holds %u pixels\n",
+				m->hdisplay, m->vdisplay, maxw);
+			return -1;
+		}
+	}
+
 	d->modes[d->n_modes++] = *m;
 	d->modes_changed = 1;
 	return 0;
@@ -109,6 +132,17 @@ void blitscrt_modelist_defaults(struct blitscrt_dev *d)
 		return;
 	}
 
+	/*
+	 * 720x576i50 -- true PAL. The ITU-R BT.601 timing at 13.5 MHz: 864 total
+	 * gives exactly 15.625 kHz, which is what a PAL set is built around, and
+	 * 720 active is the full broadcast width rather than the 640 a PC picks.
+	 */
+	blitscrt_mode_from_modeline(&m, 13500, 720, 732, 796, 864,
+				    576, 582, 588, 625,
+				    BLITSCRT_MF_INTERLACE |
+				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC);
+	blitscrt_modelist_add(d, &m);
+
 	/* 640x576i50 -- PAL, 15.625 kHz, 50.00 Hz field, 625 lines */
 	blitscrt_mode_from_modeline(&m, 12500, 640, 664, 724, 800,
 				    576, 582, 588, 625,
@@ -118,6 +152,33 @@ void blitscrt_modelist_defaults(struct blitscrt_dev *d)
 
 	/* 320x240p60 -- 15.750 kHz, 60.11 Hz, 262 lines */
 	blitscrt_mode_from_modeline(&m, 6300, 320, 332, 362, 400,
+				    240, 243, 246, 262,
+				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC);
+	blitscrt_modelist_add(d, &m);
+
+	/*
+	 * Super-resolution modes: 1280 wide at the same 15 kHz line rate.
+	 *
+	 * The point is not more detail -- a CRT cannot resolve 1280 across its
+	 * aperture. It is that the host GPU does the horizontal scaling rather
+	 * than a scaler in the path, which is free on the host. Switchres
+	 * generates these, so a host driving this board through it will ask.
+	 *
+	 * Deflection work is unchanged: a 1280-wide line at 15.75 kHz is the same
+	 * sweep as a 640-wide one, just twice the pixel clock. Bandwidth is not.
+	 *
+	 * Only 240p is offered. 1280x240p60 is 36.9 MB/s raw and compresses
+	 * comfortably into budget. The 480i and 576i variants were tried and
+	 * withdrawn: 73.7 MB/s against a link carrying about 35, and even at 2.58x
+	 * that leaves nothing spare -- on hardware the picture updates as far down
+	 * as the data reaches and the rest lags behind. Advertising a mode that
+	 * cannot hold a frame is worse than not offering it. 1280x288p50 went with
+	 * them; there is no use for a 50 Hz super-res progressive mode without the
+	 * interlaced pair to switch between.
+	 */
+
+	/* 1280x240p60 -- 240p super-res, 25.2 MHz, 262 lines */
+	blitscrt_mode_from_modeline(&m, 25200, 1280, 1328, 1448, 1600,
 				    240, 243, 246, 262,
 				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC);
 	blitscrt_modelist_add(d, &m);

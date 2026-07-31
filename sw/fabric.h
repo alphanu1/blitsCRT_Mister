@@ -81,6 +81,10 @@ void blitscrt_fabric_enable(struct blitscrt_fabric *f, int on);
  * the text whatever software wants. */
 void blitscrt_fabric_overlay_show(struct blitscrt_fabric *f, int on);
 
+/* Widest line the scanout buffer holds, in pixels. 0 if the fabric predates the
+ * register and cannot say. */
+unsigned blitscrt_fabric_max_width(struct blitscrt_fabric *f);
+
 /* Write a line of text into the overlay character buffer. */
 void blitscrt_fabric_overlay_line(struct blitscrt_fabric *f,
 				  unsigned row, unsigned col, const char *s);

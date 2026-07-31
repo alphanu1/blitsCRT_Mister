@@ -475,3 +475,29 @@ read rather than pushed, is the first thing M7 has to establish.
 Screen capture through the Desktop Duplication API would be a fraction of the
 effort and is not an option: it cannot switch resolution per game, which is the
 point of the whole design.
+
+## The live raster, and why narrow modes were broken
+
+Three places read the front-panel mode table's geometry rather than the raster
+actually being scanned:
+
+```verilog
+wire [11:0] frame_h = t_hact;                    // test card width
+wire        hdouble = (t_hact > r_sc_w);         // scanout doubling
+    .double_h(t_ilace),                          // overlay
+```
+
+`video_timing` was correctly given the muxed `v_*` signals; these three reached
+past the mux. With a host driving 320x240 the raster ran 320 wide while the test
+card was drawn 640 wide -- half the bars filling the screen -- and `hdouble`
+compared the table's 640 against the host's 320 and doubled when it should not.
+
+So every mode narrower than the table's own was wrong and every mode the same
+width was right, which is why 640x480 always worked and 320x240 never did. It
+went unnoticed because the analog output did not work at all until the A/V
+board's DAC was driven correctly, and on HDMI the affected modes are not
+displayable.
+
+The test card is what found it: fabric-generated, no host, no framebuffer, no
+daemon. When it came out wrong the fault had to be in the fabric. It was reached
+for several hours later than it should have been.

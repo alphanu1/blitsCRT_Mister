@@ -39,6 +39,38 @@
  * mode table the way back from a mode the display cannot show.
  */
 #define BLITSCRT_CTRL_HPS_TIMING (1u << 5)
+/*
+ * Drive the VGA pins whatever VGA_EN says.
+ *
+ * The analog board pulls VGA_EN low to announce itself, and every VGA output is
+ * tri-stated when it is not -- so a board that does not pull it low gives a
+ * black screen with nothing else wrong anywhere. An integrated A/V board may
+ * have nothing to detect, being always present. IO_DIAG reports the raw pin.
+ */
+#define BLITSCRT_CTRL_AV_FORCE   (1u << 6)
+/*
+ * The newer A/V board carries a DAC rather than a resistor ladder, and a DAC
+ * needs a latch clock. MiSTer puts it on the pin the older board used for the
+ * user LED, with data enable and sync on the other two:
+ *
+ *   LED_USER  -> VGA_TX_CLK
+ *   LED_POWER -> DE
+ *   LED_HDD   -> SOG / CSYNC
+ *
+ * Without it the DAC latches nothing and the screen is black while every other
+ * signal is correct -- and the LEDs appear broken at the same time, because
+ * those pins stopped being LEDs.
+ */
+#define BLITSCRT_CTRL_AV_DAC     (1u << 7)
+/*
+ * Invert the DAC's latch clock. On by default.
+ *
+ * The ADV712x on the A/V board samples R/G/B on the rising edge of its clock,
+ * and VGA_R/G/B are registered on clk_pix -- so an un-inverted clock samples
+ * exactly as the data changes. Half a period of setup instead of none. Clear it
+ * if a board wants the other phase.
+ */
+#define BLITSCRT_CTRL_AV_CLK_INV (1u << 8)
 #define BLITSCRT_CTRL_HDMI_EN    (1u << 4)
 
 /* ---- status ---- */
@@ -206,11 +238,23 @@
  *   [10:8]  what the fabric is driving at the LED pins, also active low
  */
 #define BLITSCRT_REG_IO_DIAG        0x009Cu
+
+/*
+ * SCANOUT_MAXW -- how wide a line the scanout buffer holds, in pixels.
+ *
+ * Reported because the daemon cannot otherwise know. A mode wider than this
+ * scans out wrapped lines, which looks like two pictures side by side and gives
+ * no hint that a buffer is the cause. Zero on a fabric older than 3.11, which is
+ * treated as "unknown" rather than "none".
+ */
+#define BLITSCRT_REG_SCANOUT_MAXW   0x00A0u
 #define BLITSCRT_IO_BTN_RESET       (1u << 2)
 #define BLITSCRT_IO_BTN_OSD         (1u << 1)
 #define BLITSCRT_IO_BTN_USER        (1u << 0)
 #define BLITSCRT_IO_SEEN_SHIFT      4
 #define BLITSCRT_IO_LED_SHIFT       8
+#define BLITSCRT_IO_VGA_EN          (1u << 16)  /* raw pin, active low */
+#define BLITSCRT_IO_AV_PRESENT      (1u << 17)  /* what the design concluded */
 #define BLITSCRT_BUS_PLL_WAIT       (1u << 0)
 #define BLITSCRT_BUS_PLL_WAIT_SEEN  (1u << 1)
 #define BLITSCRT_BUS_STALLED        (1u << 2)

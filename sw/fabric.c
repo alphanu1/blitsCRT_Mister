@@ -777,6 +777,14 @@ int blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 	return -1;
 }
 
+unsigned blitscrt_fabric_max_width(struct blitscrt_fabric *f)
+{
+	if (!f) return 0;
+	if (blitscrt_fabric_read(f, BLITSCRT_REG_VERSION) < 0x0003000Bu)
+		return 0;                           /* register did not exist */
+	return blitscrt_fabric_read(f, BLITSCRT_REG_SCANOUT_MAXW) & 0xfffu;
+}
+
 void blitscrt_fabric_overlay_show(struct blitscrt_fabric *f, int on)
 {
 	uint32_t c;

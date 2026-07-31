@@ -214,6 +214,8 @@ sim: assets
 	vvp sim/tb_mcp23009.vvp
 	$(IV) -o sim/tb_modes.vvp sim/tb_modes.v rtl/video_timing.v rtl/mode_table.v
 	vvp sim/tb_modes.vvp
+	$(IV) -o sim/tb_csync.vvp sim/tb_csync.v rtl/video_timing.v
+	vvp sim/tb_csync.vvp
 	$(IV) -o sim/tb_regs.vvp sim/tb_regs.v rtl/blitscrt_regs.v
 	vvp sim/tb_regs.vvp
 	$(IV) -o sim/tb_bridge.vvp sim/tb_bridge.v rtl/blitscrt_bridge.v

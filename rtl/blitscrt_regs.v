@@ -45,6 +45,24 @@ module blitscrt_regs #(
      *   3.6  BUS_DIAG; the bridge gives up on a slave that never accepts
      *        instead of wedging the transport
      *   3.7  blitscrt_pllbus between the bridge and the reconfig slave
+     *   3.18 the test card, the overlay and the scanout doubling follow the
+     *        live raster rather than the front-panel mode table
+     *   3.17 CTRL bit 8 inverts the DAC latch clock, on by default: the
+     *        ADV712x samples on the rising edge and our data changes there
+     *   3.16 composite sync in the broadcast shape -- half-line serration
+     *        through vertical sync and equalising pulses either side, which is
+     *        what a television needs and hs ^ vs is not
+     *   3.15 CSYNC and AV_DAC on at reset: the A/V board's DAC needs a clock
+     *        and a 15 kHz set through SCART needs composite sync
+     *   3.14 IO_DIAG fields land where the header says. The concatenation was
+     *        28 bits and everything above the LEDs was four bits low
+     *   3.13 CTRL bit 7 drives the newer A/V board's DAC: clock, DE and sync
+     *        on the pins the older board used for LEDs
+     *   3.12 CTRL bit 6 forces the VGA outputs on regardless of VGA_EN, and
+     *        IO_DIAG reports that pin -- a board that does not pull it low gives
+     *        a black screen with nothing else wrong
+     *   3.11 SCANOUT_MAXW at 0xA0: the line buffer width, so software can
+     *        refuse a mode too wide for it
      *   3.10 IO_DIAG at 0x9C: the I/O board buttons and LEDs, live and sticky,
      *        so a dead LED can be told from a wrong pin without a scope
      *   3.9  BUS_DIAG carries the PLL's lock and counts START and counter
@@ -57,7 +75,8 @@ module blitscrt_regs #(
      * clock select pointing at a clock pin and once without -- and the only way
      * to tell them apart was whether the monitor synced.
      */
-    parameter [31:0] VERSION = 32'h0003_000A,
+    parameter [31:0] VERSION = 32'h0003_0012,
+    parameter [11:0] SCANOUT_MAXW = 12'd1280,
 
     /* Scanout memory geometry, pixels. Zero on purpose: these MUST be passed by
      * whoever instantiates this. A plausible default here once hid a dropped
@@ -119,6 +138,8 @@ module blitscrt_regs #(
      */
     input  wire [2:0]  io_btn,            // raw, synchronised: reset, osd, user
     input  wire [2:0]  io_led,            // what is being driven at the pins
+    input  wire        io_vga_en,         // VGA_EN pin, active low: board present
+    input  wire        io_av_present,     // what the design concluded from it
 
     input  wire        scanout_underrun_tog,
     input  wire [15:0] scanout_beats,
@@ -150,6 +171,16 @@ module blitscrt_regs #(
     /* The same bit, bus domain. The clock select cannot be driven from a
      * pixel-domain signal: clk_pix is what the select generates. */
     output wire        hps_timing_bus,
+    /* CTRL bit 6: drive the VGA pins whatever VGA_EN says. For a board that does
+     * not pull the present pin low. */
+    output wire        av_force,
+    /* CTRL bit 7: the newer A/V board carries a DAC and needs a clock, DE and
+     * sync on the pins the older board used for LEDs. */
+    output wire        av_dac,
+    /* CTRL bit 8: invert the DAC's latch clock. The ADV712x samples R/G/B on the
+     * rising edge, and ours change on that same edge -- half a period of setup
+     * rather than none. */
+    output wire        av_clk_inv,
 
     // scanout memory, video domain
     output reg  [31:0] sc_base,
@@ -192,7 +223,7 @@ module blitscrt_regs #(
     reg [31:0] s_geom;
     reg [31:0] s_sc_base, s_sc_stride;
     reg [2:0]  s_sc_format;
-    reg [5:0]  s_ctrl;
+    reg [8:0]  s_ctrl;              /* 6 av_force, 7 av_dac, 8 av_clk_inv */
 
     reg [19:0] sc_ptr;                    // next scanout write, in pixels
     reg        apply_req;                 // toggles to request a latch
@@ -335,8 +366,34 @@ module blitscrt_regs #(
             s_sc_base   <= 32'd0;
             s_sc_stride <= 32'd1280;
             s_sc_format <= 3'd0;
-            s_ctrl      <= 6'b010110;            // testcard, overlay, hdmi on;
-                                                 // front panel owns timing
+            /*
+             * testcard, overlay, HDMI, composite sync, and the A/V board DAC.
+             * Front panel owns timing until a host takes it.
+             *
+             * CSYNC and AV_DAC are on at reset because the board this is built
+             * for needs both and nothing else works without them: the newer A/V
+             * board carries a DAC that latches nothing without a clock, and a
+             * 15 kHz set reached through SCART takes sync on the HS pin. Having
+             * to write them by hand every boot made a working configuration look
+             * like a broken one.
+             *
+             * A DE10-Nano with the older resistor-ladder board wants AV_DAC
+             * clear, since those three pins really are LEDs there. Clearing it
+             * is one register write; leaving the default suited to the harder
+             * case is the better trade.
+             */
+            /*
+             * 0x09E: testcard, overlay, CSYNC, HDMI, A/V board DAC.
+             * Front panel owns timing until a host takes it, and the DAC clock
+             * is not inverted -- tested against an ADV7125 board, which latches
+             * correctly on the rising edge. CTRL bit 8 inverts it for a board
+             * that wants the other phase.
+             *
+             * Width stated explicitly: this was an 8-bit literal in a 9-bit
+             * register, which happened to give the right answer but hid what bit
+             * 8 was doing.
+             */
+            s_ctrl      <= 9'b0_1001_1110;
             pll_m <= 9'd63; pll_n <= 9'd2; pll_c <= 9'd125;
             apply_req <= 1'b0;
             hb_count  <= 32'd0;
@@ -364,7 +421,7 @@ module blitscrt_regs #(
                     char_data <= writedata[7:0];
                 end else begin
                     case (reg_off)
-                        8'h08: s_ctrl      <= writedata[5:0];
+                        8'h08: s_ctrl      <= writedata[8:0];
                         8'h10: s_hsy       <= writedata[11:0];
                         8'h14: s_hbp       <= writedata[11:0];
                         8'h18: s_hact      <= writedata[11:0];
@@ -416,7 +473,7 @@ module blitscrt_regs #(
             case (reg_off)
                 8'h00: readdata <= ID_MAGIC;
                 8'h04: readdata <= VERSION;
-                8'h08: readdata <= {26'd0, s_ctrl};
+                8'h08: readdata <= {23'd0, s_ctrl};
                 8'h0C: readdata <= {26'd0, (ur_count != 8'd0), applying,
                                     sync_vblank[1], sync_field[1],
                                     sync_hdmi[1], sync_lock[1]};
@@ -441,6 +498,9 @@ module blitscrt_regs #(
                 8'h70: readdata <= {12'd0, sc_ptr};
                 8'h78: readdata <= s_geom;
                 8'h7C: readdata <= CAPS;
+                /* What the scanout line buffer can hold, in pixels. Software
+                 * refuses wider modes rather than scanning out wrapped lines. */
+                8'hA0: readdata <= {20'd0, SCANOUT_MAXW[11:0]};
                 8'h80: readdata <= {8'd0, ur_count, beats_sync};
                 8'h84: readdata <= {4'd0, lv_hbp,  4'd0, lv_hsy};
                 8'h88: readdata <= {4'd0, lv_hfp,  4'd0, lv_hact};
@@ -456,9 +516,23 @@ module blitscrt_regs #(
                  * a button press is far shorter than the gap between two peeks,
                  * so live alone would almost never catch one.
                  */
-                8'h9C: readdata <= {16'd0, 1'b0, io_led,
-                                    1'b0, btn_seen,
-                                    1'b0, io_btn};
+                /*
+                 * 32 bits exactly. The first version of this concatenation came
+                 * to 28 and Verilog zero-extended it on the left, so every field
+                 * above the LEDs sat four bits below where the header said --
+                 * and the diagnostic confidently reported the opposite of the
+                 * truth about whether the VGA pins were driven.
+                 *
+                 *   [2:0]   buttons, live      [6:4]   buttons, sticky
+                 *   [10:8]  LED pins           [16]    VGA_EN pin
+                 *   [17]    av_present
+                 */
+                8'h9C: readdata <= {14'd0,                  /* 31:18 */
+                                    io_av_present,          /* 17    */
+                                    io_vga_en,              /* 16    */
+                                    5'd0, io_led,           /* 15:8  */
+                                    1'b0, btn_seen,         /* 7:4   */
+                                    1'b0, io_btn};          /* 3:0   */
                 default: readdata <= 32'd0;
             endcase
         end
@@ -569,6 +643,9 @@ module blitscrt_regs #(
     assign hdmi_en     = ctrl_vid[4];
     assign hps_timing  = ctrl_vid[5];
     assign hps_timing_bus = s_ctrl[5];
+    assign av_force      = s_ctrl[6];
+    assign av_dac        = s_ctrl[7];
+    assign av_clk_inv    = s_ctrl[8];
 
 endmodule
 

@@ -37,6 +37,18 @@
 `default_nettype none
 
 module blitscrt_top #(
+    /*
+     * Widest line the scanout buffer holds, in pixels.
+     *
+     * Must cover the widest advertised mode: Switchres generates 1280-wide
+     * super-resolution timings at 15 kHz, so this is 1280 rather than the 1024
+     * it began at. Reported to software in SCANOUT_MAXW, so the daemon refuses
+     * modes the buffer cannot hold rather than scanning out wrapped lines --
+     * which looks like two pictures side by side and is not obviously a buffer
+     * problem when it happens.
+     */
+    parameter integer SCANOUT_MAXW = 1280,
+
     parameter integer CSYNC        = 0,
     parameter integer DEFAULT_VGA  = 1,   // analog board fitted
     parameter integer DEFAULT_HDMI = 1,   // HDMI only; 2 for 31kHz VGA timing
@@ -134,6 +146,9 @@ module blitscrt_top #(
     wire [31:0] r_pclk_khz, r_sc_base, r_sc_stride;
     wire [2:0]  r_sc_format;
     wire        r_scanout_en, r_testcard_en, r_overlay_en, r_csync_en, r_hdmi_en;
+    wire        r_av_force;      // CTRL bit 6: drive VGA whatever VGA_EN says
+    wire        r_av_dac;        // CTRL bit 7: newer A/V board, clock the DAC
+    wire        r_av_clk_inv;    // CTRL bit 8: invert that clock
     wire [8:0]  r_pll_m, r_pll_n, r_pll_c;
     wire        r_pll_apply, r_char_we;
     wire [12:0] r_char_addr;
@@ -152,7 +167,17 @@ module blitscrt_top #(
     always @(posedge FPGA_CLK1_50) rst50_sr <= {rst50_sr[2:0], BTN_RESET};
     wire rst50_n = rst50_sr[3];
 
-    wire av_present = ~VGA_EN;      // the analog board pulls this low
+    /*
+     * The analog board pulls VGA_EN low to say it is there, and every VGA output
+     * is tri-stated when it is not -- so a board that does not pull it low gives
+     * a black screen with nothing else wrong.
+     *
+     * CTRL bit 6 forces it on. An integrated A/V board may have nothing to
+     * detect, since it is always present, and there is no way to tell that apart
+     * from a genuinely absent board except by trying. IO_DIAG reports both the
+     * raw pin and the conclusion.
+     */
+    wire av_present = ~VGA_EN | r_av_force;
 
     // Debounce BTN_OSD. The buttons are active low with weak pull-ups.
     reg [19:0] db_cnt;
@@ -364,8 +389,20 @@ module blitscrt_top #(
     // ---------------- test card ----------------
     wire [5:0] tc_r, tc_g, tc_b;
 
-    wire [11:0] frame_h = t_hact;
-    wire [11:0] frame_v = t_ilace ? {t_vact[10:0], 1'b0} : t_vact;
+    /*
+     * The active area actually being scanned, from the same mux the timing
+     * generator uses.
+     *
+     * These read t_hact/t_vact/t_ilace directly until it was noticed on a CRT:
+     * the front-panel table's geometry rather than the host's. With a host
+     * driving 320x240 the raster ran 320 wide while the test card was drawn 640
+     * wide, so half the bars filled the screen -- and hdouble below compared the
+     * table's 640 against the host's 320 and doubled when it should not have.
+     * Every mode narrower than the table's own looked broken; every mode the
+     * same width looked fine, which is why 640x480 always worked.
+     */
+    wire [11:0] frame_h = v_hact;
+    wire [11:0] frame_v = v_ilace ? {v_vact[10:0], 1'b0} : v_vact;
 
     testcard u_card (
         .clk(clk_pix), .rst_n(rst_n),
@@ -464,7 +501,12 @@ module blitscrt_top #(
         );
 
         scanout_fetch #(
-            .DW(F2SDRAM_DW), .AW(32), .MAXW(1024), .MAX_BURST(128)
+            /* MAXW must cover the widest advertised mode. Switchres generates
+             * 1280-wide super-resolution timings at 15 kHz, so 1024 is not
+             * enough -- and overriding the module's default here is how a change
+             * to that default silently did nothing. SCANOUT_MAXW reports this
+             * to software so the daemon can refuse what the buffer cannot hold. */
+            .DW(F2SDRAM_DW), .AW(32), .MAXW(SCANOUT_MAXW), .MAX_BURST(128)
         ) u_fetch (
             .clk_mem(f2s_clk), .rst_mem_n(f2s_rst_n),
             .avm_address(f2s_address), .avm_read(f2s_read),
@@ -503,7 +545,8 @@ module blitscrt_top #(
      * buffer half the width of the active area is doubled, and one half the
      * height is line-doubled. With SCANOUT_W=320 that puts a true 320-wide picture
      * across all three modes, and the 240-line buffer covers 480i as well. */
-    wire hdouble = (t_hact  > r_sc_w);
+    /* Doubling is judged against the live raster, not the mode table. */
+    wire hdouble = (v_hact  > r_sc_w);
     wire vdouble = (frame_v > r_sc_h);
 
     wire [5:0] sc_r, sc_g, sc_b;
@@ -580,7 +623,10 @@ module blitscrt_top #(
     wire [5:0] px_r, px_g, px_b;
 
     overlay u_overlay (
-        .double_h(t_ilace),
+        /* The live interlace flag, not the mode table's -- same bug as
+         * frame_h/frame_v had, and it would leave the overlay half-height on a
+         * host mode whose interlace differs from the front panel's. */
+        .double_h(v_ilace),
         .bank(cur_mode),
         .hps_alive(hps_alive),
         .clk(clk_pix), .rst_n(rst_n),
@@ -652,7 +698,8 @@ module blitscrt_top #(
                                                           : 32'h0000_0002;
 
     blitscrt_regs #(
-        .SC_W(SCANOUT_W), .SC_H(SCANOUT_H), .CAPS(CAPS_WORD)
+        .SC_W(SCANOUT_W), .SC_H(SCANOUT_H), .CAPS(CAPS_WORD),
+        .SCANOUT_MAXW(SCANOUT_MAXW[11:0])
     ) u_regs (
         .clk(FPGA_CLK1_50), .rst_n(rst50_n),
         .address(reg_address), .read(reg_read), .write(reg_write),
@@ -668,6 +715,8 @@ module blitscrt_top #(
         .interlace(r_interlace), .pclk_khz(r_pclk_khz),
         .scanout_en(r_scanout_en), .testcard_en(r_testcard_en),
         .overlay_en(r_overlay_en), .csync_en(r_csync_en), .hdmi_en(r_hdmi_en),
+        .av_force(r_av_force), .av_dac(r_av_dac),
+        .av_clk_inv(r_av_clk_inv),
         .hps_timing(r_hps_timing), .hps_timing_bus(r_hps_timing_bus),
         .sc_base(r_sc_base), .sc_stride(r_sc_stride),
         .sc_format(r_sc_format), .sc_w(r_sc_w), .sc_h(r_sc_h),
@@ -686,6 +735,7 @@ module blitscrt_top #(
         /* Raw pins for IO_DIAG, synchronised into the bus domain. */
         .io_btn({btn_sync_rst, btn_sync_osd, btn_sync_usr}),
         .io_led({LED_POWER, LED_HDD, LED_USER}),
+        .io_vga_en(VGA_EN), .io_av_present(av_present),
         .scanout_underrun_tog(sc_underrun), .scanout_beats(sc_beats),
         /* Post-mux, so this reports what the raster is really running on
          * rather than what was asked for. */
@@ -837,9 +887,43 @@ module blitscrt_top #(
     wire btn_sync_osd = sy_osd[1];
     wire btn_sync_usr = sy_usr[1];
 
-    assign LED_POWER = ~pll_locked;
-    assign LED_HDD   = ~mode_blink;
-    assign LED_USER  = ~beat[22];
+    /*
+     * These three pins are LEDs on the old resistor-ladder A/V board and video
+     * signals on the newer one, which carries an ADV7125. MiSTer's sys_top does
+     * the same, keyed on the MCP23009 being present, and the AV board schematic
+     * confirms which is which:
+     *
+     *   LED_USER  Y15    VCLK    the DAC's latch clock
+     *   LED_POWER AG28   BLANK*  active low, so data enable drives it directly
+     *   LED_HDD   AA15   SYNC*   active low composite sync
+     *
+     * The pin assignments come from MiSTer's sys/sys_analog.tcl. They were once
+     * swapped here on the strength of a forum post, which put the clock on the
+     * BLANK pin and the data enable on the clock -- the DAC then never latched,
+     * and the picture was meaningless while sync stayed perfect.
+     *
+     * A DAC with no clock latches nothing, so a board of that kind gives a black
+     * screen while every other signal is correct -- which is exactly what
+     * happened here, and why the LEDs appeared not to work at the same time.
+     *
+     * CTRL bit 7 selects. It is a runtime bit rather than a parameter so both
+     * board types work from one bitstream, and so this can be tried without a
+     * Quartus rebuild.
+     */
+    /* Sync for the DAC. With CSYNC selected it takes composite sync, otherwise
+     * it is held inactive and the separate HS/VS pins carry sync as before. */
+    wire sog_out = use_csync ? cs_sr[PIPE-1] : 1'b1;
+
+    assign LED_POWER = r_av_dac ? de_px    : ~pll_locked;
+    assign LED_HDD   = r_av_dac ? ~sog_out : ~mode_blink;
+    /*
+     * The DAC latches R/G/B on the rising edge of this clock, and VGA_R/G/B are
+     * registered on clk_pix -- so an un-inverted clock samples the data exactly
+     * as it changes. Inverting gives half a period of setup, which is why it is
+     * the default. CTRL bit 8 clears it if a board wants the other phase.
+     */
+    assign LED_USER  = r_av_dac ? (r_av_clk_inv ? ~clk_pix : clk_pix)
+                                : ~beat[22];
 
 endmodule
 

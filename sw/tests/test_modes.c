@@ -32,7 +32,12 @@ static const struct tc cases[] = {
  /* things that must be refused */
  { "640x480p60 31k",M(25175, 640,656,752,800, 480,490,492,525, 0), BLITSCRT_MODE_LINE_RATE },
  { "800x600p60",    M(40000, 800,840,968,1056, 600,601,605,628, 0), BLITSCRT_MODE_NO_PLL },
- { "1024x240 wide",  M(18900, 1024,1048,1128,1200, 240,243,246,262, 0), BLITSCRT_MODE_TOO_BIG },
+ /* 1024 and 1280 are inside the sink now -- super-resolution modes are 1280
+  * wide at the same line rate. 1536 is over. */
+ { "1024x240 wide",  M(18900, 1024,1048,1128,1200, 240,243,246,262, 0), BLITSCRT_MODE_OK },
+ { "1280x240 supres",M(25200, 1280,1328,1448,1600, 240,243,246,262, 0), BLITSCRT_MODE_OK },
+ { "1536x240 too wide",
+                     M(30240, 1536,1584,1704,1920, 240,243,246,262, 0), BLITSCRT_MODE_TOO_BIG },
  { "160p @ 90Hz",   M(6400, 320,344,374,406, 160,163,166,175, 0), BLITSCRT_MODE_FIELD_RATE },
  { "sync out of order", M(6400, 320,300,374,406, 240,243,246,262, 0), BLITSCRT_MODE_BAD_GEOMETRY },
  { "clock too high",M(60000, 320,344,374,406, 240,243,246,262, 0), BLITSCRT_MODE_NO_PLL },

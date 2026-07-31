@@ -190,8 +190,37 @@ int main(int argc, char **argv)
 		for (i = 0; i < 3; i++)
 			printf("    %-6s  %s\n", ln[i],
 			       (led >> i) & 1 ? "off" : "lit");
-		printf("\n  All active low. A button reads 0 while held; an LED\n"
-		       "  lights when the fabric pulls its pin to ground.\n");
+		/*
+		 * On a fabric older than 3.14 these two sit at 12 and 13 rather
+		 * than 16 and 17, because the register's concatenation was 28
+		 * bits and zero-extended. Read them where they actually are.
+		 */
+		{
+			uint32_t ver = blitscrt_fabric_read(f, BLITSCRT_REG_VERSION);
+			unsigned sh  = (ver >= 0x0003000Eu) ? 16 : 12;
+
+			v = (v & ~0x00030000u) | (((v >> sh) & 3u) << 16);
+		}
+
+		printf("  analog board\n");
+		printf("    VGA_EN pin      %s\n",
+		       (v & BLITSCRT_IO_VGA_EN) ? "high -- no board detected"
+						: "low -- board present");
+		printf("    VGA outputs     %s\n",
+		       (v & BLITSCRT_IO_AV_PRESENT) ? "driven"
+						    : "TRI-STATED, hence no picture");
+
+		printf("\n  Buttons and LEDs are active low: a button reads 0 while\n"
+		       "  held, an LED lights when its pin is pulled to ground.\n"
+		       "\n"
+		       "  Two things to try on a black VGA screen, both CTRL bits:\n"
+		       "    bit 6 (0x40)  drive the outputs whatever VGA_EN says\n"
+		       "    bit 7 (0x80)  newer A/V board: clock its DAC, which needs\n"
+		       "                  the three LED pins for clock, DE and sync\n"
+		       "    bit 8 (0x100) invert that clock. On by default; the DAC\n"
+		       "                  samples on the rising edge and the data\n"
+		       "                  changes there. Clear it for the other phase\n"
+		       "  e.g.  blitscrt-peek -w 0x08 <ctrl|0xC0>\n");
 
 	} else if (!strcmp(argv[1], "-p")) {
 		/* The reconfig block's own registers, read through the 0x1000

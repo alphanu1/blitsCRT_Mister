@@ -94,7 +94,47 @@ module video_timing (
                   ((lcnt == V_TOT + v_sy) && (hcnt < H_HALF));
 
     assign vs = interlace ? (field ? vs_odd : vs_even) : vs_even;
-    assign cs = hs ^ vs;
+
+    /*
+     * Composite sync in the broadcast shape, not hs ^ vs.
+     *
+     * A monitor's sync separator takes the XOR form happily. A television does
+     * not: its vertical separator integrates the sync line, and it needs
+     * serration at *half*-line rate through vertical sync to keep the horizontal
+     * oscillator running, with equalising pulses either side so the integrator
+     * reaches its threshold at the same point on both fields. Given the XOR
+     * form a TV locks horizontally and rolls vertically, which is exactly how it
+     * failed on a Nokia set through SCART.
+     *
+     * Everything below is positioned within the half-line, because that is the
+     * rate equalisation and serration run at:
+     *
+     *   ordinary line    one narrow pulse per line          hs
+     *   equalising       narrow pulse per half-line         eq_pulse
+     *   vertical sync    broad pulse per half-line, with
+     *                    a narrow serration at the end      serr_pulse
+     *
+     * vs already carries the odd field's half-line offset, so gating on it gives
+     * the right serration on both fields without repeating that arithmetic.
+     */
+    wire [11:0] h_sy_half = {1'b0, h_sy[11:1]};
+    wire [11:0] hc_half   = (hcnt >= H_HALF) ? (hcnt - H_HALF) : hcnt;
+
+    wire eq_pulse   = (hc_half < h_sy_half);
+    wire serr_pulse = (hc_half < (H_HALF - h_sy_half));
+
+    /* Line within the current field, so the equalising regions land in the same
+     * place on both. */
+    wire [11:0] fld_line = (interlace && field) ? (lcnt - V_TOT) : lcnt;
+
+    /* v_sy lines of equalising before the broad pulses and v_sy after, which is
+     * the 3-3-3 arrangement of a 525-line system when v_sy is 3. */
+    wire pre_eq  = (fld_line >= (V_TOT - v_sy));
+    wire post_eq = (fld_line >= v_sy) && (fld_line < (v_sy << 1));
+
+    assign cs = vs                   ? serr_pulse
+              : (pre_eq || post_eq)  ? eq_pulse
+              :                        hs;
 
     // ---------------- active window ----------------
     wire h_active = (hcnt >= H_ACT_S) &&

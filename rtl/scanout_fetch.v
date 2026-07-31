@@ -36,7 +36,13 @@
 module scanout_fetch #(
     parameter integer DW        = 64,     // f2sdram data width, bits
     parameter integer AW        = 32,     // byte address width
-    parameter integer MAXW      = 1024,   // widest line supported, pixels
+    /*
+     * Widest line the buffer holds. Raised from 1024 for super-resolution modes:
+     * Switchres generates 1280-wide timings at 15 kHz so the host does the
+     * horizontal scaling, and the line buffer has to hold one. Two buffers of
+     * 1280 x 16 bits is 5 KB of M10K, which this part has in abundance.
+     */
+    parameter integer MAXW      = 1280,
     parameter integer MAX_BURST = 128     // beats per burst; longer lines split
 ) (
     // ---- memory side ----

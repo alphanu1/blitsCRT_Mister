@@ -23,7 +23,15 @@ const struct blitscrt_sink_limits blitscrt_limits_15khz = {
 	.line_hz_max  = 16500,
 	.field_hz_min = 47,
 	.field_hz_max = 63,
-	.h_max = 800,
+	/*
+	 * 1280 for super-resolution modes: Switchres generates 1280- and
+	 * 2560-wide timings so the host GPU does the horizontal scaling, which
+	 * is invisible on a CRT and cheap on the host. The line rate is what a
+	 * CRT actually cares about, and that is unchanged -- a 1280-wide line at
+	 * 15.75 kHz is the same deflection work as a 640-wide one, just a faster
+	 * pixel clock.
+	 */
+	.h_max = 1280,
 	.v_max = 640,
 	.pclk_khz_min = 2000,
 	.pclk_khz_max = 32000,

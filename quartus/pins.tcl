@@ -64,22 +64,25 @@ set_instance_assignment -name CURRENT_STRENGTH_NEW 8MA -to VGA_*
 #============================================================
 # I/O board buttons and LEDs
 #============================================================
-# The I/O board header, from the MiSTer schematics:
+# Straight from MiSTer's sys/sys_analog.tcl, which is the authority:
 #
-#   P1-1  GPIO_1[0]   PIN_AG28   User LED
-#   P1-3  GPIO_1[2]   PIN_AA15   Disk LED
-#   P1-5  GPIO_1[4]   PIN_Y15    Power LED
+#   PIN_Y15   LED_USER
+#   PIN_AA15  LED_HDD
+#   PIN_AG28  LED_POWER
 #
-# USER and POWER were swapped here until it was checked against the schematic,
-# which is why the power LED never lit: the pin carrying ~pll_locked was wired to
-# the user LED instead.
+# These were briefly swapped here -- USER and POWER exchanged -- on the strength
+# of a forum post that turned out to be wrong. On the newer A/V board that meant
+# sending the DAC's pixel clock to its BLANK pin and the data enable to its clock
+# pin, so the DAC never latched and the picture was meaningless while sync stayed
+# perfect. Check pin assignments against sys_analog.tcl, not against prose.
 #
-# Active low. The LEDs sit between +5V and these pins, so the FPGA lights one by
-# pulling it to ground -- which is why every assignment in blitscrt_top.v is
-# inverted.
-set_location_assignment PIN_AG28 -to LED_USER
+# On the older resistor-ladder board these really are LEDs, active low: they sit
+# between +5V and these pins, so the FPGA lights one by pulling it to ground,
+# which is why the assignments in blitscrt_top.v are inverted. On the newer board
+# they carry video -- see CTRL bit 7.
+set_location_assignment PIN_Y15  -to LED_USER
 set_location_assignment PIN_AA15 -to LED_HDD
-set_location_assignment PIN_Y15  -to LED_POWER
+set_location_assignment PIN_AG28 -to LED_POWER
 
 # Buttons, same header: OSD on pin 13, User on 15, Reset on 17. AG25 and AG23
 # are confirmed against the MiSTer sources; AH24 follows the same pattern and has

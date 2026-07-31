@@ -76,8 +76,10 @@ int main(void)
 		struct gud_display_mode_req m[BLITSCRT_MAX_MODES];
 		unsigned i;
 		memcpy(m, buf, n);
-		/* Four by default; BLITSCRT_MODES=preferred narrows it to one. */
-		check("four modes advertised", count == 4);
+		/* Six by default: four base, true PAL, and 1280x240p60. The other
+		 * super-resolution modes were withdrawn -- 73.7 MB/s does not fit
+		 * down the link. BLITSCRT_MODES=preferred narrows it to one. */
+		check("six modes advertised", count == 6);
 		check("640x480i60 is first and PREFERRED, the first-connect mode",
 		      m[0].hdisplay == 640 && m[0].vdisplay == 480 &&
 		      (m[0].flags & GUD_DISPLAY_MODE_FLAG_INTERLACE) &&

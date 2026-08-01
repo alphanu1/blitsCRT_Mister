@@ -335,6 +335,32 @@ QUARTUS_SH ?= $(shell command -v quartus_sh 2>/dev/null || \
         $(HOME)/intelFPGA/*/quartus/bin/quartus_sh \
         $(HOME)/altera/*/quartus/bin/quartus_sh 2>/dev/null | sort -V -r | head -1)
 
+# ---------------------------------------------------------------------------
+# Version, for a release workflow to read.
+#
+#   make version       0.8.10          the project version, same as cat VERSION
+#   make fullversion   0.8.10-d42      with the daemon build appended
+#   make versions      every number, one per line, name=value
+#
+# -s suppresses make's own output, so these are safe to capture:
+#
+#   VER=$(make -s fullversion)
+# ---------------------------------------------------------------------------
+.PHONY: version fullversion versions
+version:
+	@echo $(BLITSCRT_VERSION)
+
+fullversion:
+	@echo $(BLITSCRT_FULLVER)
+
+versions:
+	@echo "version=$(BLITSCRT_VERSION)"
+	@echo "daemon=$(BLITSCRTD_BUILD)"
+	@echo "kernel=$(BLITSCRT_KREV)"
+	@echo "full=$(BLITSCRT_FULLVER)"
+	@echo "fabric=$$(python3 tools/fabric_version.py)"
+	@echo "localversion=-$(BLITSCRT_NAME)-$(BLITSCRT_FULLVER)-$(BLITSCRT_KREV)"
+
 quartus-path:
 	@if [ -n "$(QUARTUS_SH)" ]; then \
 	  echo "found  $(QUARTUS_SH)"; \
@@ -403,12 +429,28 @@ CARD_SUB     := $(BUILD_DIR)/blitscrt
 KERNEL_IMAGE := $(CARD_SUB)/zImage
 KERNEL_DTB   := $(CARD_SUB)/blitscrt.dtb
 
-# The one place the product name and version are set. They brand the kernel
-# (LOCALVERSION, so uname -r and dmesg carry them) and are compiled into the
-# initramfs init, which stamps them into the boot log. Override on the command
-# line if needed:  make world BLITSCRT_VERSION=0.11
+# The product name and version.
+#
+# The version lives in the VERSION file rather than here, so a release workflow
+# can read it without parsing a Makefile:
+#
+#   version:  $(cat VERSION)          -- or  make version
+#   full:     $(make -s fullversion)  -- with the daemon build appended
+#
+# Both brand the kernel through LOCALVERSION, so uname -r and dmesg carry them,
+# and both are compiled into the initramfs init, which stamps them into the boot
+# log. Override on the command line if needed:
+#
+#   make world BLITSCRT_VERSION=0.9.0
 BLITSCRT_NAME    ?= BlitsCRT
-BLITSCRT_VERSION ?= 0.10
+BLITSCRT_VERSION ?= $(shell cat VERSION 2>/dev/null || echo 0.0.0)
+
+# The daemon build tag, read from sw/Makefile so there is one source of truth for
+# it. It is appended to the project version because the daemon is embedded in the
+# initramfs: a daemon change rebuilds the kernel image, so an image that says
+# 0.8.10-d42 really does carry d42 and nothing else.
+BLITSCRTD_BUILD  ?= $(shell sed -n 's/^BLITSCRTD_BUILD *?*= *//p' sw/Makefile | head -1)
+BLITSCRT_FULLVER  = $(BLITSCRT_VERSION)-$(BLITSCRTD_BUILD)
 
 # Kernel image revision, separate from the project version and bumped whenever
 # anything baked into the zImage changes -- the config fragments or the
@@ -649,11 +691,11 @@ $(INIT_BIN): $(INITRAMFS_SRC)
 	          $(INITRAMFS_DIR)/dev $(INITRAMFS_DIR)/media/fat $(INITRAMFS_DIR)/bin
 	$(KPATH) $(CROSS_COMPILE)gcc -static -Os -Wall -Wextra -o $(INIT_BIN) \
 	  -DBLITSCRT_NAME='"$(BLITSCRT_NAME)"' \
-	  -DBLITSCRT_VERSION='"$(BLITSCRT_VERSION)"' \
+	  -DBLITSCRT_VERSION='"$(BLITSCRT_FULLVER)"' \
 	  -DBLITSCRT_KREV='"$(BLITSCRT_KREV)"' \
 	  $(INITRAMFS_SRC)
 	@$(KPATH) $(CROSS_COMPILE)strip $(INIT_BIN) 2>/dev/null || true
-	@echo "built initramfs init: $(BLITSCRT_NAME) $(BLITSCRT_VERSION)-$(BLITSCRT_KREV), $$(du -h $(INIT_BIN) | cut -f1), static ARM"
+	@echo "built initramfs init: $(BLITSCRT_NAME) $(BLITSCRT_FULLVER)-$(BLITSCRT_KREV), $$(du -h $(INIT_BIN) | cut -f1), static ARM"
 
 # Static busybox for /bin/busybox. Cloned + built once, then cached. Configured
 # static + standalone shell; the tc applet is dropped (it does not build against
@@ -713,10 +755,10 @@ linux: kernel-check initramfs
 	  --set-val INITRAMFS_ROOT_GID 0
 	$(KPATH) $(MAKE) -C $(KERNEL_SRC) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) olddefconfig
 	$(KPATH) $(MAKE) -C $(KERNEL_SRC) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) \
-	  LOCALVERSION=-$(BLITSCRT_NAME)-$(BLITSCRT_VERSION)-$(BLITSCRT_KREV) \
+	  LOCALVERSION=-$(BLITSCRT_NAME)-$(BLITSCRT_FULLVER)-$(BLITSCRT_KREV) \
 	  -j$$(nproc) zImage dtbs
 	@cp $(KERNEL_SRC)/arch/arm/boot/zImage $(KERNEL_IMAGE) && \
-	  echo "staged blitscrt/zImage ($(BLITSCRT_NAME)-$(BLITSCRT_VERSION)-$(BLITSCRT_KREV), initramfs embedded)"
+	  echo "staged blitscrt/zImage ($(BLITSCRT_NAME)-$(BLITSCRT_FULLVER)-$(BLITSCRT_KREV), initramfs embedded)"
 	@if cp $(KERNEL_SRC)/arch/arm/boot/dts/$(KERNEL_DTB_NAME) $(KERNEL_DTB) 2>/dev/null || \
 	     cp $(KERNEL_SRC)/arch/arm/boot/dts/*/$(KERNEL_DTB_NAME) $(KERNEL_DTB) 2>/dev/null; then \
 	  echo "staged blitscrt/blitscrt.dtb ($(KERNEL_DTB_NAME))"; \

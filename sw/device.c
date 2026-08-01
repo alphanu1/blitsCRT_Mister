@@ -230,9 +230,12 @@ void blitscrt_dev_on_host(struct blitscrt_dev *d, int attached)
 	 * not wanted painted over a desktop. So it goes when a host attaches and
 	 * comes back when one leaves.
 	 *
-	 * The front-panel button is ANDed with this in the fabric, so it still
-	 * hides the text whatever the daemon does -- and pressing it while a host
-	 * is connected does nothing visible, which is correct.
+	 * The front-panel button inverts this in the fabric rather than being
+	 * ANDed with it, so a press shows the overlay while a host is driving and
+	 * hides it when one is not. That is worth having: the overlay reads the
+	 * timing back from LIVE_*, so it says what the raster is really running
+	 * rather than what the host asked for, and that is most worth seeing
+	 * exactly when a host is connected.
 	 */
 	if (d->fabric)
 		blitscrt_fabric_overlay_show(d->fabric, !d->host_attached);

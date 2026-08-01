@@ -663,7 +663,23 @@ module blitscrt_top #(
 
     /* Either the button or CTRL_OVERLAY can hide the text. The button stays
      * authoritative for judging the bars unobstructed with no software running. */
-    wire overlay_show = overlay_btn && r_overlay_en;
+    /*
+     * The overlay is off by default while a host is driving -- text painted over
+     * a desktop is not wanted -- but the button overrides that rather than
+     * being ANDed with it.
+     *
+     * It used to be an AND, so the button could hide the text and never reveal
+     * it, and with a host attached it did nothing at all. That is exactly when
+     * the overlay is most useful: it reads the timing back from LIVE_*, post-mux
+     * and with the pixel clock derived from clk_sel, so it says what the raster
+     * is really running rather than what the host asked for. Being unable to
+     * look at that while a host was connected made it useless for the one
+     * question it answers best.
+     *
+     * overlay_btn starts high and toggles on each press, so the default is
+     * whatever the daemon asked for and a press flips it either way.
+     */
+    wire overlay_show = overlay_btn ? r_overlay_en : ~r_overlay_en;
 
     wire       de_px;
     wire [5:0] px_r, px_g, px_b;

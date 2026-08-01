@@ -27,7 +27,7 @@ an HPS-up heartbeat holding it on screen -- is running.
 | | |
 |---|---|
 | **done** | **daemon reads the fabric version over gp, runs the heartbeat, drives the live overlay on hardware** |
-| done | BlitsCRT-0.10 kernel boots, mounts the card, writes the boot log |
+| done | the BlitsCRT kernel boots, mounts the card, writes the boot log |
 | done | dedicated u-boot boot: env programs the fabric and boots our kernel |
 | done | embedded initramfs: static init + busybox, exFAT/FAT mount, serial shell |
 | done | init launches `blitscrtd --no-gadget` on boot |
@@ -396,7 +396,7 @@ since both were lit whenever anything was connected.
 |---|---|
 | done | `IO_SCL` on `PIN_U14` and `IO_SDA` on `PIN_AG9`, from `sys/sys.tcl` under "I2C LEDS/BUTTONS" |
 | done | `mcp23009` instantiated, `present` selecting between it and the GPIO pads; `IO_DIAG` and `blitscrt-peek -i` report which is in use |
-| done | reset works; OSD hides and restores the overlay |
+| done | reset works; OSD shows and hides the overlay. It inverts what the daemon asks for rather than being ANDed with it, so a press brings the text up over a host's desktop -- which is where it earns its keep, since it reads the timing back from LIVE_* and says what the raster is really running |
 | done | `BTN_EVENT` at 0xA4 latches a user-button press on the falling edge with a hold-off, write-one-to-clear |
 | done | the user button toggles the connection: unbind the UDC, revert to the test card, and stay that way until pressed again |
 | done | LEDs: power on PLL lock, user green and disk orange complementary on whether the display is available |

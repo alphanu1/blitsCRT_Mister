@@ -69,6 +69,7 @@ __pycache__/
 #   quartus/*.qpf   project file
 #   quartus/*.sdc   timing constraints
 #   quartus/*.tcl   pin assignments
+#   VERSION         the project version, read by the Makefile and by CI
 # ---------------------------------------------------------------------------
 
 # gadget daemon and its tools

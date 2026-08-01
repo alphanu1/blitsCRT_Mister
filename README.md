@@ -170,9 +170,30 @@ come off entirely: it and the gadget share the same controller.
 `make sim` and `make -C sw test` need no hardware and no Quartus. They are the
 fast check that nothing has broken.
 
-The daemon carries a build tag, greppable from the binary, because "the fix did
-not work" and "the fix never reached the board" look identical from the far end of
-a serial cable:
+### Versions
+
+Four numbers, each answering a different question. `VERSION` holds the first, so a
+release workflow can read it without parsing a Makefile.
+
+```
+make -s versions
+
+version=0.8.10                            the project, from VERSION
+daemon=d42                                blitscrtd
+kernel=k12                                anything baked into the zImage
+full=0.8.10-d42                           what brands the kernel
+fabric=3.22                               the VERSION register in the RTL
+localversion=-BlitsCRT-0.8.10-d42-k12     what uname -r carries
+```
+
+The daemon build is appended to the project version because the daemon is
+embedded in the initramfs: a daemon change rebuilds the kernel image, so an image
+that says `0.8.10-d42` really does carry d42. `make -s version` and
+`make -s fullversion` print the first two alone, for a CI job to capture.
+
+The daemon also carries its tag inside the binary, because "the fix did not work"
+and "the fix never reached the board" look identical from the far end of a serial
+cable:
 
 ```
 grep -a -o 'blitscrtd-build=[a-z0-9]*' /media/fat/blitscrt/blitscrtd
@@ -243,7 +264,7 @@ Three buttons and three LEDs, left to right on the I/O board.
 | button | |
 |---|---|
 | **RESET** | resets the board |
-| **OSD** | hides and restores the on-screen text, so the test card can be judged unobstructed |
+| **OSD** | shows and hides the on-screen text |
 | **USER** | disconnects the display from the host, and reconnects it. One press each way |
 
 | LED | |
@@ -256,6 +277,19 @@ DISK and USER are complementary, which is what having two colours is worth: gree
 means the display is there, orange means it has been taken away. Exactly one is
 lit once the board is running, so a dark pair is itself a fault -- and orange at
 power-on turning green is the daemon starting.
+
+The OSD button inverts whatever the daemon wants rather than only hiding. So with
+no host it hides the text over the test card, and **with a host driving it brings
+the text up over the desktop** -- which is the useful direction, since the overlay
+reads its numbers back from `LIVE_*` and reports what the raster is really running
+rather than what the host asked for:
+
+```
+MODE   648X480I 60.00HZ
+LINE   15.750 KHZ
+PIXEL  12.600 MHZ
+TIMING HOST
+```
 
 ### Why the user button exists
 

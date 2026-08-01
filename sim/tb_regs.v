@@ -7,6 +7,7 @@
 module tb_regs;
 
     reg clk = 0, rst_n = 0;             // 50 MHz bus
+    reg btn_user = 1;                   // active low, released
     always #10 clk = ~clk;
 
     reg clk_pix = 0, vid_rst_n = 0;     // 12.6 MHz video
@@ -31,13 +32,16 @@ module tb_regs;
     wire       hps_alive;
     wire [1:0] host_state;
 
-    blitscrt_regs dut (
+    blitscrt_regs #(.BTN_HOLD_CYCLES(200)) dut (
         .clk(clk), .rst_n(rst_n), .address(address), .read(read),
         .write(write), .writedata(writedata), .readdata(readdata),
         .waitrequest(waitrequest),
         .clk_pix(clk_pix), .vid_cfg_rst_n(vid_rst_n), .vblank(vblank),
         .field(field), .pll_locked(pll_locked),
         .hdmi_configured(hdmi_configured),
+        .io_btn(3'b111), .io_led(3'b111), .io_vga_en(1'b0),
+        .io_av_present(1'b1), .io_mcp_present(1'b1), .io_mcp_btn(3'b000),
+        .io_btn_user(btn_user),
         .pll_locked_raw(1'b1), .pll_start_wr(1'b0), .pll_cnt_wr(1'b0),
         .pll_wait(1'b0), .pll_accept(1'b0), .bus_stalled(1'b0),
         .scanout_underrun_tog(1'b0), .scanout_beats(16'd0),
@@ -93,7 +97,7 @@ module tb_regs;
 
         $display("identify");
         rd(14'h000); chk("ID reads BCRT", readdata == 32'h42435254);
-        rd(14'h004); chk("VERSION reads 3.18", readdata == 32'h0003_0012);
+        rd(14'h004); chk("VERSION reads 3.22", readdata == 32'h0003_0016);
 
         /* The PLL reconfig aperture at 0x1000 used to decode as register 0x00,
          * so a modeset wrote the M counter into H_SY, the C counter into H_BP
@@ -166,6 +170,46 @@ module tb_regs;
          * clock switches. Nothing that a clock change disturbs may forget the
          * configuration this block latches.
          */
+        /*
+         * The user button latch: one press, one event.
+         *
+         * It set on the level at first. A press outlasts the daemon's poll
+         * interval, so the daemon cleared the latch and the still-held button
+         * set it again -- one press toggling the USB connection two or three
+         * times, which read as the button being unreliable rather than as a bug
+         * here.
+         */
+        $display("user button latch");
+        btn_user = 1;
+        repeat (10) @(posedge clk);
+        rd(14'h0A4); chk("idle: no press latched", readdata[0] == 1'b0);
+
+        btn_user = 0;                                   /* press */
+        repeat (10) @(posedge clk);
+        rd(14'h0A4); chk("press latches", readdata[0] == 1'b1);
+
+        wr(14'h0A4, 32'd1);                             /* daemon consumes it */
+        repeat (4) @(posedge clk);
+        rd(14'h0A4); chk("write-one clears it", readdata[0] == 1'b0);
+
+        /* Still held, well past a poll interval. Nothing more may latch. */
+        repeat (2000) @(posedge clk);
+        rd(14'h0A4); chk("holding it does not latch again", readdata[0] == 1'b0);
+
+        btn_user = 1;                                   /* release */
+        repeat (2000) @(posedge clk);
+        rd(14'h0A4); chk("releasing does not latch either", readdata[0] == 1'b0);
+
+        /* A second press, after the hold-off has expired. */
+        repeat (300) @(posedge clk);      /* past the shortened hold-off */
+        btn_user = 0;
+        repeat (10) @(posedge clk);
+        rd(14'h0A4); chk("a later press latches again", readdata[0] == 1'b1);
+        btn_user = 1;
+        wr(14'h0A4, 32'd1);
+
+        $display("");
+
         $display("apply handshake survives a clock change");
         wr(14'h010, 12'd77);              /* stage something identifiable */
         wr(14'h044, 32'd1);               /* apply */

@@ -85,6 +85,10 @@ void blitscrt_fabric_overlay_show(struct blitscrt_fabric *f, int on);
  * register and cannot say. */
 unsigned blitscrt_fabric_max_width(struct blitscrt_fabric *f);
 
+/* 1 if the user button has been pressed since the last call, and clears it.
+ * 0 on a fabric too old to report, so a caller need not check the version. */
+int blitscrt_fabric_take_user_press(struct blitscrt_fabric *f);
+
 /* Write a line of text into the overlay character buffer. */
 void blitscrt_fabric_overlay_line(struct blitscrt_fabric *f,
 				  unsigned row, unsigned col, const char *s);

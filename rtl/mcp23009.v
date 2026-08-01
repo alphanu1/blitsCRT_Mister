@@ -138,9 +138,19 @@ module mcp23009 #(
                 S_WR: begin
                     if (!issued && !i2c_busy) begin
                         i2c_reg   <= 8'h09;
-                        /* led is {power, disk, user} and the device wants
-                         * GP2..GP0 in that same order, so it goes straight in. */
-                        i2c_dat   <= {5'd0, led};
+                        /*
+                         * led is {power, disk, user} and the device wants
+                         * GP2..GP0 in that same order, so the ordering is
+                         * straight -- but the sense is not.
+                         *
+                         * The MCP23009's outputs are open drain. Writing 1
+                         * releases the pin and the LED goes dark; writing 0
+                         * pulls it to ground and the LED lights. So an
+                         * active-high led input inverts here. Getting this
+                         * backwards lit every LED at exactly the wrong moment,
+                         * which read as three separate faults rather than one.
+                         */
+                        i2c_dat   <= {5'd0, ~led};
                         i2c_rd    <= 1'b0;
                         i2c_start <= 1'b1;
                         issued    <= 1'b1;

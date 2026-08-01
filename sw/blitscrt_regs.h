@@ -103,6 +103,13 @@
 #define BLITSCRT_HOST_NONE       0u
 #define BLITSCRT_HOST_ATTACHED   1u
 #define BLITSCRT_HOST_STREAMING  2u
+/*
+ * Bit 2: the daemon has the UDC bound. Distinct from a host being attached --
+ * bound with no cable plugged in is the normal idle state, and the user button
+ * clears this whether or not a host was ever there. The front panel shows the
+ * two separately: user LED for bound, disk LED for attached.
+ */
+#define BLITSCRT_HOST_BOUND      (1u << 2)
 
 /* ---- timing, per field vertically ---- */
 #define BLITSCRT_REG_H_SY        0x0010u
@@ -253,6 +260,18 @@
  * treated as "unknown" rather than "none".
  */
 #define BLITSCRT_REG_SCANOUT_MAXW   0x00A0u
+
+/*
+ * BTN_EVENT -- bit 0 set once the user button has been pressed. Write 1 to
+ * clear.
+ *
+ * Latched rather than live because a press lasts a tenth of a second and the
+ * daemon polls once a frame at best. Clearing on write rather than on read
+ * means a read has no side effects, so blitscrt-peek cannot steal a press from
+ * the daemon.
+ */
+#define BLITSCRT_REG_BTN_EVENT      0x00A4u
+#define BLITSCRT_BTN_EVENT_USER     (1u << 0)
 #define BLITSCRT_IO_BTN_RESET       (1u << 2)
 #define BLITSCRT_IO_BTN_OSD         (1u << 1)
 #define BLITSCRT_IO_BTN_USER        (1u << 0)
@@ -260,6 +279,8 @@
 #define BLITSCRT_IO_LED_SHIFT       8
 #define BLITSCRT_IO_VGA_EN          (1u << 16)  /* raw pin, active low */
 #define BLITSCRT_IO_AV_PRESENT      (1u << 17)  /* what the design concluded */
+#define BLITSCRT_IO_MCP_PRESENT     (1u << 20)  /* the I2C expander answered */
+#define BLITSCRT_IO_MCP_BTN_SHIFT   21          /* its buttons, 1 = pressed */
 #define BLITSCRT_BUS_PLL_WAIT       (1u << 0)
 #define BLITSCRT_BUS_PLL_WAIT_SEEN  (1u << 1)
 #define BLITSCRT_BUS_STALLED        (1u << 2)

@@ -193,10 +193,12 @@ OUT    VGA RGB666 + HDMI DV
 over eight colour bars, half-amplitude bars, a greyscale ramp, a one-pixel
 border and a centre crosshair.
 
-The default mode is 640x480i60. `BTN_OSD` toggles to 640x240p60 and back.
-`LED_HDD` blinks the mode number.
+The fabric has one mode, 640x480i60, so there is nothing to select.
 
-`BTN_USER` hides the text so the bars can be judged unobstructed.
+`BTN_OSD` hides the text so the bars can be judged unobstructed. `BTN_USER`
+disconnects the display from a host and reconnects it. `LED_POWER` is solid once
+the PLL locks; the other two show whether the display is available -- green yes,
+orange no. See the front panel section in the README.
 
 Power cycle to return to MiSTer.
 

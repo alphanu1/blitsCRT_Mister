@@ -144,6 +144,8 @@ void blitscrt_dev_heartbeat(struct blitscrt_dev *d)
 			? (d->controller_enabled ? BLITSCRT_HOST_STREAMING
 						 : BLITSCRT_HOST_ATTACHED)
 			: BLITSCRT_HOST_NONE;
+		if (d->gadget_bound)
+			hs |= BLITSCRT_HOST_BOUND;
 		blitscrt_fabric_write(d->fabric, BLITSCRT_REG_HOSTSTATE, hs);
 	}
 }

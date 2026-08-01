@@ -205,7 +205,8 @@ What remains is depth rather than rate. RGB888 is still not offered, and 24kHz a
 | done | the read overlaps the decompress and blit: two threads and a two-slot pool, so a frame costs `max(read, lz4 + blit)` |
 | done | decompression costs 3.3 ms for a 640x480 RGB565 frame, 186 MB/s of output. Small offsets use a doubling copy rather than a byte loop -- 1.37x on x86, more on the A9 |
 | done | measured on real traffic: 2.58x sustained, 253x on a static screen, and the daemon reports achieved fps against the frame budget |
-| **todo** | **a two-beat read window in `scanout_fetch.v`, so RGB888 works: the only format that uses the whole ladder, and the only deep one that fits 640-wide with LZ4** |
+| **todo** | **a two-beat read window in `scanout_fetch.v`, so RGB888 works -- the only deep format that fits 640-wide with LZ4** |
+| note | RGB888 as a *source format* is separate from 8-bit *output*. The pipeline is RGB666 end to end: `scanout.v` truncates an 8-bit source to six, and only `VGA_R/G/B[5:0]` reach the DAC. Eight-bit output needs all three -- the source format, the pipeline widened, and the DAC's low two bits per channel driven on `SDIO_DAT[3:0]`, `SDIO_CMD` and `SDIO_CLK`, which MiSTer sends as `{vga_g,vga_r,vga_b}`. Any one alone changes nothing visible |
 
 Measured on hardware. Raw, RetroArch full-screen at 640x480i60 runs **51.98 fps**;
 with LZ4 the same content reaches **60.01**, the vsync cap, at 2.58x compression.
@@ -350,40 +351,56 @@ for something physically invisible. At frame rate it is 18.4 MB/s, full colour, 
 decompressor. Whether a host can be persuaded to do that is a DRM question and M4
 will answer it.
 
-**M6 -- buttons and soft disconnect. Not started.** Two related problems, both
-about being able to control the board without reaching for a keyboard on the host.
+**M6 -- front panel and soft disconnect. Done.** Buttons, LEDs, and a way to take
+the display away from a host without touching the cable.
 
-*The buttons do not work.* On the newer A/V board the `BTN_*` pins carry nothing.
-The real buttons are behind an **MCP23009 I2C expander**, and MiSTer's `sys_top.v`
-reads them over a bus bit-banged in the fabric on `IO_SCL`/`IO_SDA` -- not HPS
-I2C, which is why looking for them in `/sys/bus/i2c` finds only the RTC board.
+*Where the front panel actually is.* On a board with the newer A/V board the
+`BTN_*` pins carry nothing and the `LED_*` pins carry the DAC's clock, blank and
+sync. All six are behind an **MCP23009 I2C expander** on a bus bit-banged in the
+fabric -- not HPS I2C, which is why looking in `/sys/bus/i2c` on the ARM finds
+only the RTC board.
 
-`rtl/mcp23009.v` implements the device side, with read support added to
-`rtl/i2c_master.v` for it, and `sim/tb_mcp23009.v` checks it against a model
-expander: the init sequence, LED bit order, button decoding, and an absent
-expander reporting nothing pressed rather than phantom presses. What it needs is
-the `IO_SCL`/`IO_SDA` pin assignments from MiSTer's `sys/sys.tcl`, and then
-instantiating in `blitscrt_top.v` with `present` selecting between it and the
-GPIO pins.
+The pins are `IO_SCL` on `PIN_U14` and `IO_SDA` on `PIN_AG9`, from MiSTer's
+`sys/sys.tcl` under a heading that reads "I2C LEDS/BUTTONS". Worth noting they are
+*not* in `sys_analog.tcl`, which is where the LED and button pins themselves live
+and the obvious place to look.
 
-*Unplugging the host is not safe.* Pulling the cable leaves the last frame frozen
-on screen. The revert to the test card is driven by `FUNCTIONFS_DISABLE`, and
-dwc2 raises that from VBUS going away -- which the A-to-A cable, with VBUS cut on
-the board side, never sees. Replugging then enumerates on the host while the board
-stays stuck, which looks like a crash and is not.
+*Two things about the expander that were got wrong first.* Its outputs are open
+drain, so writing 0 lights an LED and writing 1 releases it -- an active-high
+signal has to invert on the way out, and backwards it lights all three at the
+wrong moments, which reads as three separate faults. And it reports
+`{GP5, GP4, GP3}` = `{OSD, reset, user}`, so bit 0 is user and bit 2 is OSD;
+swapped, each button does another's job.
 
-Worse than cosmetic: on X11 a host can panic when a connected output disappears
-underneath it. A button that tears the gadget down cleanly first, so the host sees
-an orderly disconnect before the cable moves, avoids both problems at once.
+*The user button.* Pulling the cable leaves the last frame frozen, because the
+revert to the test card is driven by `FUNCTIONFS_DISABLE` and dwc2 raises that
+from VBUS going away -- which the A-to-A cable, VBUS cut on the board side, never
+sees. On X11 a host can panic outright when a live output disappears underneath
+it. Unbinding the UDC does raise the event, so the whole detach path runs
+properly, and it stays disconnected until pressed again so the cable can stay in.
+
+The press is latched in the fabric at `BTN_EVENT` and consumed by the daemon,
+write-one-to-clear so a `blitscrt-peek` cannot steal it. It latches on the falling
+edge with a hold-off: it set on the level at first, and since a press outlasts the
+daemon's poll interval, the daemon cleared it and the still-held button set it
+again -- one press toggling the connection two or three times, which read as an
+unreliable button rather than a bug in the latch.
+
+*The LEDs.* Power on PLL lock; user green when the display is available, disk
+orange when it is not. Complementary rather than two views of the same thing,
+which is what having two colours is worth -- they tracked "bound" and "host
+attached" separately at first, which reads well written down and badly on a panel,
+since both were lit whenever anything was connected.
 
 | | |
 |---|---|
-| todo | `IO_SCL`/`IO_SDA` pin assignments from `sys/sys.tcl` |
-| todo | instantiate `mcp23009` in `blitscrt_top.v`, `present` selecting between it and the GPIO pins |
-| todo | expose button state to the daemon, so a press can do something in software rather than only in fabric |
-| todo | a soft-disconnect button: unbind the UDC, let the host see the output go, then revert to the test card |
-| todo | a reset button, worth having on a board whose only other console is a serial cable |
-| todo | poll `/sys/class/udc/<name>/state` from the tick callback, which reports `configured` independently of the FunctionFS event stream, so an unannounced unplug is still noticed |
+| done | `IO_SCL` on `PIN_U14` and `IO_SDA` on `PIN_AG9`, from `sys/sys.tcl` under "I2C LEDS/BUTTONS" |
+| done | `mcp23009` instantiated, `present` selecting between it and the GPIO pads; `IO_DIAG` and `blitscrt-peek -i` report which is in use |
+| done | reset works; OSD hides and restores the overlay |
+| done | `BTN_EVENT` at 0xA4 latches a user-button press on the falling edge with a hold-off, write-one-to-clear |
+| done | the user button toggles the connection: unbind the UDC, revert to the test card, and stay that way until pressed again |
+| done | LEDs: power on PLL lock, user green and disk orange complementary on whether the display is available |
+| note | pulling the cable is still not detectable, since VBUS is cut. `/sys/class/udc/<name>/state` reports `configured` independently of the FunctionFS event stream and would catch it |
 
 **Switchres modes at boot was M6 and has been dropped.** The idea was to read a
 monitor profile at startup and generate a curated list of advertised modes from

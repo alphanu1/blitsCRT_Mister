@@ -97,6 +97,24 @@ set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LED_*
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to BTN_*
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to BTN_*
 
+#============================================================
+# I2C to the I/O board's MCP23009 expander
+#============================================================
+# From MiSTer's sys/sys.tcl, under a heading that says exactly what it is:
+# "I2C LEDS/BUTTONS". Not sys_analog.tcl, which has no trace of it -- worth
+# knowing, because that is the file the LED and button pins come from and it is
+# the obvious place to look.
+#
+# This bus is bit-banged in the fabric, not HPS I2C. Looking for the expander in
+# /sys/bus/i2c on the ARM finds only the RTC board and gets nowhere.
+#
+# Open drain with pull-ups, so the master drives low and releases high.
+set_location_assignment PIN_U14 -to IO_SCL
+set_location_assignment PIN_AG9 -to IO_SDA
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to IO_S*
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to IO_S*
+set_instance_assignment -name CURRENT_STRENGTH_NEW "MAXIMUM CURRENT" -to IO_S*
+
 
 #============================================================
 # HDMI -- ADV7513 transmitter (Direct Video)

@@ -45,6 +45,15 @@ module blitscrt_regs #(
      *   3.6  BUS_DIAG; the bridge gives up on a slave that never accepts
      *        instead of wedging the transport
      *   3.7  blitscrt_pllbus between the bridge and the reconfig slave
+     *   3.22 the user button latches on the falling edge with a hold-off, so
+     *        one press is one event -- it set on the level, and a held press
+     *        toggled the connection two or three times
+     *   3.21 HOSTSTATE bit 2 reports the UDC bound, so the front panel can
+     *        show the connection separately from a host being attached
+     *   3.20 BTN_EVENT at 0xA4 latches a user-button press for the daemon, so
+     *        a soft disconnect can be triggered from the front panel
+     *   3.19 IO_DIAG reports the MCP23009 and its buttons; the expander drives
+     *        the I/O board's real buttons when one is fitted
      *   3.18 the test card, the overlay and the scanout doubling follow the
      *        live raster rather than the front-panel mode table
      *   3.17 CTRL bit 8 inverts the DAC latch clock, on by default: the
@@ -75,8 +84,12 @@ module blitscrt_regs #(
      * clock select pointing at a clock pin and once without -- and the only way
      * to tell them apart was whether the monitor synced.
      */
-    parameter [31:0] VERSION = 32'h0003_0012,
+    parameter [31:0] VERSION = 32'h0003_0016,
     parameter [11:0] SCANOUT_MAXW = 12'd1280,
+    /* Cycles the user button ignores further edges for, covering contact
+     * bounce. 20 ms at 50 MHz. A testbench overrides it to something it can
+     * wait out. */
+    parameter integer BTN_HOLD_CYCLES = 1048575,
 
     /* Scanout memory geometry, pixels. Zero on purpose: these MUST be passed by
      * whoever instantiates this. A plausible default here once hid a dropped
@@ -140,6 +153,9 @@ module blitscrt_regs #(
     input  wire [2:0]  io_led,            // what is being driven at the pins
     input  wire        io_vga_en,         // VGA_EN pin, active low: board present
     input  wire        io_av_present,     // what the design concluded from it
+    input  wire        io_mcp_present,    // the I2C expander answered a read
+    input  wire [2:0]  io_mcp_btn,        // its buttons: OSD, reset, user
+    input  wire        io_btn_user,       // debounced user button, active low
 
     input  wire        scanout_underrun_tog,
     input  wire [15:0] scanout_beats,
@@ -206,7 +222,8 @@ module blitscrt_regs #(
 
     // liveness, video domain: high when the daemon's heartbeat is fresh
     output reg         hps_alive,
-    output reg  [1:0]  host_state
+    output reg  [1:0]  host_state,
+    output reg         host_bound
 );
 
     localparam [31:0] ID_MAGIC = 32'h42435254;   // "BCRT"
@@ -229,6 +246,10 @@ module blitscrt_regs #(
     reg        apply_req;                 // toggles to request a latch
     reg [31:0] hb_count;                  // last heartbeat value written
     reg [1:0]  s_host;                    // last host state written
+    /* HOSTSTATE bit 2: the daemon has the UDC bound. Distinct from a host being
+     * attached -- bound with no cable is the normal idle state, and the user
+     * button clears this without a host ever having been there. */
+    reg        s_bound;
 
     /* Driven in the video domain further down, read by the synchronisers just
      * below. Declared here because some Icarus builds reject use before
@@ -353,6 +374,56 @@ module blitscrt_regs #(
         end
     end
 
+    /*
+     * The user button, latched for software.
+     *
+     * The daemon polls this and uses it to tear the USB gadget down cleanly --
+     * a host that sees an orderly disconnect does not panic the way X11 can when
+     * a live output vanishes, and the board reverts to the test card rather than
+     * freezing on the last frame.
+     *
+     * Latched rather than live because a press lasts a tenth of a second and the
+     * daemon polls once a frame at best. Cleared by writing 1 to the bit, so a
+     * read is free of side effects and two readers cannot steal each other's
+     * press.
+     */
+    reg        btn_user_latch;
+    reg        btn_user_d;
+    reg [19:0] btn_user_hold;           // BTN_HOLD_CYCLES, ~21 ms at 50 MHz
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            btn_user_latch <= 1'b0;
+            btn_user_d     <= 1'b1;
+            btn_user_hold  <= 20'd0;
+        end else begin
+            btn_user_d <= io_btn_user;
+
+            if (btn_user_hold != 20'd0)
+                btn_user_hold <= btn_user_hold - 20'd1;
+
+            /*
+             * Falling edge only, with a hold-off afterwards.
+             *
+             * This set on the level at first, which was wrong twice over. A
+             * press outlasts the daemon's poll interval, so it cleared the latch
+             * and the still-held button set it again -- one press toggling the
+             * connection two or three times, which read as the button being
+             * unreliable. And a bouncing contact gives several edges besides.
+             *
+             * The hold-off covers the bounce; the edge covers the hold. A press
+             * shorter than 84 ms still registers, since the edge is caught the
+             * moment it happens.
+             */
+            if (btn_user_d && !io_btn_user && (btn_user_hold == 20'd0)) begin
+                btn_user_latch <= 1'b1;
+                btn_user_hold  <= BTN_HOLD_CYCLES[19:0];
+            end else if (write && (address[7:0] == 8'hA4) && writedata[0]) begin
+                btn_user_latch <= 1'b0;
+            end
+        end
+    end
+
     // -------------------------------------------------------------------
     // writes
     // -------------------------------------------------------------------
@@ -398,6 +469,7 @@ module blitscrt_regs #(
             apply_req <= 1'b0;
             hb_count  <= 32'd0;
             s_host    <= 2'd0;
+            s_bound   <= 1'b0;
             pll_apply <= 1'b0;
             char_we   <= 1'b0;
             char_addr <= 13'd0;
@@ -436,7 +508,8 @@ module blitscrt_regs #(
                         8'h3C: pll_c       <= writedata[8:0];
                         8'h40: s_khz       <= writedata;
                         8'h64: hb_count    <= writedata;       // heartbeat
-                        8'h68: s_host      <= writedata[1:0];  // host state
+                        8'h68: begin s_host <= writedata[1:0];
+                                     s_bound <= writedata[2]; end
                         8'h44: begin
                             /* APPLY. Toggle the request; the video side
                              * latches at the next vblank. */
@@ -494,13 +567,16 @@ module blitscrt_regs #(
                 8'h54: readdata <= s_sc_stride;
                 8'h58: readdata <= {29'd0, s_sc_format};
                 8'h60: readdata <= frame_count_bus;
-                8'h68: readdata <= {30'd0, s_host};
+                8'h68: readdata <= {29'd0, s_bound, s_host};
                 8'h70: readdata <= {12'd0, sc_ptr};
                 8'h78: readdata <= s_geom;
                 8'h7C: readdata <= CAPS;
                 /* What the scanout line buffer can hold, in pixels. Software
                  * refuses wider modes rather than scanning out wrapped lines. */
                 8'hA0: readdata <= {20'd0, SCANOUT_MAXW[11:0]};
+                /* BTN_EVENT: bit 0 set once the user button has been pressed.
+                 * Write 1 to clear. */
+                8'hA4: readdata <= {31'd0, btn_user_latch};
                 8'h80: readdata <= {8'd0, ur_count, beats_sync};
                 8'h84: readdata <= {4'd0, lv_hbp,  4'd0, lv_hsy};
                 8'h88: readdata <= {4'd0, lv_hfp,  4'd0, lv_hact};
@@ -527,7 +603,16 @@ module blitscrt_regs #(
                  *   [10:8]  LED pins           [16]    VGA_EN pin
                  *   [17]    av_present
                  */
-                8'h9C: readdata <= {14'd0,                  /* 31:18 */
+                /*
+                 *   [2:0]   pad buttons, live      [6:4]   pad buttons, sticky
+                 *   [10:8]  LED pins               [16]    VGA_EN pin
+                 *   [17]    av_present             [20]    MCP23009 answered
+                 *   [23:21] its buttons, 1 = pressed
+                 */
+                8'h9C: readdata <= {8'd0,                   /* 31:24 */
+                                    io_mcp_btn,             /* 23:21 */
+                                    io_mcp_present,         /* 20    */
+                                    2'd0,                   /* 19:18 */
                                     io_av_present,          /* 17    */
                                     io_vga_en,              /* 16    */
                                     5'd0, io_led,           /* 15:8  */
@@ -571,7 +656,7 @@ module blitscrt_regs #(
             field_d   <= 1'b0;
             hb_vid <= 32'd0; hb_at_field <= 32'd0;
             hb_stale <= HB_TIMEOUT; hps_alive <= 1'b0;
-            host_meta <= 2'd0; host_state <= 2'd0;
+            host_meta <= 2'd0; host_state <= 2'd0; host_bound <= 1'b0;
 
             h_sy <= 12'd60; h_bp <= 12'd76; h_act <= 12'd640; h_fp <= 12'd24;
             v_sy <= 12'd3;  v_bp <= 12'd16; v_act <= 12'd240; v_fp <= 12'd3;
@@ -598,6 +683,7 @@ module blitscrt_regs #(
              * the previous field. */
             hb_vid <= hb_count;
             host_meta  <= s_host;
+            host_bound <= s_bound;
             host_state <= host_meta;
             if (field != field_d) begin           // once per field
                 hb_at_field <= hb_vid;

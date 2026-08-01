@@ -41,7 +41,15 @@ module mode_table #(
     output wire [31:0] pclk_khz
 );
 
-    localparam [1:0] MODE_640x240p = 2'd0;   // 12.600 MHz, 15.750 kHz, 60.11 Hz
+    /*
+     * One mode. 640x480i60 is what a 15 kHz set expects and what the daemon
+     * advertises a near-neighbour of, so there is nothing to choose between and
+     * BTN_OSD is free for the overlay toggle.
+     *
+     * There were three. 640x480p60 at 31.5 kHz went first -- a diagnostic for a
+     * monitor that will not take 15 kHz, which this is not for. 640x240p60 went
+     * with the button that selected it.
+     */
     localparam [1:0] MODE_640x480i = 2'd1;   // 12.600 MHz, 15.750 kHz, 60.00 Hz
     /*
      * There were three. 640x480p60 at 31.500 kHz was a diagnostic for a monitor
@@ -74,9 +82,10 @@ module mode_table #(
     reg btn_d;
     reg picked;
 
-    wire [1:0] auto_mode = av_present ? DEFAULT_VGA[1:0]
-                         : (hdmi_hpd  ? DEFAULT_HDMI[1:0]
-                                      : DEFAULT_VGA[1:0]);
+    /* One mode, so detection has nothing to pick between. av_present and
+     * hdmi_hpd stay as ports: they are read elsewhere and a second mode may
+     * return. */
+    wire [1:0] auto_mode = MODE_640x480i;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -92,9 +101,11 @@ module mode_table #(
                 picked <= 1'b1;
             end
 
-            /* Two modes, so the button toggles. */
-            if (btn_d && !btn_cycle && (FORCE_MODE < 0))
-                mode <= (mode == MODE_640x480i) ? MODE_640x240p : MODE_640x480i;
+            /*
+             * One mode now, so the button does nothing here -- it is the
+             * overlay toggle instead, wired in blitscrt_top. btn_cycle stays a
+             * port so the module keeps its shape if a second mode returns.
+             */
         end
     end
 
@@ -107,15 +118,10 @@ module mode_table #(
 
     always @* begin
         case (mode)
-        MODE_640x480i: begin           // 800 x (2*262+1 = 525)
+        default: begin                 // 640x480i60, 800 x (2*262+1 = 525)
             r_hsy = 12'd60;  r_hbp = 12'd76;  r_hact = 12'd640; r_hfp = 12'd24;
             r_vsy = 12'd3;   r_vbp = 12'd16;  r_vact = 12'd240; r_vfp = 12'd3;
             r_ilace = 1'b1; r_clksel = CLK_12M6; r_khz = 32'd12600;
-        end
-        default: begin                 // 800 x 262, same raster as 480i
-            r_hsy = 12'd60;  r_hbp = 12'd76;  r_hact = 12'd640; r_hfp = 12'd24;
-            r_vsy = 12'd3;   r_vbp = 12'd16;  r_vact = 12'd240; r_vfp = 12'd3;
-            r_ilace = 1'b0; r_clksel = CLK_12M6; r_khz = 32'd12600;
         end
         endcase
     end

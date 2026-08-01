@@ -23,7 +23,14 @@
 // Keeping the unpacker unaware of that is what lets it survive the move
 // off-chip unchanged. sc_base is not an input here for the same reason.
 //
-// Everything unpacks to RGB666, because that is what the A/V board's resistor
+// Everything unpacks to RGB666.
+//
+// That was right for the older A/V board, whose resistor ladder is six bits a
+// channel. The newer board carries an ADV7125 that takes eight, so this now
+// throws away two bits per channel that the DAC could have used -- see the note
+// below, and the low-two-bits-on-SDIO entry in the roadmap.
+//
+// The original reasoning: RGB666 is what the A/V board's resistor
 // ladder actually is. Short fields are widened by repeating the field rather
 // than zero-padding, so full scale in maps to full scale out: a 3-bit 7 becomes
 // 63, not 56.
@@ -120,7 +127,12 @@ module scanout #(
             FMT_RGB888, FMT_XRGB8888: begin
                 /* 0x00RRGGBB in the word. Byte order in memory is the
                  * fetcher's problem; by the time it reaches here it is a
-                 * packed word. Eight bits truncate to the ladder's six. */
+                 * packed word.
+                 *
+                 * Eight bits truncate to six. On the older board that was the
+                 * ladder's depth and nothing was lost. On the newer one the DAC
+                 * takes eight, so this is where the two extra bits go -- driving
+                 * the SDIO pins alone would not recover them. */
                 ur = mem_q[23:18];
                 ug = mem_q[15:10];
                 ub = mem_q[7:2];

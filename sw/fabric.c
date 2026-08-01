@@ -798,6 +798,25 @@ int blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 	return -1;
 }
 
+int blitscrt_fabric_take_user_press(struct blitscrt_fabric *f)
+{
+	uint32_t v;
+
+	if (!f) return 0;
+	if (blitscrt_fabric_read(f, BLITSCRT_REG_VERSION) < 0x00030014u)
+		return 0;                       /* register did not exist */
+
+	v = blitscrt_fabric_read(f, BLITSCRT_REG_BTN_EVENT);
+	if (!(v & BLITSCRT_BTN_EVENT_USER))
+		return 0;
+
+	/* Write-one-to-clear, so the press is consumed exactly once even if
+	 * something else is reading the register at the same time. */
+	blitscrt_fabric_write(f, BLITSCRT_REG_BTN_EVENT,
+			      BLITSCRT_BTN_EVENT_USER);
+	return 1;
+}
+
 unsigned blitscrt_fabric_max_width(struct blitscrt_fabric *f)
 {
 	if (!f) return 0;

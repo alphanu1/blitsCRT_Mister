@@ -14,11 +14,14 @@ rather than driven when the A/V board is not fitted.
 where it would refuse 640x240p, and a 15kHz CRT is happy with it either way. I picked it as the mode most likely to give a picture on whatever is
 plugged in.
 
-At reset the mode follows what is fitted: the analog board picks `DEFAULT_VGA`,
-otherwise `DEFAULT_HDMI`. Both are 1. `BTN_OSD` cycles from there, since no
-amount of detection can tell whether the cable past the connector is any good.
-`LED_HDD` blinks the mode number. The running mode stays readable with no
-picture and no serial console.
+The fabric has one mode, 640x480i60, so detection has nothing to pick between and
+the buttons are free for other things -- `BTN_OSD` hides the overlay, `BTN_USER`
+disconnects the display from a host. `DEFAULT_VGA` and `DEFAULT_HDMI` remain as
+parameters, both 1, against a second mode returning.
+
+There were three. 640x480p60 at 31.5 kHz went first, a diagnostic for a monitor
+that will not take 15 kHz, which this is not for; 640x240p60 went with the button
+that cycled to it.
 
 ```
 set_parameter -name DEFAULT_VGA  1    # analog board fitted
@@ -26,12 +29,15 @@ set_parameter -name DEFAULT_HDMI 1    # HDMI only
 set_parameter -name FORCE_MODE   -1   # 0/1/2 pins one, ignoring detection
 ```
 
-Drop `DEFAULT_VGA` to 0 for 240p once the analog path is known good. Setting
-either to 2 comes up at 31kHz VGA timing, which needs no DAC at all.
+There used to be a diagnostic here: mode 2 came up at 31 kHz VGA timing, which
+needs no DAC and no SCART lead, so a dark screen at 15 kHz and a picture at 31
+localised the fault to the cable. It went with the other modes.
 
-**Mode 2 is there for diagnosis.** Standard VGA timing needs no DAC and no
-SCART lead. If mode 0 is dark and mode 2 shows a picture, the fault is in the
-cable, not the design.
+What replaces it is instrumentation rather than a mode. `blitscrt-peek -t`
+reports what the raster is really running, `-g` the scanout geometry and any
+underruns, and `-i` whether the analog board's present pin is low and which
+front-panel source is in use. Those answer the same question without needing a
+monitor that will not take 15 kHz.
 
 ### Why two clocks and not three
 

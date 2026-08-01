@@ -86,7 +86,9 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 #       temporary 642x480i60 test mode removed
 #   d40 stale comments corrected: the apply handshake is fixed rather than
 #       worked around, and mode counts followed the list down to one
-BLITSCRTD_BUILD ?= d40
+#   d41 the user button toggles the USB connection: unbind the UDC so the host
+#       sees an orderly detach, and stay disconnected until pressed again
+BLITSCRTD_BUILD ?= d42
 CFLAGS  += -DBLITSCRTD_BUILD='"$(BLITSCRTD_BUILD)"'
 # -lpthread: the bulk endpoint runs on its own thread, so a blocking read cannot
 # stop ep0 being serviced. Static linking needs it named explicitly.

@@ -154,14 +154,21 @@ module tb_mcp23009;
          * wants {.., user, disk, power} in bits 0..2. */
         led = 3'b100;
         #3_000_000;
-        chk("LED write puts power on GP2", last_gpio_write[2] == 1'b1 &&
-                                           last_gpio_write[1] == 1'b0 &&
-                                           last_gpio_write[0] == 1'b0);
+        /*
+         * Open drain: 0 lights an LED, 1 releases it. So lighting power alone
+         * writes 0 to GP2 and 1 to the other two. Asserted explicitly because
+         * getting this backwards lit all three at the wrong moments and read as
+         * three separate faults.
+         */
+        chk("lighting power pulls GP2 low, releases the rest",
+                                           last_gpio_write[2] == 1'b0 &&
+                                           last_gpio_write[1] == 1'b1 &&
+                                           last_gpio_write[0] == 1'b1);
 
         led = 3'b001;
         #3_000_000;
-        chk("LED write puts user on GP0",  last_gpio_write[0] == 1'b1 &&
-                                           last_gpio_write[2] == 1'b0);
+        chk("lighting user pulls GP0 low",  last_gpio_write[0] == 1'b0 &&
+                                           last_gpio_write[2] == 1'b1);
 
         /* Buttons come back in GP3..5, already inverted by IPOL. */
         gpio_in = 8'b0000_1000;         // user

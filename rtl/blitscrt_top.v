@@ -18,18 +18,13 @@
 // PLL. altclkctrl accepts PLL outputs on only two of its four inputs, which is
 // what limits the design to two pixel clocks.
 //
-// Both defaults are mode 1. 480i is a standard SD format that HDMI sinks
-// accept, and a 15kHz CRT takes it as readily as 240p, so it is the mode most
-// likely to produce a picture on whatever is plugged in. BTN_OSD cycles from
-// there, since no amount of detection can tell whether the cable past the
-// connector works.
+// One mode, 640x480i60. It is a standard SD format that HDMI sinks accept and a
+// 15kHz CRT takes as readily as 240p, so it is the mode most likely to produce a
+// picture on whatever is plugged in -- and with nothing to choose between, the
+// front-panel buttons are free for the overlay and the soft disconnect.
 //
-// Mode 2 exists to separate "the design works" from "the analog path works".
-// Standard VGA timing needs no DAC and no SCART lead, so a dark screen in mode
-// 0 and a picture in mode 2 localises the fault to the cable.
-//
-// Sync is driven active low, which is what 15kHz RGB and SCART expect.
-// Set CSYNC to put composite sync on the HS pin for SCART pin 20 wiring.
+// Sync is driven active low, which is what 15kHz RGB and SCART expect. CTRL
+// bit 3 puts composite sync on the HS pin for a SCART lead, and is set at reset.
 // -----------------------------------------------------------------------------
 
 `timescale 1ns/1ps
@@ -119,6 +114,17 @@ module blitscrt_top #(
     input  wire        BTN_RESET,       // active low
     input  wire        BTN_OSD,
     input  wire        BTN_USER,
+
+    /*
+     * I2C to the I/O board's MCP23009 expander, which is where the buttons and
+     * LEDs really are on a board fitted with the newer A/V board -- BTN_* above
+     * carry nothing there, and LED_* carry video for the DAC.
+     *
+     * inout because the bus is open drain: the master drives low and releases
+     * high, and reads what the slave does with the line in between.
+     */
+    inout  wire        IO_SCL,
+    inout  wire        IO_SDA,
     output wire        LED_POWER,
     output wire        LED_HDD,
     output wire        LED_USER
@@ -129,6 +135,10 @@ module blitscrt_top #(
      * here because some Icarus builds reject use before declaration. Quartus
      * accepts either, so this only shows up on someone else's machine. */
     wire hdmi_scl, hdmi_sda_o, hdmi_configured, hdmi_nack;
+    /* Driven by the MCP23009 block further down; declared here because the
+     * button mux above reads them. */
+    wire       mcp_present;
+    wire [2:0] mcp_btn;                 // OSD, reset, user -- 1 while pressed
     wire rst_n;                       // video-domain reset, driven below
 
     /*
@@ -159,11 +169,38 @@ module blitscrt_top #(
     wire [19:0] r_sc_waddr;
     wire [15:0] r_sc_wdata;
     wire        hps_alive;
+    /* Read back over the bus and used by the daemon for the overlay text.
+     * Nothing in the fabric consumes it since the LEDs moved to host_bound. */
     wire [1:0]  host_state;
+    wire        host_bound;   // the daemon has the UDC bound
 
     // ---------------- mode selection, in the 50 MHz domain ----------------
     reg [3:0] rst50_sr = 4'b0000;
-    always @(posedge FPGA_CLK1_50) rst50_sr <= {rst50_sr[2:0], BTN_RESET};
+    /*
+     * Buttons, from whichever source is fitted.
+     *
+     * On a board with the newer A/V board the BTN_* pads carry nothing: the real
+     * buttons are behind the MCP23009, instantiated further down. It reports 1
+     * while pressed; the pads are active low, so the expander's value inverts
+     * and everything downstream keeps the active-low convention it already had.
+     *
+     * mcp_present is low until a read has been acknowledged, so a board without
+     * an expander falls through to the pads -- correct for a DE10-Nano with the
+     * older I/O board, and correct during the first few milliseconds after
+     * power-on before the expander has answered.
+     */
+    /*
+     * The expander reports {GP5, GP4, GP3} = {OSD, reset, user}, so bit 0 is
+     * user and bit 2 is OSD. These were the other way round at first, which put
+     * the overlay toggle on the OSD button and the mode cycle on the user
+     * button -- visible immediately on hardware, and the mapping to check first
+     * if a button does the wrong thing.
+     */
+    wire btn_reset_eff = mcp_present ? ~mcp_btn[1] : BTN_RESET;
+    wire btn_osd_eff   = mcp_present ? ~mcp_btn[2] : BTN_OSD;
+    wire btn_user_eff  = mcp_present ? ~mcp_btn[0] : BTN_USER;
+
+    always @(posedge FPGA_CLK1_50) rst50_sr <= {rst50_sr[2:0], btn_reset_eff};
     wire rst50_n = rst50_sr[3];
 
     /*
@@ -185,7 +222,7 @@ module blitscrt_top #(
         if (!rst50_n) begin
             db_cnt <= 20'd0; btn_osd_s <= 1'b1; btn_osd_clean <= 1'b1;
         end else begin
-            btn_osd_s <= BTN_OSD;
+            btn_osd_s <= btn_osd_eff;
             if (btn_osd_s != btn_osd_clean) begin
                 db_cnt <= db_cnt + 20'd1;
                 if (db_cnt == 20'hFFFFF) btn_osd_clean <= btn_osd_s;
@@ -346,7 +383,7 @@ module blitscrt_top #(
         if (!pll_locked) rst_sr <= 4'b0000;
         else             rst_sr <= {rst_sr[2:0], 1'b1};
     end
-    assign rst_n = rst_sr[3] & BTN_RESET & ~(|mode_hold);
+    assign rst_n = rst_sr[3] & btn_reset_eff & ~(|mode_hold);
 
     // ---------------- timing ----------------
     wire        hs, vs, cs, de;
@@ -601,16 +638,26 @@ module blitscrt_top #(
         .clk(clk_pix), .addr(font_addr), .data(font_data)
     );
 
-    // BTN_USER hides the text so the bars can be judged unobstructed
+    /*
+     * BTN_OSD hides the on-screen text, so the bars can be judged unobstructed.
+     *
+     * It used to cycle the mode table and BTN_USER did this. With one mode left
+     * there is nothing to cycle, and this is the button people reach for.
+     *
+     * btn_osd_clean is debounced in the 50 MHz domain, so it is resynchronised
+     * here before the edge is taken -- a single flop would be enough for a
+     * signal this slow, but two costs nothing and the edge detect needs a stable
+     * previous value anyway.
+     */
     reg overlay_btn = 1'b1;
-    reg btn_user_d  = 1'b1;
+    reg [2:0] osd_sync = 3'b111;
     always @(posedge clk_pix or negedge rst_n) begin
         if (!rst_n) begin
             overlay_btn <= 1'b1;
-            btn_user_d  <= 1'b1;
+            osd_sync    <= 3'b111;
         end else begin
-            btn_user_d <= BTN_USER;
-            if (btn_user_d && !BTN_USER) overlay_btn <= ~overlay_btn;
+            osd_sync <= {osd_sync[1:0], btn_osd_clean};
+            if (osd_sync[2] && !osd_sync[1]) overlay_btn <= ~overlay_btn;
         end
     end
 
@@ -706,7 +753,7 @@ module blitscrt_top #(
         .waitrequest(regs_waitrequest),
         /* Power-on reset only, without the mode-change hold: the configuration
          * this block latches must survive a clk_sel change. */
-        .clk_pix(clk_pix), .vid_cfg_rst_n(rst_sr[3] & BTN_RESET),
+        .clk_pix(clk_pix), .vid_cfg_rst_n(rst_sr[3] & btn_reset_eff),
         .vblank(vblank), .field(field),
         .pll_locked(pll_locked), .hdmi_configured(hdmi_configured),
         .h_sy(r_hsy), .h_bp(r_hbp), .h_act(r_hact), .h_fp(r_hfp),
@@ -735,6 +782,8 @@ module blitscrt_top #(
         .io_btn({btn_sync_rst, btn_sync_osd, btn_sync_usr}),
         .io_led({LED_POWER, LED_HDD, LED_USER}),
         .io_vga_en(VGA_EN), .io_av_present(av_present),
+        .io_mcp_present(mcp_present), .io_mcp_btn(mcp_btn),
+        .io_btn_user(btn_user_eff),
         .scanout_underrun_tog(sc_underrun), .scanout_beats(sc_beats),
         /* Post-mux, so this reports what the raster is really running on
          * rather than what was asked for. */
@@ -747,7 +796,8 @@ module blitscrt_top #(
         .pll_apply(r_pll_apply),
         .char_we(r_char_we), .char_addr(r_char_addr), .char_data(r_char_data),
         .sc_we(r_sc_we), .sc_waddr(r_sc_waddr), .sc_wdata(r_sc_wdata),
-        .hps_alive(hps_alive), .host_state(host_state)
+        .hps_alive(hps_alive), .host_state(host_state),
+        .host_bound(host_bound)
     );
 
     // ---------------- sync alignment ----------------
@@ -843,34 +893,46 @@ module blitscrt_top #(
     assign HDMI_I2C_SCL = hdmi_scl   ? 1'bz : 1'b0;
     assign HDMI_I2C_SDA = hdmi_sda_o ? 1'bz : 1'b0;
 
+    /*
+     * The I/O board's MCP23009, on its own bit-banged bus.
+     *
+     * On a board fitted with the newer A/V board this is where the buttons and
+     * LEDs actually are: BTN_* carry nothing and LED_* carry the DAC's clock,
+     * blank and sync. mcp_present goes high only after a read is acknowledged,
+     * so a board without an expander leaves it low and the GPIO pins are used
+     * instead -- which is right for a DE10-Nano with the older I/O board.
+     */
+    wire mcp_scl, mcp_sda_o, mcp_sd_cd, mcp_mode;
+
+    mcp23009 #(.CLK_HZ(50_000_000)) u_iob (
+        .clk(FPGA_CLK1_50), .rst_n(rst50_n),
+        /* {power, disk, user}, active high -- the expander inverts for us. Taken
+         * from the meanings above rather than from the pads, since on this board
+         * the pads are carrying video. */
+        .led({led_power_on, led_disk_on, led_user_on}),
+        .btn(mcp_btn), .sd_cd(mcp_sd_cd), .mode(mcp_mode),
+        .present(mcp_present),
+        .scl(mcp_scl), .sda_out(mcp_sda_o), .sda_in(IO_SDA)
+    );
+
+    assign IO_SCL = mcp_scl   ? 1'bz : 1'b0;
+    assign IO_SDA = mcp_sda_o ? 1'bz : 1'b0;
+
+
+
     // ---------------- diagnostics ----------------
     // LEDs are active low on the I/O board.
     reg [24:0] beat;
     always @(posedge clk_pix) beat <= beat + 25'd1;
 
-    // LED_HDD blinks the mode number: one flash for 320x240p, two for 640x480i,
-    // Enough to know what is being generated with no
-    // picture and no serial console.
-    reg [2:0] blink_n;
-    reg [3:0] blink_i;
-    always @(posedge clk_pix) begin
-        if (beat[21:0] == 22'd0) begin
-            if (blink_i == 4'd9) begin blink_i <= 4'd0; blink_n <= 3'd0; end
-            else begin
-                blink_i <= blink_i + 4'd1;
-                if (blink_i[0] == 1'b0 && blink_n <= cur_mode) blink_n <= blink_n + 3'd1;
-            end
-        end
-    end
-    wire mode_blink = (blink_i < ((cur_mode + 3'd1) << 1)) & ~blink_i[0];
-
     /*
      * Active low: the LEDs sit between +5V and the GPIO pins, so one lights when
      * the FPGA pulls its pin to ground. Hence the inversions.
      *
-     * These do nothing on a MiSTer Pi. That board puts the LEDs and buttons
-     * behind an MCP23009 I2C expander on IO_SCL/IO_SDA, and MiSTer's sys_top
-     * repurposes these pins entirely when it detects one -- LED_USER becomes
+     * These do nothing on a MiSTer Pi with the newer A/V board. That board puts
+     * the LEDs and buttons behind an MCP23009 on IO_SCL/IO_SDA -- driven by
+     * u_iob above, from the same three signals -- and repurposes these pins for
+     * video when it is detected. MiSTer's sys_top does the same: LED_USER becomes
      * VGA_TX_CLK. Driving them here is correct for a DE10-Nano with a classic
      * I/O board and inert otherwise. See the README.
      */
@@ -913,8 +975,36 @@ module blitscrt_top #(
      * it is held inactive and the separate HS/VS pins carry sync as before. */
     wire sog_out = use_csync ? cs_sr[PIPE-1] : 1'b1;
 
-    assign LED_POWER = r_av_dac ? de_px    : ~pll_locked;
-    assign LED_HDD   = r_av_dac ? ~sog_out : ~mode_blink;
+    /*
+     * What the LEDs mean, on a board where they are LEDs.
+     *
+     *   POWER  solid whenever the PLL is locked, which is to say whenever the
+     *          board is generating video at all. A dark power LED means the
+     *          clock never came up.
+     *   USER   green on this panel. On while the USB gadget is bound: the
+     *          display is available to a host, whether or not one is looking.
+     *   DISK   orange. On while it is not -- after the user button has
+     *          disconnected, or before the daemon has come up.
+     *
+     * The two are complementary rather than two views of the same thing, which
+     * is what having two colours is worth: green means the display is there,
+     * orange means it has been taken away. Exactly one is lit once the board is
+     * running, so a dark pair is itself a fault.
+     *
+     * They tracked "bound" and "host attached" separately at first. That reads
+     * well written down and badly on a panel: with a host connected both were
+     * lit and neither told you anything the other did not.
+     *
+     * Active low: the pads sink current to light. On the newer A/V board these
+     * three carry video instead, selected by r_av_dac, and the real LEDs are on
+     * the MCP23009 -- see u_iob, which takes the same three values.
+     */
+    wire led_power_on = pll_locked;
+    wire led_user_on  =  host_bound;
+    wire led_disk_on  = ~host_bound;
+
+    assign LED_POWER = r_av_dac ? de_px    : ~led_power_on;
+    assign LED_HDD   = r_av_dac ? ~sog_out : ~led_disk_on;
     /*
      * The DAC latches R/G/B on the rising edge of this clock, and VGA_R/G/B are
      * registered on clk_pix -- so an un-inverted clock samples the data exactly
@@ -922,7 +1012,7 @@ module blitscrt_top #(
      * the default. CTRL bit 8 clears it if a board wants the other phase.
      */
     assign LED_USER  = r_av_dac ? (r_av_clk_inv ? ~clk_pix : clk_pix)
-                                : ~beat[22];
+                                : ~led_user_on;
 
 endmodule
 

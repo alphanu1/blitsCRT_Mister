@@ -202,6 +202,24 @@ int main(int argc, char **argv)
 			v = (v & ~0x00030000u) | (((v >> sh) & 3u) << 16);
 		}
 
+		/* The I/O board expander, where the real buttons are on a board
+		 * fitted with the newer A/V board. */
+		{
+			unsigned mb = (v >> BLITSCRT_IO_MCP_BTN_SHIFT) & 7;
+			static const char *mn[3] = { "OSD", "RESET", "USER" };
+			int k;
+
+			printf("  I/O board expander\n");
+			if (v & BLITSCRT_IO_MCP_PRESENT) {
+				printf("    MCP23009        answering; its buttons are in use\n");
+				for (k = 0; k < 3; k++)
+					printf("      %-6s        %s\n", mn[k],
+					       (mb >> k) & 1 ? "pressed" : "-");
+			} else {
+				printf("    MCP23009        no answer; the BTN_* pads are in use\n");
+			}
+		}
+
 		printf("  analog board\n");
 		printf("    VGA_EN pin      %s\n",
 		       (v & BLITSCRT_IO_VGA_EN) ? "high -- no board detected"

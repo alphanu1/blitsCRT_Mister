@@ -59,6 +59,13 @@ struct blitscrt_gadget {
 	uint8_t *ep0buf;
 	uint8_t *bulk;                      /* the rect, decompressed */
 	int running;
+	/*
+	 * Whether the UDC is bound, so the user button can toggle it. Set when
+	 * the gadget binds at startup; a press clears it and the next press sets
+	 * it again. Not the same as a host being attached -- bound with no cable
+	 * plugged in is the normal idle state.
+	 */
+	int bound;
 
 	/*
 	 * The bulk endpoint gets its own thread.
@@ -760,6 +767,8 @@ struct blitscrt_gadget *blitscrt_gadget_open(const char *ffs_path,
 	 * which is why this lives here rather than in gadget-setup.sh.
 	 */
 	udc_bind(g);
+	g->bound = 1;
+	g->dev->gadget_bound = 1;
 
 	g->running = 1;
 
@@ -840,6 +849,51 @@ int blitscrt_gadget_run(struct blitscrt_gadget *g)
 		 * fabric would decide the daemon had died.
 		 */
 		int pr = poll(&pfd, 1, 250);
+
+		/*
+		 * The user button toggles the USB connection, checked on every
+		 * wake -- four times a second with an idle host, more with a
+		 * busy one.
+		 *
+		 * One press disconnects and it stays disconnected. That is the
+		 * point: the cable can stay plugged in while the display is
+		 * taken away from the host, so a machine can be rebooted, a
+		 * desktop reconfigured, or the board left alone without either
+		 * end being surprised. A second press brings it back.
+		 *
+		 * Unbinding the UDC raises FUNCTIONFS_DISABLE, which pulling the
+		 * cable does not -- dwc2 raises that from VBUS going away, and
+		 * the A-to-A cable has VBUS cut on the board side. So the detach
+		 * path runs the way it does for a host-initiated disconnect: the
+		 * test card comes back rather than a frozen last frame, and an
+		 * X11 host sees an output go away in order rather than vanish
+		 * underneath it.
+		 *
+		 * The loop keeps running while unbound. FunctionFS stays mounted
+		 * and ep0 stays open, so poll simply times out and the heartbeat
+		 * keeps ticking -- which is what lets the second press be
+		 * noticed at all.
+		 */
+		if (blitscrt_fabric_take_user_press(g->dev->fabric)) {
+			if (g->bound) {
+				fprintf(stderr, "blitscrtd: user button -- "
+						"disconnected. Press again to "
+						"reconnect\n");
+				udc_unbind();
+				blitscrt_dev_on_host(g->dev, 0);
+				g->bound = 0;
+				g->dev->gadget_bound = 0;
+			} else {
+				fprintf(stderr, "blitscrtd: user button -- "
+						"reconnecting\n");
+				udc_bind(g);
+				g->bound = 1;
+				g->dev->gadget_bound = 1;
+			}
+			blitscrt_dev_heartbeat(g->dev);
+			continue;
+		}
+
 		if (pr == 0) {
 			blitscrt_dev_heartbeat(g->dev);
 			continue;

@@ -111,12 +111,14 @@ module tb_modes;
         $display("=== mode_table selection ===");
         expect_mode(2'd1, "analog board fitted, default");
 
-        /* Two modes, so the button toggles rather than cycling. 640x480p60 at
-         * 31.5 kHz was the third and was removed: this drives 15 kHz CRTs and
-         * nothing needed it. */
-        press; expect_mode(2'd0, "BTN_OSD once -> 240p");
-        press; expect_mode(2'd1, "BTN_OSD again -> 480i");
-        press; expect_mode(2'd0, "and back");
+        /*
+         * One mode, so the button does nothing here -- it toggles the overlay in
+         * blitscrt_top instead. There were three: 640x480p60 at 31.5 kHz went
+         * first as a diagnostic this project does not need, and 640x240p60 went
+         * with the cycling.
+         */
+        press; expect_mode(2'd1, "BTN_OSD does not change the mode");
+        press; expect_mode(2'd1, "nor does pressing it again");
 
         // no analog board, HDMI sink present
         mrst = 0; av = 0; hpd = 1;

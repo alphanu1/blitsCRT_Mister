@@ -13,6 +13,7 @@ struct blitscrt_fabric;    /* opaque, see fabric.h */
 
 struct blitscrt_dev {
 	struct blitscrt_fabric *fabric;      /* NULL runs headless, for tests */
+	int gadget_bound;                    /* UDC bound; the user button toggles it */
 
 	struct blitscrt_mode modes[BLITSCRT_MAX_MODES];
 	unsigned int         n_modes;

@@ -220,21 +220,83 @@ needs padding, one does not, both stable.
 
 ## The fabric's own modes
 
-Shown when no host is attached. Two, sharing one compiled pixel clock:
+Shown when no host is attached:
 
-| | mode | pixel clock | line | field | for |
-|---|---|---|---|---|---|
-| 0 | 640x240p60 | 12.600 MHz | 15.750 kHz | 60.11 Hz | 15kHz CRT |
-| 1 | 640x480i60 | 12.600 MHz | 15.750 kHz | 60.00 Hz | 15kHz CRT, standard 480i |
+| mode | pixel clock | line | field |
+|---|---|---|---|
+| 640x480i60 | 12.600 MHz | 15.750 kHz | 60.00 Hz |
 
-They share a clock, so `BTN_OSD` toggling between them never touches the PLL.
-
-There was a third, 640x480p60 at 31.5 kHz, for a monitor that will not take 15
-kHz. It was removed: this drives CRTs, and nothing needed it.
+One, so there is nothing to select and the front-panel buttons are free for other
+things. There were three: 640x480p60 at 31.5 kHz went first, a diagnostic for a
+monitor that will not take 15 kHz, which this is not for; 640x240p60 went with the
+button that cycled to it.
 
 The timing generator has no built-in modes of its own. Porches, active size and
 the interlace flag are all inputs, latched while the pipeline is held in reset. It
 drives whatever timing it is given; only the clock is pinned.
+
+
+## The front panel
+
+Three buttons and three LEDs, left to right on the I/O board.
+
+| button | |
+|---|---|
+| **RESET** | resets the board |
+| **OSD** | hides and restores the on-screen text, so the test card can be judged unobstructed |
+| **USER** | disconnects the display from the host, and reconnects it. One press each way |
+
+| LED | |
+|---|---|
+| **POWER** | solid whenever the PLL is locked, which is whenever video is being generated at all |
+| **DISK** (orange) | the display is *not* available: the user button has disconnected it, or the daemon has not come up yet |
+| **USER** (green) | the display is available to a host |
+
+DISK and USER are complementary, which is what having two colours is worth: green
+means the display is there, orange means it has been taken away. Exactly one is
+lit once the board is running, so a dark pair is itself a fault -- and orange at
+power-on turning green is the daemon starting.
+
+### Why the user button exists
+
+Pulling the cable leaves the last frame frozen on screen. The revert to the test
+card is driven by `FUNCTIONFS_DISABLE`, and dwc2 raises that from VBUS going
+away -- which the A-to-A cable, with VBUS cut on the board side, never sees. Worse
+than cosmetic: on X11 a host can panic when a live output disappears underneath
+it.
+
+Unbinding the UDC does raise the event, so the whole detach path runs the way it
+does for a host-initiated disconnect. The test card comes back and the host sees
+an output go away in order.
+
+It stays disconnected until pressed again, so the cable can stay plugged in while
+the display is taken away -- long enough to reboot the machine, reconfigure a
+desktop, or unplug at leisure.
+
+### Where they actually are
+
+On a board fitted with the newer A/V board, none of these are on the pins their
+names suggest. The `LED_*` pins carry the DAC's clock, blank and sync, and the
+`BTN_*` pins carry nothing. All six are behind an **MCP23009 I2C expander**, on a
+bus bit-banged in the fabric -- `IO_SCL` on `PIN_U14` and `IO_SDA` on `PIN_AG9`,
+from MiSTer's `sys/sys.tcl` under a heading that reads "I2C LEDS/BUTTONS". Note
+that `sys_analog.tcl` has no trace of it, despite being where the LED and button
+pins themselves live.
+
+`rtl/mcp23009.v` drives it. When the expander answers, its buttons are used; when
+it does not, the `BTN_*` pads are, which is right for a DE10-Nano with the older
+I/O board. `blitscrt-peek -i` reports which source is in use and what each button
+is doing.
+
+Two things about the expander that are easy to get wrong, and were:
+
+- **Its outputs are open drain.** Writing 0 pulls a pin to ground and lights its
+  LED; writing 1 releases it. An active-high signal inverts on the way out.
+  Backwards, every LED lights at exactly the wrong moment, which reads as three
+  separate faults rather than one.
+- **It reports `{GP5, GP4, GP3}` = `{OSD, reset, user}`**, so bit 0 is user and
+  bit 2 is OSD. Swap those and each button does another's job -- visible
+  immediately, and the first thing to check if one misbehaves.
 
 
 ## Reading what it is doing
@@ -269,46 +331,30 @@ scanout geometry and underruns, `-i` for the I/O board pins.
 | **M3** scanout memory | done -- HPS DDR3 over f2sdram, custom pixel clocks by PLL reconfiguration |
 | **M4** GUD USB host link | done -- a host enumerates it as a display and drives it |
 | **M5** bandwidth | done -- LZ4, 60 fps full-screen |
-| **M6** buttons and soft disconnect | not started -- see below |
+| **M6** front panel and soft disconnect | done -- buttons and LEDs through the I2C expander, and a button that disconnects the display without touching the cable |
 | **M7** Windows host | not started, and its own repository |
 
 `docs/ROADMAP.md` has each milestone in full: what it covers, what is done, and
 what it cost to get working.
 
-### M6 -- buttons and soft disconnect
-
-Two related problems, both about controlling the board without a keyboard on the
-host.
-
-**The buttons do not work.** On this A/V board the `BTN_*` pins carry nothing; the
-real buttons are behind an **MCP23009 I2C expander**, and MiSTer's `sys_top.v`
-reads them over a bit-banged bus on `IO_SCL`/`IO_SDA`. `rtl/mcp23009.v` implements
-the device side and `sim/tb_mcp23009.v` checks it against a model expander -- init
-sequence, LED bit order, button decoding, and an absent expander reporting nothing
-pressed rather than phantom presses. What it needs is the `IO_SCL`/`IO_SDA` pin
-assignments, which are in MiSTer's `sys/sys.tcl`, and then instantiating in
-`blitscrt_top.v`.
-
-**Unplugging the host is not safe.** Pulling the cable leaves the last frame
-frozen: the revert to the test card is driven by `FUNCTIONFS_DISABLE`, and dwc2
-raises that from VBUS going away, which the cut-VBUS cable never sees. Worse, on
-X11 the host can panic when a connected output disappears underneath it. A button
-that tears the gadget down cleanly first, letting the host see an orderly
-disconnect, avoids both. `/sys/class/udc/<name>/state` reports `configured`
-independently of the FunctionFS event stream and is the likely mechanism for
-detecting the other direction.
-
-With buttons working, a reset button also becomes possible, which is worth having
-on a board whose only other console is a serial cable.
-
 
 ## Known limitations
 
-- **Unplugging the host leaves the last frame frozen.** See M6.
+- **Unplugging the cable still leaves the last frame frozen.** The user button is
+  the way to disconnect cleanly; pulling the cable is not detectable, because the
+  A-to-A cable has VBUS cut and that is what dwc2 raises `FUNCTIONFS_DISABLE`
+  from. `/sys/class/udc/<name>/state` reports `configured` independently of the
+  FunctionFS event stream, so polling it would catch an unannounced unplug too.
 - **RGB888 is not offered.** `scanout_fetch.v` needs a two-beat read window for a
-  3-byte pixel that straddles a beat. RGB565 is the only format advertised.
-- **Colour is 6-bit, not 8.** The DAC's low two bits per channel are on the
-  secondary SD card pins, which this fabric does not drive.
+  3-byte pixel that straddles a beat. RGB565 is the only format advertised. This
+  is about what the host sends, not about output depth -- see below.
+- **Colour is 6-bit, not 8**, and getting to 8 takes three things rather than one.
+  The pipeline is RGB666 end to end, written for the older board's resistor
+  ladder: `scanout.v` truncates an 8-bit source to six on the way in, and only
+  `VGA_R/G/B[5:0]` are driven. So it needs an RGB888 source format (above), the
+  pipeline widened, and the DAC's low two bits per channel driven -- those are on
+  the secondary SD card pins, `SDIO_DAT[3:0]`, `SDIO_CMD` and `SDIO_CLK`, which
+  MiSTer sends as `{vga_g,vga_r,vga_b}`. Any one alone changes nothing visible.
 - **No EDID is sent**, so the connector reads `VGA-1-unknown`. One is implemented
   in `sw/edid.c` and disabled: sending it breaks mode selection, with a bare name
   descriptor as much as with range limits. Both lack a timing descriptor, which is

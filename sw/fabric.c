@@ -241,8 +241,7 @@ struct blitscrt_fabric *blitscrt_fabric_open(void)
 		 *
 		 * 3.4 added LIVE_*, and that one is a hard dependency:
 		 * set_mode() confirms a modeset by reading the raster back
-		 * rather than trusting STAT_APPLYING, which is not trustworthy
-		 * across a PLL reconfiguration. Below 3.4 those registers read
+		 * rather than trusting STAT_APPLYING. Below 3.4 those registers read
 		 * zero, the confirmation can never succeed, and every modeset
 		 * fails however well it actually went.
 		 */
@@ -412,7 +411,27 @@ int blitscrt_scanout_configure(struct blitscrt_fabric *f,
 	f->sc_w = w;
 	f->sc_h = h;
 	f->sc_bpp = bpp;
-	f->sc_stride = w * bpp;
+
+	/*
+	 * Stride padded up to a whole f2sdram beat, which is why it is not
+	 * simply w * bpp.
+	 *
+	 * The port is 64 bits wide and Avalon reads are word-addressed, so the
+	 * fetcher cannot read a beat from an unaligned byte address. Line n sits
+	 * at base + n * stride, and that only lands on a beat boundary if the
+	 * stride is a multiple of eight. With 642 pixels at 16bpp -- 1284 bytes,
+	 * 160.5 beats -- every line began at a different byte within a beat and
+	 * the picture sheared a little further across on each successive line.
+	 *
+	 * Padding fixes it for any width, which matters because a Switchres
+	 * modeline can ask for anything and does not go through the advertised
+	 * list. The few spare bytes at the end of each line are never fetched:
+	 * the fetcher reads sc_w * bpp bytes and the scanout bounds x against
+	 * sc_w, so they are neither read nor displayed. They cost a little
+	 * memory in a 32 MB window and nothing else.
+	 */
+	f->sc_stride = (w * bpp + BLITSCRT_F2SDRAM_BEAT - 1u) &
+		       ~(BLITSCRT_F2SDRAM_BEAT - 1u);
 
 	if (f->caps & BLITSCRT_CAP_SCANOUT_DDR3) {
 		size_t need = (size_t)f->sc_stride * h;
@@ -737,16 +756,18 @@ int blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 
 	/* Claim the raster, then check what it is actually running.
 	 *
-	 * The APPLYING bit is not trustworthy across a reconfiguration. The PLL
-	 * losing lock resets apply_ack in the video domain while apply_req keeps
-	 * its value in the bus domain, so the toggle handshake can come back
-	 * disagreeing -- which latches the staged timing spontaneously and leaves
-	 * the status bit describing a transfer that no longer maps to anything.
-	 * A mode that visibly applied was being reported as a failure.
+	 * This began as a workaround. The APPLYING bit was not trustworthy across
+	 * a reconfiguration: the video-side apply_ack was reset by something a
+	 * clock change disturbs while apply_req kept its value in the bus domain,
+	 * so the toggle handshake could come back disagreeing and a mode that
+	 * visibly applied was reported as a failure. That is fixed -- the latch
+	 * resets on vid_cfg_rst_n, power-on and the reset button, rather than on
+	 * vid_rst_n, and tb_regs.v asserts it survives a clock change.
 	 *
-	 * So the handshake is a hint and the live registers are the answer. Same
-	 * rule as configure(): read back what happened rather than trusting that
-	 * a write meant what it said.
+	 * The read-back stays anyway. Confirming against the raster is worth more
+	 * than confirming against a status bit even when the bit is right, and it
+	 * is the same rule as configure(): read back what happened rather than
+	 * trusting that a write meant what it said.
 	 */
 	{
 		uint32_t c = blitscrt_fabric_read(f, BLITSCRT_REG_CTRL);

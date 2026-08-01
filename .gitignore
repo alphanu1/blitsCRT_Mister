@@ -71,12 +71,18 @@ __pycache__/
 #   quartus/*.tcl   pin assignments
 # ---------------------------------------------------------------------------
 
-# gadget daemon
+# gadget daemon and its tools
 sw/*.o
 sw/blitscrtd
+sw/blitscrt-peek
+sw/blitscrt-ddrbench
 sw/test_pll
+sw/test_pll_reconfig
 sw/test_modes
 sw/test_device
+sw/test_lz4
+sw/test_edid
+sw/test_stride
 
 # ---------------------------------------------------------------------------
 # Staged bootable set from `make build`. Collected from tracked sources and
@@ -85,4 +91,10 @@ sw/test_device
 build/
 build-tmp/
 
+# ---------------------------------------------------------------------------
+# Card images. A written SD card dumped back out, or one built to write. They
+# are hundreds of megabytes and reproducible from the tracked sources.
+# ---------------------------------------------------------------------------
 *.img
+*.img.gz
+*.img.xz

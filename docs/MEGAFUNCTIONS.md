@@ -53,7 +53,7 @@ is 94–250, and exact hits are common.
 What the error costs, as a slipped frame against a 60 Hz source:
 
 ```
-our four modes           exact        never
+built-in modes           exact        never
 typical modeline        9.22 ppm      one frame every 30 minutes
 worst in 15kHz band   409.00 ppm      one frame every 41 seconds
 worst overall         880.00 ppm      one frame every 19 seconds
@@ -61,8 +61,8 @@ worst overall         880.00 ppm      one frame every 19 seconds
 
 So the case is split:
 
-- **For the four advertised modes, integer is exact.** All four solve to 0 ppm.
-  Fractional buys nothing.
+- **For the fabric's own modes and the advertised fallback, integer is exact.**
+  They solve to 0 ppm, so fractional buys nothing.
 - **For arbitrary Switchres modelines, integer is usually fine and occasionally
   poor.** A judder every 30 minutes is invisible; every 41 seconds is not, and
   exact refresh matching is the entire point of Switchres.

@@ -43,7 +43,16 @@ module mode_table #(
 
     localparam [1:0] MODE_640x240p = 2'd0;   // 12.600 MHz, 15.750 kHz, 60.11 Hz
     localparam [1:0] MODE_640x480i = 2'd1;   // 12.600 MHz, 15.750 kHz, 60.00 Hz
-    localparam [1:0] MODE_640x480p = 2'd2;   // 25.200 MHz, 31.500 kHz, 60.00 Hz
+    /*
+     * There were three. 640x480p60 at 31.500 kHz was a diagnostic for a monitor
+     * that will not take 15 kHz, and it was removed: this project drives CRTs at
+     * 15 kHz and nothing needed it. It never worked as labelled either -- it
+     * selected the second clock slot expecting 25.200 MHz, and the PLL puts
+     * 6.300 there, so it ran at 7.875 kHz.
+     *
+     * Its overlay bank, 2, is left in the character RAM rather than renumbering
+     * everything. Bank 3 is the no-daemon banner and must stay where it is.
+     */
 
     /* clkselect values, not clock indices: altclkctrl slots 0 and 1 are wired
      * to the reference pin to satisfy the placement rule, and only 2 and 3
@@ -52,9 +61,14 @@ module mode_table #(
      * outputs -- 0 and 1 must be real clock pins -- so pll_modes wires the
      * reference to 0 and 1 and the PLL to 2 and 3. Selecting 0 or 1 gives the
      * 50 MHz reference, not a pixel clock. blitscrt_top's CLK_FULL mirrors
-     * CLK_12M6 and the two must agree. */
+     * CLK_12M6 and the two must agree.
+     *
+     * Slot 3 is no longer selected by any mode here. It stays defined because
+     * tools/check_clk_sel.py cross-checks the constants against pll_modes.v, and
+     * because the PLL's second output still exists whether or not the table
+     * picks it -- a host can reach it through PLL reconfiguration. */
     localparam [1:0] CLK_12M6 = 2'd2;
-    localparam [1:0] CLK_25M2 = 2'd3;
+    localparam [1:0] CLK_25M2 = 2'd3;   /* defined, unused by the table */
 
     // ---- selection ----
     reg btn_d;
@@ -78,8 +92,9 @@ module mode_table #(
                 picked <= 1'b1;
             end
 
+            /* Two modes, so the button toggles. */
             if (btn_d && !btn_cycle && (FORCE_MODE < 0))
-                mode <= (mode == MODE_640x480p) ? MODE_640x240p : mode + 2'd1;
+                mode <= (mode == MODE_640x480i) ? MODE_640x240p : MODE_640x480i;
         end
     end
 
@@ -96,11 +111,6 @@ module mode_table #(
             r_hsy = 12'd60;  r_hbp = 12'd76;  r_hact = 12'd640; r_hfp = 12'd24;
             r_vsy = 12'd3;   r_vbp = 12'd16;  r_vact = 12'd240; r_vfp = 12'd3;
             r_ilace = 1'b1; r_clksel = CLK_12M6; r_khz = 32'd12600;
-        end
-        MODE_640x480p: begin           // 800 x 525, standard VGA
-            r_hsy = 12'd96;  r_hbp = 12'd48;  r_hact = 12'd640; r_hfp = 12'd16;
-            r_vsy = 12'd2;   r_vbp = 12'd33;  r_vact = 12'd480; r_vfp = 12'd10;
-            r_ilace = 1'b0; r_clksel = CLK_25M2; r_khz = 32'd25200;
         end
         default: begin                 // 800 x 262, same raster as 480i
             r_hsy = 12'd60;  r_hbp = 12'd76;  r_hact = 12'd640; r_hfp = 12'd24;

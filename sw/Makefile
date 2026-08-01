@@ -73,7 +73,20 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 #       so bumping the number cannot leave a stale object behind
 #   d34 withdrew 1280x480i60, 1280x576i50 and 1280x288p50 -- 73.7 MB/s against
 #       a link carrying 35, so they could not hold a frame
-BLITSCRTD_BUILD ?= d34
+#   d35 one advertised mode, 642x480i60. 642 rather than 640 so a Switchres
+#       modeline cannot be confused with the fallback in a list or a log
+#   d36 648x480i60 rather than 642: the stride must be a whole number of 8-byte
+#       beats or every line starts at a different byte and the picture shears.
+#       An unaligned width is now refused rather than advertised
+#   d37 scanout stride padded to a whole f2sdram beat, so any width works --
+#       a Switchres modeline never passes through the advertised list
+#   d38 TEMPORARY: 642x480i60 advertised alongside 648 to prove the stride
+#       padding on hardware. Remove once tested
+#   d39 stride padding proven on hardware -- 642 and 648 both stable -- and the
+#       temporary 642x480i60 test mode removed
+#   d40 stale comments corrected: the apply handshake is fixed rather than
+#       worked around, and mode counts followed the list down to one
+BLITSCRTD_BUILD ?= d40
 CFLAGS  += -DBLITSCRTD_BUILD='"$(BLITSCRTD_BUILD)"'
 # -lpthread: the bulk endpoint runs on its own thread, so a blocking read cannot
 # stop ep0 being serviced. Static linking needs it named explicitly.
@@ -117,7 +130,8 @@ blitscrt-peek: peek.o $(CORE:.c=.o)
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-test: test_pll test_pll_reconfig test_modes test_device test_lz4 test_edid
+test: test_pll test_pll_reconfig test_modes test_device test_lz4 test_edid \
+      test_stride
 	@echo ""
 	@./test_pll
 	@echo ""
@@ -128,6 +142,8 @@ test: test_pll test_pll_reconfig test_modes test_device test_lz4 test_edid
 	@./test_device
 	@./test_lz4
 	@./test_edid
+	@echo
+	@./test_stride
 
 test_pll: tests/test_pll.c pll.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
@@ -142,6 +158,9 @@ test_modes: tests/test_modes.c modes.c pll.c
 # bumping the build number alone would leave the old object in place and the
 # binary would report a version it is not. Depend on the Makefile so it cannot.
 main.o: Makefile
+
+test_stride: tests/test_stride.c
+	$(CC) $(CFLAGS) -I. -o $@ $<
 
 test_edid: tests/test_edid.c edid.c
 	$(CC) $(CFLAGS) -o $@ tests/test_edid.c edid.c

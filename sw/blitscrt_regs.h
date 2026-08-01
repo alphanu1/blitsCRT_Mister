@@ -27,6 +27,11 @@
 #define BLITSCRT_REG_VERSION     0x0004u   /* RO, (major << 16) | minor */
 
 /* ---- control ---- */
+/*
+ * Resets to 0x09E: testcard, overlay, CSYNC, HDMI and the A/V board DAC, with
+ * the front panel owning timing until a host takes it. Kept here so the default
+ * can be read without going to the RTL.
+ */
 #define BLITSCRT_REG_CTRL        0x0008u   /* RW */
 #define BLITSCRT_CTRL_ENABLE     (1u << 0) /* scanout running */
 #define BLITSCRT_CTRL_TESTCARD   (1u << 1) /* show the card instead of the fb */
@@ -272,6 +277,13 @@
  * by mem= in the boot arguments; see tools/blitsenv.txt. */
 #define BLITSCRT_SCANOUT_DDR_BASE   0x3E000000u
 #define BLITSCRT_SCANOUT_DDR_SIZE   0x02000000u   /* 32 MB */
+
+/*
+ * Bytes per f2sdram beat. The port is 64 bits and Avalon reads are word
+ * addressed, so a line's start address has to be a multiple of this -- which
+ * makes the scanout stride a multiple of it too, whatever the width.
+ */
+#define BLITSCRT_F2SDRAM_BEAT       8u
 
 
 /* ---- PLL reconfiguration ---- */

@@ -3,21 +3,19 @@
 #
 # Find which HPS GPIO line a button is on, by pressing it and seeing what moved.
 #
-# The I/O board LEDs and buttons do not respond to the FPGA pins this fabric
-# drives -- IO_DIAG shows all three LED pins pulled low and nothing lit, and the
-# buttons never read low however hard they are pressed. On a DE10-Nano those
-# signals are on the GPIO_1 header and belong to the FPGA; on a MiSTer Pi the
-# I/O board is integrated and they may be wired to the HPS instead, which the
-# fabric cannot reach at all.
+# Written while working out why the I/O board buttons did nothing, and kept
+# because the elimination is worth repeating on another board.
 #
-# Rather than guess at pin numbers from a schematic nobody has, this reads every
-# HPS GPIO line, waits for a press, and reports what changed.
+# The answer, for a MiSTer Pi with the newer A/V board: the buttons are behind an
+# MCP23009 I2C expander on a bus bit-banged in the fabric, and the LED pins carry
+# video for the board's DAC. Neither is on an HPS GPIO, which is what this
+# script scans -- so on that hardware it correctly finds nothing, and that result
+# is what ruled the HPS out. See M6 in the README.
+#
+# This reads every HPS GPIO line, waits for a press, and reports what changed.
 #
 # Result on a MiSTer Pi: nothing changes. All 85 lines were read bar three, which
-# debugfs names as i2c_gpio and hps_led0. So the buttons are not on the HPS, and
-# with the fabric unable to see them either, they are on FPGA pins other than the
-# DE10-Nano ones this project uses. Kept because the elimination is worth
-# repeating on another board.
+# debugfs names as i2c_gpio and hps_led0.
 #
 # Usage:
 #   tools/find-io.sh            snapshot, prompt, compare

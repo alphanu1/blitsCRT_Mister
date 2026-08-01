@@ -13,7 +13,6 @@
 //
 //   0  640x240p60  12.600 MHz  15.750 kHz  60.11 Hz   15kHz CRT
 //   1  640x480i60  12.600 MHz  15.750 kHz  60.00 Hz   15kHz CRT, standard 480i
-//   2  640x480p60  25.200 MHz  31.500 kHz  60.00 Hz   any VGA or HDMI display
 //
 // Modes 0 and 1 share a clock, so switching between them never touches the
 // PLL. altclkctrl accepts PLL outputs on only two of its four inputs, which is
@@ -850,7 +849,7 @@ module blitscrt_top #(
     always @(posedge clk_pix) beat <= beat + 25'd1;
 
     // LED_HDD blinks the mode number: one flash for 320x240p, two for 640x480i,
-    // three for 640x480p. Enough to know what is being generated with no
+    // Enough to know what is being generated with no
     // picture and no serial console.
     reg [2:0] blink_n;
     reg [3:0] blink_i;

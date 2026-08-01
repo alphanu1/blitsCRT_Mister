@@ -111,9 +111,12 @@ module tb_modes;
         $display("=== mode_table selection ===");
         expect_mode(2'd1, "analog board fitted, default");
 
-        press; expect_mode(2'd2, "BTN_OSD once");
-        press; expect_mode(2'd0, "BTN_OSD twice");
-        press; expect_mode(2'd1, "BTN_OSD wraps");
+        /* Two modes, so the button toggles rather than cycling. 640x480p60 at
+         * 31.5 kHz was the third and was removed: this drives 15 kHz CRTs and
+         * nothing needed it. */
+        press; expect_mode(2'd0, "BTN_OSD once -> 240p");
+        press; expect_mode(2'd1, "BTN_OSD again -> 480i");
+        press; expect_mode(2'd0, "and back");
 
         // no analog board, HDMI sink present
         mrst = 0; av = 0; hpd = 1;

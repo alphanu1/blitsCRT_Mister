@@ -150,6 +150,44 @@ module tb_regs;
         rd(14'h00C); chk("pending clears once acknowledged", readdata[4] == 1'b0);
 
         $display("");
+
+        /*
+         * The apply handshake across a video-domain disturbance.
+         *
+         * apply_req lives in the bus domain and apply_ack in the video domain,
+         * and STATUS reports "applying" when they disagree. A reset that clears
+         * one and not the other would leave them permanently out of step: every
+         * later modeset would read as pending forever, or as already done when
+         * it was not.
+         *
+         * That is why the block resets on vid_cfg_rst_n -- power-on and the
+         * reset button -- rather than vid_rst_n, which drops for 256 cycles on
+         * every clk_sel change so the video pipeline is held still while the
+         * clock switches. Nothing that a clock change disturbs may forget the
+         * configuration this block latches.
+         */
+        $display("apply handshake survives a clock change");
+        wr(14'h010, 12'd77);              /* stage something identifiable */
+        wr(14'h044, 32'd1);               /* apply */
+        rd(14'h00C); chk("modeset pending", readdata[4] == 1'b1);
+
+        /* A clk_sel change would drop vid_rst_n here. vid_cfg_rst_n stays
+         * high, so the handshake must be undisturbed. */
+        repeat (300) @(posedge clk_pix);
+
+        rd(14'h00C); chk("still pending, not lost to the clock change",
+                         readdata[4] == 1'b1);
+
+        @(posedge clk_pix); vblank = 1;
+        repeat (4) @(posedge clk_pix);
+        vblank = 0;
+        repeat (4) @(posedge clk_pix);
+        chk("and it latches at the next vblank", h_sy == 12'd77);
+        repeat (10) @(posedge clk);
+        rd(14'h00C); chk("pending clears, handshake still in step",
+                         readdata[4] == 1'b0);
+
+        $display("");
         $display("PLL counters and the apply pulse");
         wr(14'h034, 32'd126); wr(14'h038, 32'd5); wr(14'h03C, 32'd50);
         @(posedge clk);

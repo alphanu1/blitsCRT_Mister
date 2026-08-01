@@ -87,107 +87,44 @@ int blitscrt_modelist_add(struct blitscrt_dev *d, const struct blitscrt_mode *m)
 void blitscrt_modelist_defaults(struct blitscrt_dev *d)
 {
 	struct blitscrt_mode m;
-	/*
-	 * All four modes. BLITSCRT_MODES=preferred narrows it to 640x480i60.
-	 *
-	 * The PREFERRED flag is sent correctly -- bit 10, matching
-	 * GUD_DISPLAY_MODE_FLAG_PREFERRED -- but a desktop is free to ignore it,
-	 * and KDE picks the largest instead, which is 640x576i50. The narrow list
-	 * is there for when a host must come up in a particular mode and stay
-	 * there.
-	 */
-	const char *want = getenv("BLITSCRT_MODES");
-	int only_preferred = want && strcmp(want, "preferred") == 0;
-
-	blitscrt_modelist_reset(d);
 
 	/*
-	 * Advertised first and flagged PREFERRED, which is what a host picks
-	 * on first connect. 480i is a standard SD format, so anything on the
-	 * other end recognises it, and a 15kHz CRT takes it happily.
+	 * One mode: 648x480i60.
 	 *
-	 * The 320-wide modes are exactly half their 640-wide partners, and the
-	 * counters fall out of the same VCO:
+	 * Not 640, on purpose. Switchres generates 640-wide timings, and a host
+	 * offered both would have two modes that look interchangeable and are
+	 * not -- ours is a fixed fallback, its are computed for the monitor in
+	 * front of it. A few pixels of difference is invisible on a CRT and makes
+	 * the two impossible to confuse in a mode list or a log.
 	 *
-	 *   640x480i60  12.600 MHz  VCO 1575  C=125   NTSC pair
-	 *   320x240p60   6.300 MHz  VCO 1575  C=250
-	 *   640x576i50  12.500 MHz  VCO  800  C=64    PAL pair
-	 *   320x288p50   6.250 MHz  VCO  800  C=128
+	 * 648 rather than 642, which was tried first and sheared: 1284 bytes is
+	 * 160.5 f2sdram beats, so every line began at a different byte within a
+	 * beat. 648 gives 1296, which is 162 exactly.
 	 *
-	 * Two VCOs cover all four, and within a VCO the 640 and 320 modes are
-	 * one counter apart. All four solve to 0 ppm.
+	 * That is no longer a constraint. blitscrt_scanout_configure() pads the
+	 * stride to a whole beat, so any width works -- which it has to, since a
+	 * Switchres modeline never passes through this list. 642 was advertised
+	 * alongside 648 for a while to prove that on hardware and both were
+	 * stable, so the padding is tested rather than merely reasoned about.
+	 *
+	 * 648 is kept because it needs no padding, and there is no reason to
+	 * prefer a width that does.
+	 *
+	 * The raster is otherwise the standard 15 kHz 480i one: 800 total at
+	 * 12.600 MHz gives 15.750 kHz and a 60.00 Hz field rate, with the extra
+	 * active pixels taken out of the porches rather than the line.
+	 *
+	 * BLITSCRT_MODES=preferred is a no-op now there is only one mode. Kept
+	 * because it costs nothing and a second fallback may yet be wanted.
 	 */
-
-	/* 640x480i60 -- 15.750 kHz, 60.00 Hz field, 525 lines */
-	blitscrt_mode_from_modeline(&m, 12600, 640, 664, 724, 800,
+	blitscrt_mode_from_modeline(&m, 12600, 648, 670, 730, 800,
 				    480, 486, 492, 525,
 				    BLITSCRT_MF_INTERLACE |
-				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC |
-				    BLITSCRT_MF_PREFERRED);
-	blitscrt_modelist_add(d, &m);
-
-	if (only_preferred) {
-		fprintf(stderr, "blitscrtd: 640x480i60 only "
-				"(BLITSCRT_MODES=preferred)\n");
-		return;
-	}
-
-	/*
-	 * 720x576i50 -- true PAL. The ITU-R BT.601 timing at 13.5 MHz: 864 total
-	 * gives exactly 15.625 kHz, which is what a PAL set is built around, and
-	 * 720 active is the full broadcast width rather than the 640 a PC picks.
-	 */
-	blitscrt_mode_from_modeline(&m, 13500, 720, 732, 796, 864,
-				    576, 582, 588, 625,
-				    BLITSCRT_MF_INTERLACE |
+				    BLITSCRT_MF_PREFERRED |
 				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC);
 	blitscrt_modelist_add(d, &m);
 
-	/* 640x576i50 -- PAL, 15.625 kHz, 50.00 Hz field, 625 lines */
-	blitscrt_mode_from_modeline(&m, 12500, 640, 664, 724, 800,
-				    576, 582, 588, 625,
-				    BLITSCRT_MF_INTERLACE |
-				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC);
-	blitscrt_modelist_add(d, &m);
 
-	/* 320x240p60 -- 15.750 kHz, 60.11 Hz, 262 lines */
-	blitscrt_mode_from_modeline(&m, 6300, 320, 332, 362, 400,
-				    240, 243, 246, 262,
-				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC);
-	blitscrt_modelist_add(d, &m);
-
-	/*
-	 * Super-resolution modes: 1280 wide at the same 15 kHz line rate.
-	 *
-	 * The point is not more detail -- a CRT cannot resolve 1280 across its
-	 * aperture. It is that the host GPU does the horizontal scaling rather
-	 * than a scaler in the path, which is free on the host. Switchres
-	 * generates these, so a host driving this board through it will ask.
-	 *
-	 * Deflection work is unchanged: a 1280-wide line at 15.75 kHz is the same
-	 * sweep as a 640-wide one, just twice the pixel clock. Bandwidth is not.
-	 *
-	 * Only 240p is offered. 1280x240p60 is 36.9 MB/s raw and compresses
-	 * comfortably into budget. The 480i and 576i variants were tried and
-	 * withdrawn: 73.7 MB/s against a link carrying about 35, and even at 2.58x
-	 * that leaves nothing spare -- on hardware the picture updates as far down
-	 * as the data reaches and the rest lags behind. Advertising a mode that
-	 * cannot hold a frame is worse than not offering it. 1280x288p50 went with
-	 * them; there is no use for a 50 Hz super-res progressive mode without the
-	 * interlaced pair to switch between.
-	 */
-
-	/* 1280x240p60 -- 240p super-res, 25.2 MHz, 262 lines */
-	blitscrt_mode_from_modeline(&m, 25200, 1280, 1328, 1448, 1600,
-				    240, 243, 246, 262,
-				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC);
-	blitscrt_modelist_add(d, &m);
-
-	/* 320x288p50 -- PAL, 15.625 kHz, 50.08 Hz, 312 lines */
-	blitscrt_mode_from_modeline(&m, 6250, 320, 332, 362, 400,
-				    288, 291, 294, 312,
-				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC);
-	blitscrt_modelist_add(d, &m);
 }
 
 /*
@@ -426,10 +363,10 @@ int blitscrt_handle_ctrl(struct blitscrt_dev *d,
 		 *
 		 * Advertising it first meant the host took it by default, so
 		 * the first working picture was also a broken one. It goes back
-		 * when the fetcher gets a two-beat read window; that is M5, and
-		 * it is worth doing since RGB888 is both the only format that
-		 * wastes no ladder depth and the only deep one that fits a
-		 * 640-wide mode with LZ4.
+		 * when the fetcher gets a two-beat read window -- the one M5
+		 * item still outstanding, and worth doing since RGB888 is both
+		 * the only format that wastes no ladder depth and the only deep
+		 * one that fits a 640-wide mode with LZ4.
 		 */
 		uint8_t f[2] = { GUD_PIXEL_FORMAT_RGB565,
 				 GUD_PIXEL_FORMAT_RGB332 };

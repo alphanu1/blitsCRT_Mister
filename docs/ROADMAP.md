@@ -73,7 +73,7 @@ timing, geometry and ownership following it.
 | done | PLL reconfig window reads and writes, verified against the real Intel IP in `tb_pll_reconfig` |
 | done | a reconfiguration completes on hardware and the PLL retunes |
 | done | custom clocks reachable from a modeset: PAL 640x576i50 at 12.500 MHz on hardware |
-| done | all four advertised modes reachable; three of them need reconfiguration |
+| done | every mode then advertised was reachable, three of them needing reconfiguration |
 
 *Why DDR3 rather than more block RAM.* The pixels are already there: the gadget
 receives into DDR3, so the fabric goes to them instead of software pushing every
@@ -127,7 +127,7 @@ taskbar, menus, at 640x480i60 and 15.750 kHz.
 | done | GUD control endpoint, 15 requests, mode validation, PLL solver, `test_device` coverage |
 | done | gadget stack in the kernel: dwc2 dual-role, FunctionFS, configfs |
 | done | modeset path end to end: PLL, timing, geometry, ownership, confirmed against `LIVE_*` |
-| done | the four advertised modes all solve and all apply; `modelist_add` refuses anything `mode_check` would reject |
+| done | every mode then advertised solved and applied; `modelist_add` refuses anything `mode_check` would reject |
 | done | unadvertised modes accepted and applied, so Switchres needs no extra step |
 | done | a failed modeset is reported to the host as one; it used to answer OK regardless |
 | done | `blitscrt-peek -m` applies a modeline through the same path a host uses |
@@ -138,7 +138,7 @@ taskbar, menus, at 640x480i60 and 15.750 kHz.
 | done | changing mode from the host works. It used to hang both ends -- the same read-size fault, since a modeset produces a differently sized flush |
 | done | the overlay hides itself while a host is attached and comes back when one leaves; the front-panel button stays authoritative |
 | note | no EDID sent, so the connector reads `VGA-1-unknown`. Both variants tried on hardware break mode selection; the likely reason is that they contain no timings at all. See the limitation below |
-| note | composite sync is implemented and switchable at runtime on `CTRL` bit 3, but has not been tried on a set that needs it |
+| done | composite sync, on `CTRL` bit 3 and on by default. Tested on a television through SCART, which is the case that needs it -- and needed the broadcast waveform rather than `hs ^ vs`: half-line serration through vertical sync and equalising pulses either side, or the picture rolls. `tb_csync.v` asserts the pulse counts and widths |
 | done | **pixels on screen.** The bulk endpoint drains a full frame per flush and blits it into scanout |
 | done | A-to-A cable with VBUS cut into the Type-A OTG port, with the USB hub add-on removed |
 
@@ -152,11 +152,11 @@ that its answer means something; throwing it away wasted that. It now applies
 first, leaves `active_*` alone on failure so the overlay keeps describing what is
 really on screen, and returns `GUD_STATUS_PROTOCOL_ERROR`.
 
-*The bulk endpoint does not write pixels.* `gadget.c` drains the transfer and counts
-it so the host stays happy, and the rect never reaches memory. So a host will
-enumerate, modeset correctly, negotiate a format and stream frames, and the screen
-will not change. Small now rather than large: `blitscrt_scanout_blit()` takes
-exactly the x/y/w/h a GUD `set_buffer` request carries, and routes itself.
+*The bulk endpoint used to drain transfers without writing pixels.* It counted
+them so the host stayed happy and the rect never reached memory, so a host would
+enumerate, modeset, negotiate a format and stream frames while the screen did not
+change. Fixed: `blitscrt_scanout_blit()` takes exactly the x/y/w/h a GUD
+`set_buffer` request carries and routes itself.
 
 *What it took, and the two that mattered.* The bulk endpoint delivered nothing for
 a long time while the entire control protocol worked -- descriptors, formats,
@@ -350,68 +350,55 @@ for something physically invisible. At frame rate it is 18.4 MB/s, full colour, 
 decompressor. Whether a host can be persuaded to do that is a DRM question and M4
 will answer it.
 
-**M6 -- Switchres modes at boot. Not started.** Four modes are advertised today,
-hardcoded in `blitscrt_modelist_defaults()`, and they are the wrong four for most
-people. A Sony PVM, a Hantarex arcade chassis and a PAL television have different
-sync bands, and the list a host should see differs accordingly.
+**M6 -- buttons and soft disconnect. Not started.** Two related problems, both
+about being able to control the board without reaching for a keyboard on the host.
 
-So: at boot, read a monitor profile, run Switchres against it, and build a curated
-list of selectable resolutions from what it returns. The hardcoded four become the
-fallback for when there is no ini, not the answer.
+*The buttons do not work.* On the newer A/V board the `BTN_*` pins carry nothing.
+The real buttons are behind an **MCP23009 I2C expander**, and MiSTer's `sys_top.v`
+reads them over a bus bit-banged in the fabric on `IO_SCL`/`IO_SDA` -- not HPS
+I2C, which is why looking for them in `/sys/bus/i2c` finds only the RTC board.
 
-*It has to happen at startup, before a host attaches.* GUD asks for the mode list
-once, in `GET_CONNECTOR_MODES` during enumeration, and takes what it is given.
-There is no mechanism to grow the list afterwards short of forcing a re-enumerate.
-So generation runs when the daemon starts, the list is complete before the gadget
-binds its UDC, and the first host to connect sees the finished thing.
+`rtl/mcp23009.v` implements the device side, with read support added to
+`rtl/i2c_master.v` for it, and `sim/tb_mcp23009.v` checks it against a model
+expander: the init sequence, LED bit order, button decoding, and an absent
+expander reporting nothing pressed rather than phantom presses. What it needs is
+the `IO_SCL`/`IO_SDA` pin assignments from MiSTer's `sys/sys.tcl`, and then
+instantiating in `blitscrt_top.v` with `present` selecting between it and the
+GPIO pins.
 
-This is the same job CRTPi does on the Pi, and the configuration should read the
-same on both -- one person operating both boards should not have to learn two
-vocabularies:
+*Unplugging the host is not safe.* Pulling the cable leaves the last frame frozen
+on screen. The revert to the test card is driven by `FUNCTIONFS_DISABLE`, and
+dwc2 raises that from VBUS going away -- which the A-to-A cable, with VBUS cut on
+the board side, never sees. Replugging then enumerates on the host while the board
+stays stuck, which looks like a crash and is not.
 
-```
-monitor_profile = arcade_15 | arcade_15_25_31 | ntsc | pal
-                | crt_range:<hfmin>-<hfmax>,<vfmin>-<vfmax>
-gud_heights     = 224,240,256,288,448i,480i,576i
-gud_refreshes   = 50,55,57,60
-gud_superres    = on
-profile_enforce = on
-```
-
-The profile does three jobs. It seeds the generated list, expanding height classes
-against refresh targets and keeping only what lands inside the band. It clamps
-whatever a host asks for afterwards, including the unadvertised modelines
-Switchres sends on the host side. And if mode-on-demand ever arrives, it is what
-the synthesizer works against.
-
-Overriding stays possible at every level: an extra-modes file appended to the
-generated list for the one mode a particular chassis wants, and unadvertised
-modelines still accepted at runtime exactly as they are now.
+Worse than cosmetic: on X11 a host can panic when a connected output disappears
+underneath it. A button that tears the gadget down cleanly first, so the host sees
+an orderly disconnect before the cable moves, avoids both problems at once.
 
 | | |
 |---|---|
-| todo | read `blitscrt.ini` from the FAT partition, so it can be edited on any PC |
-| todo | the standard profiles as `blitscrt_sink_limits` instances, plus `crt_range:` for anything exotic |
-| todo | generate at daemon start: height classes x refresh targets, each solved through `pll.c` and kept only if it lands inside the band |
-| todo | fall back to the hardcoded four when there is no ini, so a card with no configuration still works |
-| todo | super-resolution variants, 2560 wide, so the host GPU does the horizontal scaling -- invisible on a CRT and cheap on the host |
-| todo | an extra-modes file appended to the generated list |
-| todo | `profile_enforce` wired to `mode_check`, refusing out-of-band timing rather than passing it to the deflection circuit |
-| note | the clamp is a safety feature, not a convenience. Fixed-frequency deflection can be damaged by sync outside its band, so it defaults on |
+| todo | `IO_SCL`/`IO_SDA` pin assignments from `sys/sys.tcl` |
+| todo | instantiate `mcp23009` in `blitscrt_top.v`, `present` selecting between it and the GPIO pins |
+| todo | expose button state to the daemon, so a press can do something in software rather than only in fabric |
+| todo | a soft-disconnect button: unbind the UDC, let the host see the output go, then revert to the test card |
+| todo | a reset button, worth having on a board whose only other console is a serial cable |
+| todo | poll `/sys/class/udc/<name>/state` from the tick callback, which reports `configured` independently of the FunctionFS event stream, so an unannounced unplug is still noticed |
 
-*Much of this is already here in embryo.* `blitscrt_sink_limits` is a monitor
-profile with one hardcoded instance. `mode_check` is `profile_enforce` already
-written, and `BLITSCRT_MAX_MODES` already bounds the list. `pll.c` solves a
-modeline to a PLL configuration and reports the error in ppm, which is exactly the
-"can this monitor reach it" test a generator needs. `blitscrt_mode_from_modeline`
-takes Switchres-style modelines, so an extra-modes file needs no new parser. What
-is missing is reading the ini, the profiles themselves, and the expansion.
+**Switchres modes at boot was M6 and has been dropped.** The idea was to read a
+monitor profile at startup and generate a curated list of advertised modes from
+it. It is the wrong shape for this device: GUD asks for the mode list once during
+enumeration and takes what it is given, so a generated list is fixed for the
+lifetime of the connection -- while Switchres on the host computes a modeline per
+title and sets it through `SET_STATE_CHECK`, which never consults the list at all.
+A long advertised list competes with that rather than helping it. One fallback
+mode and an unrestricted `SET_STATE_CHECK` path is the better arrangement, and is
+what the daemon does now.
 
-*Whether to link libswitchres.* CRTPi does, on the device. The same would work
-here. But `pll.c` already produces what a modeline needs and the profiles are a
-dozen numbers, so generating directly from the profile may be enough -- worth
-deciding once the ini and the profiles exist, rather than committing to a
-dependency first.
+What was worth keeping from it is the safety argument. A fixed-frequency
+deflection circuit can be damaged by sync outside its band, so `mode_check()`
+clamps against `blitscrt_limits_15khz` on every timing a host sets, advertised or
+not. Widening that band for a multisync should stay a deliberate act.
 
 **M7 -- Windows host. Not started, and probably not here.** GUD is a wire
 protocol, not a Linux one: request codes, a mode structure, a buffer format.

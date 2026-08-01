@@ -193,8 +193,8 @@ OUT    VGA RGB666 + HDMI DV
 over eight colour bars, half-amplitude bars, a greyscale ramp, a one-pixel
 border and a centre crosshair.
 
-The default mode is 640x480i60. `BTN_OSD` cycles to 640x480p60 at 31.5 kHz,
-then 640x240p60, then back. `LED_HDD` blinks the mode number.
+The default mode is 640x480i60. `BTN_OSD` toggles to 640x240p60 and back.
+`LED_HDD` blinks the mode number.
 
 `BTN_USER` hides the text so the bars can be judged unobstructed.
 
@@ -225,11 +225,15 @@ pulls low. Read high, the VGA pins are released.
 **VGA dark, HDMI fine.** A/V board jumpers, or the VGA-to-SCART cable. At 15kHz a
 wrong output-mode setting looks the same as a dead output.
 
-**Nothing on a 15kHz CRT at all.** Press `BTN_OSD` once to reach mode 2,
-640x480p60 at 31.5 kHz. That is standard VGA timing. Any monitor will show it
-over HDMI with no DAC and no SCART lead. A picture there proves the pins,
-the PLL, the timing generator, the test card and the HDMI path, leaving only
-the analog cable. `LED_HDD` blinks the mode number if the screen stays dark.
+**Nothing on a 15kHz CRT at all.** Check HDMI first: both outputs carry the same
+pixel stream, so a picture there proves the pins, the PLL, the timing generator
+and the test card, leaving only the analog path. Many monitors will not lock to
+640x480i60 over HDMI, so this only tells you something if one does.
+
+There used to be a 31.5 kHz mode for exactly this, which any monitor would show.
+It was removed with the rest of the 31 kHz support. If the HDMI route is
+inconclusive, `blitscrt-peek -t` reports what the raster is really doing and
+`-i` reports the analog board's present pin, which is the better test anyway.
 
 **HDMI dark, VGA fine.** Check `LED_HDD`. Dark means the ADV7513 is not acking
 I2C. That is a bus problem. Lit means the transmitter is configured and the

@@ -16,7 +16,8 @@
 // On Cyclone V it takes PLL outputs on inclk[2] and inclk[3] only; inclk[0] and
 // inclk[1] must be real clock pins, so the reference fills those.
 //
-// mode_table's MODE_640x480p selects CLK_25M2 -- slot 3, outclk_1 -- and expects
+// Slot 3, outclk_1, is no longer selected by mode_table: the 31 kHz mode that
+// used it has been removed. Historically it expected
 // 25.200 MHz, so it runs at 6.3 and produces a 7.875 kHz line rate instead of
 // 31.5. That mode is the HDMI diagnostic and not a 15 kHz target, so it is left
 // alone: putting 25.2 on outclk_1 would cost 320x240p60, which is a real mode.

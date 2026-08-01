@@ -33,7 +33,6 @@ set_global_assignment -name SEARCH_PATH ../rtl
 #
 #   0  320x240p60  15.764 kHz   15kHz CRT
 #   1  640x480i60  15.750 kHz   15kHz CRT, standard 480i
-#   2  640x480p60  31.500 kHz   any VGA or HDMI display, no DAC needed
 #
 # Both default to 1. 640x480i60 is a standard SD format, so an HDMI sink is far
 # more likely to accept it than 320x240p, and a 15kHz CRT takes it either way.

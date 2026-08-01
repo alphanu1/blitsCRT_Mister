@@ -191,7 +191,7 @@ ADV7513 init  47 transactions decoded off the bus, 0 errors
               device address byte 0x72, first 0x98=03, last 0xFA=7D
 
 mode select   analog board fitted        -> 640x480i (default)
-              BTN_OSD once, twice, wrap  -> 640x480p, 640x240p, 640x480i
+              BTN_OSD toggles           -> 640x240p, 640x480i
               HDMI only, no analog board -> 640x480i
 
 scanout       28 checks: RGB565/RGB888/XRGB8888/RGB332 unpack to RGB666,

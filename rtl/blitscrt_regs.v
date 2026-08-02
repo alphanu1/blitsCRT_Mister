@@ -45,6 +45,9 @@ module blitscrt_regs #(
      *   3.6  BUS_DIAG; the bridge gives up on a slave that never accepts
      *        instead of wedging the transport
      *   3.7  blitscrt_pllbus between the bridge and the reconfig slave
+     *   3.26 no functional change. Forces a rebuild so the whole staging path
+     *        can be watched: bitstream, kernel, dtb, daemon and bootloader all
+     *        landing in build/, which is committed
      *   3.25 no functional change. Forces a rebuild so `make bitstream` can be
      *        seen staging build_rbf/blitscrt.rbf, which is the step that was
      *        being missed
@@ -93,7 +96,7 @@ module blitscrt_regs #(
      * clock select pointing at a clock pin and once without -- and the only way
      * to tell them apart was whether the monitor synced.
      */
-    parameter [31:0] VERSION = 32'h0003_0019,
+    parameter [31:0] VERSION = 32'h0003_001A,
     parameter [11:0] SCANOUT_MAXW = 12'd1280,
     /* Cycles the user button ignores further edges for, covering contact
      * bounce. 20 ms at 50 MHz. A testbench overrides it to something it can

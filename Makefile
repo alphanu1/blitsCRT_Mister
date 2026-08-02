@@ -127,14 +127,15 @@ world: assets
 	fi
 	@$(MAKE) --no-print-directory build   # build is idempotent (cp -f); safe
 	@$(MAKE) --no-print-directory stage-uboot
-	@if [ -f "$(UBOOT_SFP)" ] || [ -n "$(BOOT_A2)" ]; then \
-	  if [ -f build/blitscrt.rbf ] && [ -f build/blitscrt/zImage ]; then \
+	@echo ""
+	@./tools/check_card.sh $(BUILD_DIR) || \
+	  echo "-- build/ is incomplete; no card image this time"
+	@if [ -f "$(BUILD_DIR)/u-boot-with-spl.sfp" ] || [ -n "$(BOOT_A2)" ]; then \
+	  if ./tools/check_card.sh $(BUILD_DIR) >/dev/null 2>&1; then \
 	    echo ""; \
 	    echo "-- writing the card image to $(IMAGE)"; \
 	    $(MAKE) --no-print-directory image || \
 	      echo "-- image build failed"; \
-	  else \
-	    echo "-- skipping the image, need both a bitstream and a kernel"; \
 	  fi; \
 	fi
 	@$(MAKE) --no-print-directory manifest
@@ -382,6 +383,11 @@ uboot-toolchain:
 # already built, so a bootloader built before this staging existed never reached
 # build/ -- and CI failed on a missing .sfp that was sitting on the machine that
 # made it. This runs from `world` regardless of whether u-boot was rebuilt.
+# Is build/ a complete card? The same list the release workflow checks.
+.PHONY: check-card
+check-card:
+	@./tools/check_card.sh $(BUILD_DIR)
+
 .PHONY: stage-uboot
 stage-uboot:
 	@sfp="$(if $(wildcard $(UBOOT_SFP)),$(UBOOT_SFP),$(firstword $(wildcard $(HOME)/src/u-boot*/u-boot-with-spl.sfp)))"; \
@@ -665,21 +671,23 @@ render-scanout-i: assets
 
 # Remove transient build products. Every rm uses -f / -rf, so a missing file is
 # never an error -- clean works whether or not a full build ran. The tracked
-# sim/*.png renders are left alone; the README embeds them, and so is
-# $(BUILD_DIR) -- it is committed now, so wiping it would show the whole card
-# as deleted until the next build. `make distclean` removes it.
+# sim/*.png renders are left alone; the README embeds them.
+#
+# $(BUILD_DIR) goes, even though it is committed. `make world` restages every
+# file in it unconditionally, so clean-then-world is the way to be certain the
+# committed card matches what was just built rather than carrying something
+# stale from an earlier one.
 clean:
 	rm -f  sim/*.vvp sim/*.vcd sim/*.fst sim/*.lxt
 	rm -f  rtl/render_*.txt $(UBOOT_TXT) README_preview.html
 	rm -f  sw/*.o sw/blitscrtd sw/test_pll sw/test_pll_reconfig sw/test_modes sw/test_device
-	rm -rf $(WORK_DIR)
+	rm -rf $(BUILD_DIR) $(WORK_DIR)
 	rm -rf __pycache__ tools/__pycache__ sw/__pycache__
 	find . -name '*.pyc' -delete 2>/dev/null || true
 
 # Also remove generated assets and the Quartus output. Leaves only tracked
 # sources.
 distclean: clean
-	rm -rf $(BUILD_DIR)
 	rm -f  rtl/font8x8.hex rtl/banner.hex rtl/banner_i.hex rtl/scanout_init.hex
 	rm -rf quartus/output_files quartus/db quartus/incremental_db
 	rm -rf quartus/greybox_tmp quartus/.qsys_edit quartus/hps_isw_handoff
@@ -734,7 +742,13 @@ IMAGE_MB  ?= 256
 IMAGE_STAGE := build-tmp/image
 
 .PHONY: image
-image: build
+# No `build` prerequisite, deliberately.
+#
+# build/ is committed and is the card. Rebuilding it here re-runs the daemon
+# compile, and on a machine with no cross-compiler that quietly produces an
+# x86-64 binary and stages it over the committed ARM one -- which is exactly
+# what happened in CI. `make world` is what fills build/; this only wraps it.
+image:
 	@# Which bootloader, said loudly.
 	@#
 	@# UBOOT_DIR is only in effect for the command it is given to, so
@@ -769,11 +783,15 @@ image: build
 	  echo "Looked for a built one at $(UBOOT_SFP)"; \
 	  echo ""; \
 	  exit 1; }
+	@./tools/check_card.sh $(BUILD_DIR) || exit 1
 	@rm -rf $(IMAGE_STAGE)
 	@mkdir -p $(IMAGE_STAGE)
-	@# STANDALONE: the image boots u-boot directly and has no MiSTer on it, so
-	@# install_sd.sh must not stop to ask about a missing MiSTer install.
-	@BLITSCRT_STANDALONE=1 ./tools/install_sd.sh $(IMAGE_STAGE) >/dev/null
+	@# Straight from build/, not by re-staging from sources.
+	@#
+	@# The bootloader is excluded: it goes into the A2 partition as raw
+	@# sectors, not onto the FAT filesystem.
+	@cd $(BUILD_DIR) && find . -type f ! -name 'u-boot-with-spl.sfp' \
+	  -exec install -D {} $(CURDIR)/$(IMAGE_STAGE)/{} \;
 	@cp tools/blitsenv.txt $(IMAGE_STAGE)/
 	@BOOT_A2="$(if $(BOOT_A2),$(BOOT_A2),$(if $(wildcard $(UBOOT_SFP)),$(UBOOT_SFP),$(BUILD_DIR)/u-boot-with-spl.sfp))" \
 	  OUT="$(IMAGE)" STAGE="$(IMAGE_STAGE)" \

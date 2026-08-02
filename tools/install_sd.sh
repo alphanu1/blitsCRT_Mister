@@ -30,14 +30,14 @@ fi
 # but build_rbf/blitscrt.rbf is committed precisely so that a machine without
 # Quartus can still stage a card or build an image. That is how CI works, and
 # it should work the same way locally.
-if [ ! -f "$RBF" ] && [ -f build_rbf/blitscrt.rbf ]; then
-    echo "using the committed bitstream build_rbf/blitscrt.rbf" >&2
+if [ ! -f "$RBF" ] && [ -f build/blitscrt.rbf ]; then
+    echo "using the committed bitstream build/blitscrt.rbf" >&2
     echo "  (nothing in quartus/output_files -- 'make bitstream' to rebuild)" >&2
-    RBF="build_rbf/blitscrt.rbf"
+    RBF="build/blitscrt.rbf"
 fi
 
 if [ ! -f "$RBF" ]; then
-    echo "no bitstream at $RBF, and none committed at build_rbf/blitscrt.rbf" >&2
+    echo "no bitstream at $RBF, and none committed at build/blitscrt.rbf" >&2
     echo "run 'make bitstream' first" >&2
     exit 1
 fi

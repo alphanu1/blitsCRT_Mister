@@ -53,7 +53,7 @@ make world     # everything, ending in a card image
 That is the whole thing. `make world` ends with:
 
 ```
-  card image:  /path/to/blitsCRT_Mister/blitscrt-0.8.23-d42.img (258M)
+  card image:  /path/to/blitsCRT_Mister/blitscrt-0.8.24-d42.img (258M)
                write it with Etcher, Raspberry Pi Imager or dd
 ```
 

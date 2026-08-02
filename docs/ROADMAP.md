@@ -505,3 +505,33 @@ displayable.
 The test card is what found it: fabric-generated, no host, no framebuffer, no
 daemon. When it came out wrong the fault had to be in the fabric. It was reached
 for several hours later than it should have been.
+
+## The bootloader
+
+Building one from source rather than lifting a binary off a card took three goes
+and turned up a bug that had been hiding since M2. The detail is in `UBOOT.md`;
+the short version:
+
+- **Mainline u-boot boots but scanout crawls.** Three frames a second, and the
+  daemon reporting `brgmodrst 0x00000007` -- all three HPS-to-FPGA bridges still
+  in reset. MiSTer's `MiSTer_defconfig` carries the Platform Designer handoff the
+  fabric expects; mainline's does not.
+- **Our boot command was missing `bridge enable`.** MiSTer's own `fpgaload` has
+  it. Ours never did, and it went unnoticed for as long as the hand-off route was
+  used, because MiSTer's environment had already issued it. Booting directly meant
+  supplying the whole command, and one line was absent. This may be the whole of
+  the fault above; the two were not separated.
+- **MiSTer's u-boot keeps the boot command in a board header**, not in Kconfig, so
+  `make uboot` patches `include/configs/socfpga_de10_nano.h` -- idempotently, and
+  keeping the original line beside it.
+- **A host with dtc installed collided with u-boot's own libfdt.** Its
+  `include/` is deliberately searched after the system directories, so
+  `<libfdt.h>` found the host's, and the two use different include guards so
+  every fdt type was defined twice. Two search-path fixes failed -- gcc
+  deduplicates a repeated `-I` and keeps the later position, and moving
+  `include/` to the front breaks `<malloc.h>`. What worked was rewriting the
+  includes themselves to paths relative to each file, in 43 places.
+
+The general lesson is the one this project keeps relearning: the answer was in
+somebody else's source, and reading it took one fetch where inferring took three
+attempts on hardware.

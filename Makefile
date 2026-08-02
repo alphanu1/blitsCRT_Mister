@@ -74,7 +74,33 @@ world: assets
 	@$(MAKE) --no-print-directory daemon CROSS_COMPILE="$(CROSS_COMPILE)" STATIC="$(STATIC)" || echo "-- daemon build skipped"
 	@$(MAKE) --no-print-directory peek CROSS_COMPILE="$(CROSS_COMPILE)" STATIC="$(STATIC)" || echo "-- peek build skipped"
 	@$(MAKE) --no-print-directory ddrbench CROSS_COMPILE="$(CROSS_COMPILE)" STATIC="$(STATIC)" || echo "-- ddrbench build skipped"
+	@# The bootloader, and then a writable card image.
+	@#
+	@# Both are skipped rather than fatal: a partial toolchain should still
+	@# give a partial build, which is what world is for. The image needs the
+	@# bitstream and the kernel, so it only appears once those exist.
+	@if [ -f "$(UBOOT_SFP)" ]; then \
+	  echo "-- bootloader already built: $(UBOOT_SFP)"; \
+	elif [ -n "$(UBOOT_TC_GCC)" ]; then \
+	  echo "-- building the bootloader"; \
+	  $(MAKE) --no-print-directory uboot || \
+	    echo "-- bootloader build failed; see $(UBOOT_LOG)"; \
+	else \
+	  echo "-- skipping the bootloader, no gcc 4/5/6 ARM toolchain"; \
+	  echo "   (make uboot-toolchain installs one; without it there is no"; \
+	  echo "    card image, though build/ is still usable by hand)"; \
+	fi
 	@$(MAKE) --no-print-directory build   # build is idempotent (cp -f); safe
+	@if [ -f "$(UBOOT_SFP)" ] || [ -n "$(BOOT_A2)" ]; then \
+	  if [ -f build/blitscrt.rbf ] && [ -f build/blitscrt/zImage ]; then \
+	    echo ""; \
+	    echo "-- writing the card image to $(IMAGE)"; \
+	    $(MAKE) --no-print-directory image || \
+	      echo "-- image build failed"; \
+	  else \
+	    echo "-- skipping the image, need both a bitstream and a kernel"; \
+	  fi; \
+	fi
 	@$(MAKE) --no-print-directory manifest
 
 # Every output this project can produce, and whether it is there.
@@ -158,14 +184,280 @@ setup-dry:
 
 # Download and extract a prebuilt ARM cross-compiler (Bootlin). Opt-in and
 # separate from setup because it pulls a large binary from a third party.
+# Both cross-compilers: a current one for the kernel and daemon, and an old one
+# for MiSTer's u-boot, which does not survive a modern gcc.
 get-toolchain:
 	./tools/get-toolchain.sh
+	@echo ""
+	@$(MAKE) --no-print-directory uboot-toolchain
 
 # Clone the MiSTer kernel tree, non-interactively, where the build auto-detects
 # it. Use this instead of the setup prompt if you skipped it. The tree is large;
 # --depth 1 keeps it to one revision. Override the destination with
 # KERNEL_CLONE_DIR=.
 KERNEL_CLONE_DIR ?= $(HOME)/source/Linux-Kernel_MiSTer
+# ---------------------------------------------------------------------------
+# u-boot, built from source rather than lifted off a MiSTer card.
+#
+# Mainline has socfpga_de10_nano_defconfig, and the MiSTer Pi clones the
+# DE10-Nano's HPS wiring, so the same bootloader applies. The build produces
+# u-boot-with-spl.sfp: the preloader and u-boot in one file, which is exactly
+# what the A2 partition holds.
+#
+# Building it rather than copying one settles three things at once. There is no
+# redistributing somebody else's binary. `make image` needs no manual extraction
+# step. And the default environment is ours, compiled in from
+# tools/uboot_env.txt -- so a freshly written card boots BlitsCRT with no serial
+# console and no import, whether u-boot keeps its environment in flash or on the
+# card.
+#
+# The risk worth knowing: the preloader carries DDR3 timings. Mainline's are the
+# DE10-Nano's, and a clone board need not populate the same memory parts. If a
+# card built this way does not boot, that is the first thing to suspect -- and
+# the way back is a MiSTer card, since there is no JTAG on a MiSTer Pi.
+# ---------------------------------------------------------------------------
+# MiSTer's u-boot, built with the toolchain it needs.
+#
+# It carries the Platform Designer handoff rtl/mister/sysmem.sv expects, which
+# mainline does not: mainline's FPGAPORTRST enables nine f2sdram ports where
+# fourteen are needed, and a board built that way boots, shows its test card,
+# takes whole frames into DDR3 and displays nothing, because the fabric's reads
+# come back empty.
+#
+# It also needs gcc 4 or 5. See UBOOT_CROSS below -- built with a current
+# compiler its SPL hangs at its own banner, which looks like a broken tree and
+# is not.
+#
+# For mainline instead, which needs no old toolchain but does need the handoff
+# headers copied in from uboot/de10-nano-qts:
+#
+#   make uboot UBOOT_REPO=https://github.com/u-boot/u-boot.git \
+#              UBOOT_REF=v2024.01 UBOOT_CFG=socfpga_de10_nano_defconfig \
+#              UBOOT_DIR=$(HOME)/src/u-boot-mainline
+UBOOT_REPO  ?= https://github.com/MiSTer-devel/u-boot_MiSTer.git
+# Empty means whatever the repository's default branch is called. MiSTer's is
+# not `master`, and guessing the name is how a clone fails on someone else's
+# machine for no useful reason. Set it to pin a tag or branch.
+UBOOT_REF   ?=
+UBOOT_CFG   ?= MiSTer_defconfig
+UBOOT_DIR   ?= $(HOME)/src/u-boot_MiSTer
+UBOOT_SFP   := $(UBOOT_DIR)/u-boot-with-spl.sfp
+UBOOT_LOG   := build-tmp/uboot-build.log
+
+# u-boot gets its own cross-compiler, separate from the kernel's.
+#
+# MiSTer's tree is u-boot 2017.03 and does not survive a modern gcc. Their wiki
+# is explicit about it:
+#
+#   "Building a working u-boot image seems to requires an ARM cross-compilation
+#    toolchain with GCC version 4 or 5. Warning: In my experience, using a later
+#    version of GCC produces a u-boot image that is unable to reboot without a
+#    power cycle."
+#
+#   -- Compiling-the-boot-loader-for-MiSTer
+#
+# The stock image ships built with gcc 4.8. Built here with a 2024 buildroot
+# toolchain -- gcc 13 -- the SPL hangs at its own banner, before it even reaches
+# "Trying to boot from MMC1". Nothing else in this project cares: the kernel and
+# the daemon both build fine with a current compiler.
+#
+# `make uboot-toolchain` fetches Linaro 5.5-2017.10, which is what the wiki
+# recommends. Set UBOOT_CROSS to something else to override.
+# Bootlin's oldest armv7-eabihf build, which is gcc 5.4.0 -- inside the "gcc 4
+# or 5" the wiki asks for, and from the same source as the toolchain the rest of
+# this project uses.
+#
+# Not Linaro's, which the wiki names: releases.linaro.org now 301s every
+# toolchain URL to a contact page, so those archives are simply gone.
+UBOOT_TC_NAME ?= armv7-eabihf--glibc--stable-2017.05-toolchains-1-1
+UBOOT_TC_URL  ?= https://toolchains.bootlin.com/downloads/releases/toolchains/armv7-eabihf/tarballs/$(UBOOT_TC_NAME).tar.bz2
+UBOOT_TC_DIR  ?= $(HOME)/toolchains/$(UBOOT_TC_NAME)
+
+# An ARM gcc old enough for this u-boot, if one is installed. See the script --
+# neither the directory nor the binary prefix is predictable, so it asks each
+# compiler its version rather than guessing.
+UBOOT_TC_GCC := $(shell ./tools/find_uboot_gcc.sh)
+UBOOT_CROSS   ?= $(if $(UBOOT_TC_GCC),$(UBOOT_TC_GCC:gcc=),$(CROSS_COMPILE))
+
+.PHONY: uboot-clone uboot
+uboot-clone:
+	@if [ -f "$(UBOOT_DIR)/Makefile" ]; then \
+	  echo "u-boot tree already at $(UBOOT_DIR)"; \
+	else \
+	  echo "cloning $(UBOOT_REPO)$(if $(UBOOT_REF), ($(UBOOT_REF)),) into $(UBOOT_DIR)..."; \
+	  mkdir -p "$$(dirname $(UBOOT_DIR))"; \
+	  git clone --quiet --depth 1 $(if $(UBOOT_REF),--branch $(UBOOT_REF),) \
+	    $(UBOOT_REPO) "$(UBOOT_DIR)" && \
+	  echo "done ($$(git -C "$(UBOOT_DIR)" rev-parse --abbrev-ref HEAD), \
+	    $$(git -C "$(UBOOT_DIR)" rev-parse --short HEAD))."; \
+	fi
+
+.PHONY: uboot-toolchain
+uboot-toolchain:
+	@if [ -n "$(UBOOT_TC_GCC)" ]; then \
+	  echo "u-boot toolchain already present:"; \
+	  echo "  $(UBOOT_TC_GCC)"; \
+	  "$(UBOOT_TC_GCC)" --version | head -1 | sed 's/^/  /'; \
+	else \
+	  mkdir -p "$(HOME)/toolchains" build-tmp; \
+	  tb=build-tmp/$(UBOOT_TC_NAME).tar.bz2; \
+	  for d in "$(HOME)/Downloads" "$(HOME)" .; do \
+	    if [ -f "$$d/$(UBOOT_TC_NAME).tar.bz2" ]; then \
+	      echo "using $$d/$(UBOOT_TC_NAME).tar.bz2"; \
+	      cp "$$d/$(UBOOT_TC_NAME).tar.bz2" "$$tb"; break; \
+	    fi; \
+	  done; \
+	  if [ ! -f "$$tb" ]; then \
+	    echo "fetching $(UBOOT_TC_NAME) (gcc 5.4, ~100 MB)..."; \
+	    echo "  $(UBOOT_TC_URL)"; \
+	    curl -fL --progress-bar -o "$$tb" "$(UBOOT_TC_URL)" || { \
+	      echo "download failed -- fetch it in a browser instead:"; \
+	      echo "  $(UBOOT_TC_URL)"; \
+	      echo "then drop it in ~/Downloads and run this again."; \
+	      exit 1; }; \
+	  fi; \
+	  case "$$(file -b "$$tb" 2>/dev/null)" in \
+	  bzip2*|XZ*) ;; \
+	  *) echo ""; \
+	     echo "Not an archive -- $$(head -c 60 "$$tb" | tr -d '\0' | tr '\n' ' ')"; \
+	     echo ""; \
+	     echo "The download came back as something else. Fetch it by hand:"; \
+	     echo ""; \
+	     echo "  $(UBOOT_TC_URL)"; \
+	     echo ""; \
+	     echo "then unpack it and point make at it:"; \
+	     echo ""; \
+	     echo "  tar xf $(UBOOT_TC_NAME).tar.bz2 -C $(HOME)/toolchains"; \
+	     echo "  make uboot"; \
+	     echo ""; \
+	     echo "Any gcc 4 or 5 ARM toolchain will do -- override with"; \
+	     echo "UBOOT_CROSS=/path/to/bin/arm-linux-gnueabihf- if you have one."; \
+	     rm -f "$$tb"; exit 1 ;; \
+	  esac; \
+	  top=$$(tar tf "$$tb" | head -1 | cut -d/ -f1); \
+	  tar xf "$$tb" -C "$(HOME)/toolchains" && rm -f "$$tb" && \
+	  echo "installed to $(HOME)/toolchains/$$top" && \
+	  "$(HOME)/toolchains/$$top"/bin/*-gcc --version 2>/dev/null | head -1; \
+	fi
+
+uboot: uboot-clone
+	@mkdir -p build-tmp
+	@# CROSS_COMPILE is empty when no ARM toolchain was found, and an empty
+	@# prefix makes this test find the host gcc and pass. u-boot then builds
+	@# x86 objects with ARM flags and fails a long way in, complaining about
+	@# -mtune rather than about a missing compiler.
+	@test -n "$(CROSS_COMPILE)" || { \
+	  echo "no ARM cross-compiler found."; \
+	  echo "  make get-toolchain    downloads one"; \
+	  exit 1; }
+	@# Through KPATH, the same as the kernel build: a toolchain fetched by
+	@# `make get-toolchain` lives in $(HOME)/toolchains and is not on PATH,
+	@# so a bare command -v would report it missing when the build below can
+	@# use it perfectly well.
+	@$(KPATH) command -v $(CROSS_COMPILE)gcc >/dev/null 2>&1 || { \
+	  echo "$(CROSS_COMPILE)gcc is named but not runnable."; \
+	  echo "if you used 'make get-toolchain', its bin/ should be auto-added;"; \
+	  echo "otherwise add the toolchain's bin/ to PATH."; exit 1; }
+	@echo "cross-compiler: $(UBOOT_CROSS)gcc"
+	@$(KPATH) $(UBOOT_CROSS)gcc --version 2>/dev/null | head -1 | sed "s/^/                /"
+	@# u-boot's Kconfig is generated, so it needs bison, flex and the ncurses
+	@# headers on the build host -- none of which the rest of this project
+	@# uses, and all of which fail deep inside a sub-make with no hint that a
+	@# package is missing.
+	@missing=""; \
+	 for t in bison flex bc; do \
+	   command -v $$t >/dev/null || missing="$$missing $$t"; \
+	 done; \
+	 if [ -n "$$missing" ]; then \
+	   echo "u-boot needs these on the build host:$$missing"; \
+	   echo "  arch:   sudo pacman -S --needed bison flex bc openssl"; \
+	   echo "  debian: sudo apt install bison flex bc libssl-dev"; \
+	   echo "  fedora: sudo dnf install bison flex bc openssl-devel"; \
+	   exit 1; \
+	 fi
+	@# MiSTer's tree needs gcc 4 or 5. Refuse rather than build an SPL that
+	@# hangs at its own banner, which is what a modern gcc produces and which
+	@# looks like a broken source tree rather than a toolchain problem.
+	@if [ "$(UBOOT_CFG)" = "MiSTer_defconfig" ]; then \
+	  v=$$($(KPATH) $(UBOOT_CROSS)gcc -dumpversion 2>/dev/null | cut -d. -f1); \
+	  case "$$v" in \
+	  4|5|6) ;; \
+	  "") echo "cannot run $(UBOOT_CROSS)gcc"; exit 1 ;; \
+	  *) echo ""; \
+	     echo "gcc $$v is too new for MiSTer's u-boot."; \
+	     echo ""; \
+	     echo "Their wiki asks for gcc 4 or 5. Built with anything much"; \
+	     echo "newer the SPL hangs at its own banner, before it even prints"; \
+	     echo "'Trying to boot from MMC1'."; \
+	     echo ""; \
+	     echo "    make uboot-toolchain"; \
+	     echo ""; \
+	     echo "installs gcc 5.4 to $(UBOOT_TC_DIR)"; \
+	     echo "and make uboot picks it up automatically."; \
+	     echo ""; \
+	     echo "To build anyway:  make uboot UBOOT_CROSS=$(UBOOT_CROSS)"; \
+	     echo "                              UBOOT_FORCE_GCC=1"; \
+	     echo ""; \
+	     test -n "$(UBOOT_FORCE_GCC)" || exit 1 ;; \
+	  esac; \
+	fi
+	@# mrproper first, every time.
+	@#
+	@# Objects do not rebuild when the compiler changes -- make only sees
+	@# timestamps -- so switching from a modern gcc to the old one this tree
+	@# needs leaves the previous build in place and produces the same broken
+	@# SPL. That looked like the toolchain having no effect, and cost a round
+	@# of debugging.
+	@#
+	@# Cheap enough: the whole build is a couple of minutes.
+	@echo "cleaning $(UBOOT_DIR)..."
+	@$(KPATH) $(MAKE) -C $(UBOOT_DIR) mrproper >/dev/null 2>&1 || true
+	@echo "configuring u-boot ($(UBOOT_CFG))..."
+	@$(KPATH) $(MAKE) -C $(UBOOT_DIR) ARCH=arm CROSS_COMPILE=$(UBOOT_CROSS) \
+	  $(UBOOT_CFG) >/dev/null 2>&1
+	@echo "baking in the boot command from tools/uboot_env.txt..."
+	@./tools/uboot_config.sh "$(UBOOT_DIR)" tools/uboot_env.txt
+	@# A 2018 tree meeting a 2024 dtc: its version check cannot parse a
+	@# leading "v" and stops the build at checkdtc.
+	@./tools/uboot_fix_dtc.sh "$(UBOOT_DIR)" >/dev/null
+	@# The host tools search u-boot's own headers *after* the system ones, on
+	@# the 2018 assumption that a build host has no libfdt of its own.
+	@python3 ./tools/uboot_fix_libfdt.py "$(UBOOT_DIR)" >/dev/null
+	@# The preloader's hardware handoff. Mainline ships the stock DE10-Nano's,
+	@# which enables nine f2sdram ports where sysmem_lite needs fourteen --
+	@# a board that boots and shows its test card and never displays a host's
+	@# frames, because the fabric's reads come back empty.
+	@if [ -d "$(UBOOT_DIR)/board/terasic/de10-nano/qts" ]; then \
+	  python3 ./tools/uboot_fix_handoff.py "$(UBOOT_DIR)"; \
+	fi
+	@# To a log, not the console.
+	@#
+	@# A 2018 tree on a modern host produces thousands of lines of warnings
+	@# and, when it fails, thousands more of errors -- and the one line that
+	@# says what actually went wrong is somewhere in the middle. The log keeps
+	@# everything; the console gets the tail and a pointer.
+	@echo "building u-boot (log: $(UBOOT_LOG))..."
+	@$(KPATH) $(MAKE) -C $(UBOOT_DIR) ARCH=arm CROSS_COMPILE=$(UBOOT_CROSS) \
+	  $(if $(UBOOT_HOSTCFLAGS),HOSTCFLAGS="$(UBOOT_HOSTCFLAGS)",) \
+	  -j$$(nproc) > $(UBOOT_LOG) 2>&1 || { \
+	    echo ""; \
+	    echo "u-boot build failed. Last errors:"; \
+	    echo ""; \
+	    grep -E '^[^ ]+:[0-9]+:[0-9]+: error:|Error [0-9]+' $(UBOOT_LOG) \
+	      | head -8 | sed 's/^/  /'; \
+	    echo ""; \
+	    echo "  full log: $(UBOOT_LOG) ($$(wc -l < $(UBOOT_LOG)) lines)"; \
+	    echo ""; \
+	    if grep -q 'redefinition of .fdt_' $(UBOOT_LOG); then \
+	      echo "  This one is the host's libfdt headers colliding with"; \
+	      echo "  u-boot's own -- see 'System libfdt' in docs/UBOOT.md."; \
+	      echo ""; \
+	    fi; \
+	    exit 1; }
+	@test -f $(UBOOT_SFP) || { echo "u-boot did not produce $(UBOOT_SFP)"; exit 1; }
+	@echo "built $(UBOOT_SFP) ($$(du -h $(UBOOT_SFP) | cut -f1))"
+	@echo "'make image' will use it; no MiSTer card needed."
+
 kernel-clone:
 	@if [ -f "$(KERNEL_CLONE_DIR)/Makefile" ]; then \
 	  echo "kernel tree already at $(KERNEL_CLONE_DIR)"; \
@@ -186,6 +478,14 @@ tools:
 	@echo "cross-gcc  $(if $(CROSS_COMPILE),$(CROSS_COMPILE)gcc,NOT FOUND -- cannot build the kernel)"
 	@echo "dtc        $$(command -v dtc || echo 'NOT FOUND -- kernel device tree')"
 	@echo "kerneltree $(if $(KERNEL_SRC),$(KERNEL_SRC),NOT FOUND -- set KERNEL_SRC or run make setup)"
+	@echo "bison      $$(command -v bison || echo 'NOT FOUND -- make uboot')"
+	@echo "flex       $$(command -v flex  || echo 'NOT FOUND -- make uboot')"
+	@echo "bc         $$(command -v bc    || echo 'NOT FOUND -- make uboot')"
+	@echo "mtools     $$(command -v mcopy || echo 'NOT FOUND -- make image')"
+	@echo "mkfs.vfat  $$(command -v mkfs.vfat || echo 'NOT FOUND -- make image')"
+	@echo "sfdisk     $$(command -v sfdisk || echo 'NOT FOUND -- make image')"
+	@echo "u-boot gcc $(if $(UBOOT_TC_GCC),$(UBOOT_TC_GCC),NOT FOUND -- make uboot-toolchain)"
+	@echo "u-boot     $(if $(wildcard $(UBOOT_SFP)),$(UBOOT_SFP),not built -- run make uboot)"
 
 # Proper dependencies so 'make all' does not regenerate these for every
 # downstream target.
@@ -346,6 +646,70 @@ QUARTUS_SH ?= $(shell command -v quartus_sh 2>/dev/null || \
 #
 #   VER=$(make -s fullversion)
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# A complete SD card image, ready for dd or Etcher.
+#
+#   make image BOOT_A2=boot.a2
+#
+# BOOT_A2 is the card's A2 partition -- the preloader and u-boot -- which cannot
+# be generated here. Cyclone V's BootROM looks for a raw partition of that type,
+# and the preloader carries DDR3 timings from a Platform Designer handoff that
+# MiSTer's is known to get right on this hardware. Extract it once from any
+# MiSTer card or image and keep the blob:
+#
+#   tools/make_image.sh --extract-boot /dev/sdX boot.a2
+#
+# Everything else is built fresh. No root: the FAT filesystem is written with
+# mtools rather than by loop-mounting, so this runs in CI unchanged.
+# ---------------------------------------------------------------------------
+IMAGE     ?= blitscrt-$(BLITSCRT_FULLVER).img
+IMAGE_MB  ?= 256
+IMAGE_STAGE := build-tmp/image
+
+.PHONY: image
+image: build
+	@# Which bootloader, said loudly.
+	@#
+	@# UBOOT_DIR is only in effect for the command it is given to, so
+	@# `make uboot UBOOT_DIR=...` followed by a bare `make image` silently
+	@# picks up whatever is in the default directory instead. That has
+	@# happened, and produced a card with a bootloader nobody meant to use.
+	@if [ -n "$(BOOT_A2)" ]; then \
+	  echo "bootloader: $(BOOT_A2)  (BOOT_A2)"; \
+	elif [ -f "$(UBOOT_SFP)" ]; then \
+	  echo "bootloader: $(UBOOT_SFP)"; \
+	  echo "            (from UBOOT_DIR=$(UBOOT_DIR) -- pass UBOOT_DIR or"; \
+	  echo "             BOOT_A2 if that is not the one you just built)"; \
+	fi
+	@test -n "$(BOOT_A2)" -o -f "$(UBOOT_SFP)" || { \
+	  echo ""; \
+	  echo "An image needs a bootloader for the A2 partition, and there is"; \
+	  echo "none yet. Lift one off a MiSTer card:"; \
+	  echo ""; \
+	  echo "    tools/make_image.sh --extract-boot /dev/sdX boot.a2"; \
+	  echo "    make image BOOT_A2=boot.a2"; \
+	  echo ""; \
+	  echo "Once, and the blob is reusable. MiSTer's preloader is known to work"; \
+	  echo "on this hardware, and if the card already boots BlitsCRT the boot"; \
+	  echo "environment comes with it."; \
+	  echo ""; \
+	  echo "'make uboot' builds one from source instead, which needs no MiSTer"; \
+	  echo "card -- but it does not currently complete on a host with a"; \
+	  echo "distribution's libfdt headers installed. See docs/UBOOT.md."; \
+	  echo ""; \
+	  echo "Looked for a built one at $(UBOOT_SFP)"; \
+	  echo ""; \
+	  exit 1; }
+	@rm -rf $(IMAGE_STAGE)
+	@mkdir -p $(IMAGE_STAGE)
+	@# STANDALONE: the image boots u-boot directly and has no MiSTer on it, so
+	@# install_sd.sh must not stop to ask about a missing MiSTer install.
+	@BLITSCRT_STANDALONE=1 ./tools/install_sd.sh $(IMAGE_STAGE) >/dev/null
+	@cp tools/blitsenv.txt $(IMAGE_STAGE)/
+	@BOOT_A2="$(if $(BOOT_A2),$(BOOT_A2),$(UBOOT_SFP))" \
+	  OUT="$(IMAGE)" STAGE="$(IMAGE_STAGE)" \
+	  FAT_MB="$(IMAGE_MB)" ./tools/make_image.sh
+
 .PHONY: version fullversion versions
 version:
 	@echo $(BLITSCRT_VERSION)
@@ -638,7 +1002,8 @@ kernel-check:
 	  echo "if you used 'make get-toolchain', its bin/ should be auto-added;"; \
 	  echo "otherwise add the toolchain's bin/ to PATH."; exit 1; }
 	@echo "kernel tree:    $(KERNEL_SRC)"
-	@echo "cross-compiler: $(CROSS_COMPILE)gcc$(if $(CROSS_BIN), (from $(CROSS_BIN)),)"
+	@echo "cross-compiler: $(UBOOT_CROSS)gcc"
+	@$(KPATH) $(UBOOT_CROSS)gcc --version 2>/dev/null | head -1 | sed "s/^/                /"
 
 # Apply the base defconfig and merge our gadget fragment on top. Safe to re-run.
 kernel-config: kernel-check
@@ -859,6 +1224,12 @@ build: assets $(UBOOT_TXT) daemon peek
 	  cp sw/blitscrt-peek $(CARD_SUB)/ && echo "staged blitscrt/blitscrt-peek"; \
 	fi
 	@echo ""
+	@if [ -f "$(IMAGE)" ]; then \
+	  echo ""; \
+	  echo "  card image:  $$(realpath $(IMAGE)) ($$(du -h $(IMAGE) | cut -f1))"; \
+	  echo "               write it with Etcher, Raspberry Pi Imager or dd"; \
+	  echo ""; \
+	fi
 	@echo "build set in $(BUILD_DIR)/ (mirrors the SD card):"
 	@find $(BUILD_DIR) -type f | sed "s|$(BUILD_DIR)|  |" | sort
 	@echo ""

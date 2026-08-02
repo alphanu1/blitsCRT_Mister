@@ -4,7 +4,9 @@
 #
 # Two groups, installed separately so a hiccup in one does not abort the other:
 #
-#   repo tools   iverilog, Pillow, dtc, git -- all in the official repos on
+#   repo tools   iverilog, Pillow, dtc, git, and mtools/dosfstools/sfdisk for
+#                `make image`, and bison/flex/bc for `make uboot` -- all in
+#                the official repos on
 #                every supported distro. Installed in one transaction.
 #
 #   cross gcc    the ARM Linux cross-compiler. This is the awkward one: it is
@@ -35,7 +37,8 @@ done
 
 if [ -z "$PM" ]; then
     echo "No supported package manager found (pacman, apt, dnf, zypper)."
-    echo "Install by hand: iverilog, python Pillow, dtc, git, and an ARM Linux"
+    echo "Install by hand: iverilog, python Pillow, dtc, git, mtools, dosfstools,"
+    echo "bison, flex, bc, openssl headers, and an ARM Linux"
     echo "cross-compiler (arm-linux-gnueabihf-gcc)."
     exit 1
 fi
@@ -47,19 +50,19 @@ echo ""
 # ---- repo tools: names and install command per manager ----
 case "$PM" in
     pacman)
-        REPO="iverilog python-pillow dtc git"
+        REPO="iverilog python-pillow dtc git mtools dosfstools util-linux bison flex bc openssl"
         REPO_INSTALL="sudo pacman -S --needed"
         ;;
     apt)
-        REPO="iverilog python3-pil device-tree-compiler git"
+        REPO="iverilog python3-pil device-tree-compiler git mtools dosfstools fdisk bison flex bc libssl-dev"
         REPO_INSTALL="sudo apt install -y"
         ;;
     dnf)
-        REPO="iverilog python3-pillow dtc git"
+        REPO="iverilog python3-pillow dtc git mtools dosfstools util-linux bison flex bc openssl"
         REPO_INSTALL="sudo dnf install -y"
         ;;
     zypper)
-        REPO="iverilog python3-Pillow dtc git"
+        REPO="iverilog python3-Pillow dtc git mtools dosfstools util-linux bison flex bc openssl"
         REPO_INSTALL="sudo zypper install -y"
         ;;
 esac
@@ -166,5 +169,25 @@ else
     fi
 fi
 
+# --- the two cross-compilers -------------------------------------------------
+#
+# The kernel and daemon want a current one. MiSTer's u-boot is a 2017 tree and
+# wants gcc 4 or 5 -- built with anything newer its SPL hangs at its own banner.
+# Both are fetched by `make get-toolchain`; offer it here so a fresh clone needs
+# one command rather than three.
+echo ""
+if [ -z "${BLITSCRT_NO_TOOLCHAIN:-}" ]; then
+    printf "Fetch the ARM cross-compilers now? Needed for the kernel, the daemon\nand the bootloader. [Y/n] "
+    read -r reply || reply=n
+    case "$reply" in
+    [Nn]*) echo "skipped -- 'make get-toolchain' when you want them." ;;
+    *)     make -C "$(dirname "$0")/.." get-toolchain || \
+             echo "toolchain fetch failed -- 'make get-toolchain' to retry." ;;
+    esac
+fi
+
 echo ""
 echo "done. run 'make tools' to see what the build detects, then 'make world'."
+echo ""
+echo "'make world' now builds everything it can and, if the bitstream, the"
+echo "kernel and a bootloader are all present, writes a card image."

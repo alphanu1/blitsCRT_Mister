@@ -1,0 +1,29 @@
+# The boot command compiled into a u-boot built by `make uboot`.
+#
+# This is what a freshly written card starts with, so there is no serial console
+# and no import for a first boot. tools/blitsenv.txt is the other half: what a
+# board that already has an environment imports to change it. Keep the two in
+# step -- they should describe the same boot.
+#
+# One difference is forced. blitsenv.txt splits the work across variables:
+#
+#   core=blitscrt.rbf
+#   fpgaload=load mmc 0:1 0x02000000 ${core}; fpga load 0 0x02000000 ${filesize}
+#   bootcmd=... run fpgaload; ...
+#
+# That is nicer to read and to edit at a u-boot prompt. It cannot be used here,
+# because only CONFIG_BOOTCOMMAND is compiled in -- `run fpgaload` would look up
+# a variable the bootloader has never heard of and stop. So bootcmd below is
+# self-contained, with the FPGA load inlined.
+#
+# `bridge enable` after the FPGA load is not optional. It is the u-boot command
+# that takes the HPS-to-FPGA bridges out of reset, and MiSTer's own fpgaload does
+# it. Without it the daemon starts to `brgmodrst 0x00000007` -- all three still
+# held -- and has to clear them itself, which it can, but the fabric has been
+# unreachable for everything that ran in between.
+#
+# bootdelay is separate and does have its own Kconfig symbol.
+
+bootdelay=2
+
+bootcmd=mw 0xff709004 0x800; mmc rescan; load mmc 0:1 0x02000000 blitscrt.rbf; fpga load 0 0x02000000 ${filesize}; bridge enable; load mmc 0:1 0x01000000 blitscrt/zImage; load mmc 0:1 0x03000000 blitscrt/blitscrt.dtb; setenv bootargs console=ttyS0,115200 loglevel=4 initcall_blacklist=fb_driver_init mem=992M; bootz 0x01000000 - 0x03000000

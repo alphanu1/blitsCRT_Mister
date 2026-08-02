@@ -156,21 +156,27 @@ so the `.txt` is skipped and the hand-off never fires. Unattended boot means
 repointing u-boot with `saveenv`, which drops MiSTer from the picture
 altogether -- see `UBOOT_ENV.md` for that procedure.
 
-## The standalone card, later
+## The standalone card
 
-Riding on MiSTer's bootloader is right for M1 and probably right through M3.
-Once the HPS is carrying the USB gadget, blitsCRT_Mister wants its own card rather than
-a guest on someone else's:
+Done. `make uboot` builds a bootloader and `make image` produces a card image
+that boots BlitsCRT directly, with no MiSTer on the card at all. See `UBOOT.md`
+for the bootloader and the README for the image.
 
-- Partition 1 type `a2`, ~1 MB, holding SPL and u-boot written as raw sectors
-- Partition 2 FAT32 with the bitstream, boot script and kernel
-- Partition 3 ext4 rootfs
+The layout ended up as:
 
-Mainline u-boot has `socfpga_de10_nano_defconfig`, which is the right base since
-the MiSTer Pi clones the DE10-Nano's HPS wiring. The risk is the preloader: SPL
-carries DDR3 timings and pin mux from a Platform Designer handoff, and a clone
-board may not populate the same memory parts. MiSTer's own preloader demonstrably
-works on this hardware. Lifting the A2 partition from a working MiSTer card and
-replacing only what runs after it is the lower-risk path.
+- Partition 1 FAT32 with the bitstream, kernel and daemon
+- Partition 2 type `a2`, holding SPL and u-boot as raw sectors
 
-Worth deferring until there is a reason to need it.
+FAT is numbered first because `bootcmd` addresses it as `mmc 0:1`, the same as a
+MiSTer card. The A2 partition still sits first on disk; table order and disk order
+are independent, and the BootROM scans for the type rather than the number. There
+is no ext4 rootfs: the root filesystem is an initramfs inside the kernel image.
+
+This section used to predict where the trouble would be, and it is worth recording
+what it got right and wrong. The suspicion was the preloader's **DDR3 timings** --
+a clone board need not populate the same memory parts as a DE10-Nano. That turned
+out fine: mainline's preloader brings up DRAM on a MiSTer Pi without complaint.
+
+What actually bit was the rest of the same sentence, the **Platform Designer
+handoff**, and a missing `bridge enable` in our own boot command. `UBOOT.md` has
+both.

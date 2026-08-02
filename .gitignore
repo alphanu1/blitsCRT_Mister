@@ -99,3 +99,8 @@ build-tmp/
 *.img
 *.img.gz
 *.img.xz
+
+# The A2 blob lifted from a MiSTer card by tools/make_image.sh. It is MiSTer's
+# preloader and u-boot, not this project's to redistribute.
+*.a2
+*.a2.layout

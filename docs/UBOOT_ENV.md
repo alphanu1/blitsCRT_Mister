@@ -1,5 +1,10 @@
 # The u-boot environment
 
+This is about the environment a running board uses, and changing it. For the
+bootloader itself -- why it is built from MiSTer's tree and what gets patched into
+it -- see `UBOOT.md`. A card written from `make image` has the boot command
+compiled into its bootloader and needs none of what follows.
+
 `tools/blitsenv.txt` holds the boot configuration: which bitstream to load, where
 the kernel and device tree live, and the kernel command line. It reaches u-boot
 one of two ways.
@@ -136,10 +141,29 @@ Three things are easy to confuse, and only the first is in flash:
 
 | | |
 |---|---|
-| the u-boot environment | in QSPI flash, changed by `saveenv`, survives reformatting the card |
+| the u-boot environment | at a raw offset on the card, not in flash. Changed by `saveenv`, and lost when the card is rewritten |
 | `blitsenv.txt` on the card | the *source* for that environment, and inert until imported |
 | `blitscrt.txt` on the card | the MiSTer hand-off file, unused when booting directly |
 
 So a card can be rewritten completely without changing how the board boots, and a
 board can boot the wrong thing from a card that looks correct. If behaviour and
 configuration disagree, `env print bootcmd` at the prompt is the authority.
+
+**It is on the card.** A board booting a freshly built image says so:
+
+```
+Loading Environment from MMC... *** Warning - bad CRC, using default environment
+```
+
+MMC, not flash -- so rewriting a card loses whatever was saved, and the warning is
+u-boot finding no valid environment there and falling back to the one compiled
+into it.
+
+That fallback is the point. `make uboot` compiles our boot command in, so a card
+written from a fresh image boots BlitsCRT with nothing saved at all. The warning
+line is cosmetic; `saveenv` once will silence it.
+
+`tools/make_image.sh --extract-boot` also carries a saved environment across, if
+there is one worth keeping. It takes everything from sector 1 up to the first
+filesystem, not just the A2 partition, and writes it back at the same absolute
+sectors.

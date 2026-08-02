@@ -11,6 +11,9 @@ fabric was never compiled for still works.
 Running on hardware today: 648x480i60 at a 15.750 kHz line rate from a 12.600 MHz
 pixel clock, over USB with LZ4 compression, full-screen at 60 fps.
 
+`make setup && make world` builds everything from source and writes a card image.
+Nothing of MiSTer's ends up on the card.
+
 Both outputs carry the same pixel stream. Analog RGB666 goes out of the A/V
 board's VGA connector for a CRT, and the same raster goes out of HDMI as Direct
 Video. For SCART, `CTRL` bit 3 selects composite sync on the HS pin -- on by
@@ -43,52 +46,69 @@ same problem approached from the hardware end.
 ## Quick start
 
 ```
-make setup                            # toolchain: cross-compiler, iverilog, dtc, git
-make world                            # build everything the installed tools allow
-make sd DEST=/path/to/mounted/card    # copy it all to the card
+make setup     # dependencies, a kernel tree, and both cross-compilers
+make world     # everything, ending in a card image
 ```
 
-`make setup` installs the build dependencies through the package manager and
-offers to clone a kernel tree. `make world` then builds whatever it finds a
-toolchain for and skips the rest with a note naming what is missing, so a partial
-toolchain gives a partial build rather than an error.
+That is the whole thing. `make world` ends with:
+
+```
+  card image:  /path/to/blitsCRT_Mister/blitscrt-0.8.12-d42.img (258M)
+               write it with Etcher, Raspberry Pi Imager or dd
+```
+
+The image lands in the repository root, named from the version. Write it to a
+card and the board boots BlitsCRT on its own -- no serial console, no u-boot
+prompt, nothing to import, no MiSTer anywhere on the card.
+
+`make setup` installs the build dependencies through the package manager, offers
+to clone a kernel tree, and offers to fetch the cross-compilers. **Two** of those:
+a current one for the kernel and daemon, and gcc 5 for MiSTer's u-boot, which is
+a 2017 tree and does not survive a modern compiler. `make get-toolchain` fetches
+both on their own.
 
 The one thing neither installs is **Quartus**, a manual licensed download.
-Without it everything builds except the bitstream.
+Without it everything builds except the bitstream -- and therefore the image.
 
-Then set the u-boot environment once, below. After that the board comes up on its
-own.
+`make world` skips what it cannot build and says what is missing, so a partial
+toolchain gives a partial build rather than an error. `make tools` lists what it
+detects. If you would rather copy files onto an existing card than write an
+image, `make sd DEST=/path/to/mounted/card` does that instead.
 
 
 ## Bringing it up
 
-The board has to be told to boot this rather than MiSTer, which means importing a
-u-boot environment. It is done once.
+A card written from `make world`'s image needs nothing. The boot command is
+compiled into the bootloader, so the board powers on into BlitsCRT: test card on
+the CRT, daemon running, ready for a host.
 
-`tools/blitsenv.txt` holds it: which bitstream to load, where to put the kernel,
-and what to pass on the kernel command line. Copy it to the root of the card's
-FAT partition, interrupt u-boot on the serial console, and:
+That matters because u-boot on this board keeps its *saved* environment on the
+card rather than in flash -- rewriting a card loses whatever was there, and a
+bootloader that already knows what to do does not care. A saved environment still
+wins if there is one, so a board someone has deliberately configured keeps its
+settings.
+
+### Sharing a card with MiSTer instead
+
+The other way in is to leave MiSTer installed and hand off to it, which is how
+this project ran for its first three milestones. Copy the build set onto a MiSTer
+card and select `blitscrt.rbf` from the menu:
 
 ```
-mmc rescan
-fatload mmc 0:1 0x02000000 blitsenv.txt
-env import -t 0x02000000 ${filesize}
-env print
-saveenv
-boot
+make sd DEST=/path/to/mounted/card
 ```
 
-`-t` reads the file as text rather than a binary blob. `${filesize}` is set by
-`fatload`, so the length is right without counting bytes -- getting it wrong
-truncates the last variable silently. `env print` before `saveenv` shows what was
-imported, so a typo is visible before anything reaches flash.
+MiSTer's own userland reads `blitscrt.txt`, writes the boot configuration to a
+magic address and reboots into u-boot, which picks it up. Two full boots on every
+power-on and a manual menu selection, but nothing is destroyed and MiSTer is one
+power cycle away. `docs/BOOT.md` has the mechanism.
 
-`0:1` is the first partition on the first MMC device; `mmc part` lists them if the
-card is laid out differently.
+### Changing the boot configuration by hand
 
-To change it later, edit the file on a PC, copy it back, and repeat the import.
-`docs/UBOOT_ENV.md` has the detail, including recovery if the environment is left
-in a state that will not boot.
+`tools/blitsenv.txt` holds a boot environment that can be imported at a u-boot
+prompt over serial, for a board that already boots something else or one whose
+saved environment needs replacing. `docs/UBOOT_ENV.md` has the procedure and how
+to recover from an environment that will not boot.
 
 
 ## Prerequisites
@@ -156,6 +176,11 @@ come off entirely: it and the gadget share the same controller.
 
 | | |
 |---|---|
+| `make uboot` | u-boot and the preloader, with our environment compiled in |
+| `make image` | a complete SD card image, ready for `dd` |
+| `make world` | all of the below, ending in a card image |
+| `make setup` | dependencies, kernel tree, both cross-compilers |
+| `make get-toolchain` | the two cross-compilers on their own |
 | `make bitstream` | the `.rbf`, via Quartus |
 | `make linux` | zImage, device tree and initramfs |
 | `make daemon` | `blitscrtd`, cross-compiled |
@@ -200,6 +225,50 @@ grep -a -o 'blitscrtd-build=[a-z0-9]*' /media/fat/blitscrt/blitscrtd
 ```
 
 
+### Building a card image
+
+`make world` does this as its last step, and `make image` on its own repeats it.
+The output is `blitscrt-<version>.img` in the repository root -- write it with
+Etcher, Raspberry Pi Imager or `dd`. No root is needed to build it: the FAT
+filesystem is written with mtools rather than by loop-mounting, so it runs in CI
+unchanged, and nothing in the build ever touches a block device.
+
+The card ends up as:
+
+| | |
+|---|---|
+| partition 1 | FAT32 -- bitstream, kernel, daemon |
+| partition 2 | type `a2` -- the preloader and u-boot, raw sectors |
+
+FAT is numbered first because `bootcmd` addresses it as `mmc 0:1`, the same as a
+MiSTer card. The A2 partition still sits first on disk; table order and disk
+order are independent, and Cyclone V's BootROM scans for the partition *type*
+rather than the number.
+
+That A2 partition is the part that cannot be generated from nothing -- it is not
+a file and not in any filesystem, so formatting a card destroys it and the board
+will not boot at all: no serial output to interrupt and, on a MiSTer Pi, no JTAG
+to recover through. `make uboot` builds one; `docs/UBOOT.md` covers how, and it
+is more involved than it sounds.
+
+**Or lift one from a MiSTer card**, which needs no bootloader build at all:
+
+```
+tools/make_image.sh --extract-boot /dev/sdX boot.a2
+make image BOOT_A2=boot.a2
+```
+
+That takes everything from sector 1 up to the first filesystem, not just the A2
+partition, and writes it back at the same absolute sectors -- so if the boot
+environment lives at a raw offset on the card rather than in flash, it comes
+along. The blob is MiSTer's u-boot, GPL-2.0, so it can be passed on under the
+same terms with an offer of source, but it is not this project's code to
+relicense.
+
+`make image` prints which bootloader it used. Worth reading that line before
+writing a card, since `UBOOT_DIR` applies only to the command it is given to.
+
+
 ## Documentation
 
 | | |
@@ -207,6 +276,7 @@ grep -a -o 'blitscrtd-build=[a-z0-9]*' /media/fat/blitscrt/blitscrtd
 | `docs/ROADMAP.md` | the milestones in detail, and what each one cost |
 | `docs/DESIGN.md` | how it works: mode selection, the write path, the PLL solver |
 | `docs/BRINGUP.md` | step by step to first picture |
+| `docs/UBOOT.md` | the bootloader: why MiSTer's, what gets patched, and why |
 | `docs/UBOOT_ENV.md` | the boot environment: importing, changing, recovery |
 | `docs/BOOT.md` | how the bitstream reaches the FPGA |
 | `docs/MEGAFUNCTIONS.md` | regenerating the PLL and its reconfiguration block |

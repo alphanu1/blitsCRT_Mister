@@ -45,10 +45,19 @@ elif [ ! -f "$TXT" ]; then
 fi
 
 # --- is this actually a MiSTer card? ---
+#
+# Only worth asking when staging onto a card that boots MiSTer, where the
+# hand-off through blitscrt.txt is what gets us into u-boot. A standalone card
+# boots u-boot directly and has no MiSTer on it by design, so the question is
+# noise -- and it is asked interactively, which stops a build dead.
+#
+# BLITSCRT_STANDALONE=1 says so. `make image` sets it.
 missing=""
-[ -f "$DEST/menu.rbf" ] || missing="$missing menu.rbf"
-[ -f "$DEST/MiSTer" ]   || missing="$missing MiSTer"
-[ -d "$DEST/linux" ]    || missing="$missing linux/"
+if [ "${BLITSCRT_STANDALONE:-0}" != "1" ]; then
+    [ -f "$DEST/menu.rbf" ] || missing="$missing menu.rbf"
+    [ -f "$DEST/MiSTer" ]   || missing="$missing MiSTer"
+    [ -d "$DEST/linux" ]    || missing="$missing linux/"
+fi
 
 if [ -n "$missing" ]; then
     echo "WARNING: $DEST is missing:$missing" >&2
@@ -65,7 +74,9 @@ fi
 # --- other .txt files trigger a picker instead of auto-selecting ---
 # menu.cpp counts every .txt in the directory. Exactly one, named to match the
 # .rbf, is taken automatically. More than one and MiSTer asks which to use.
-others=$(find "$DEST" -maxdepth 1 -iname '*.txt' ! -iname 'blitscrt.txt' 2>/dev/null | wc -l)
+others=0
+[ "${BLITSCRT_STANDALONE:-0}" = "1" ] || \
+    others=$(find "$DEST" -maxdepth 1 -iname '*.txt' ! -iname 'blitscrt.txt' 2>/dev/null | wc -l)
 if [ "$others" -gt 0 ]; then
     echo "NOTE: $others other .txt file(s) in the card root."
     echo "      MiSTer will show a picker rather than taking blitscrt.txt"
@@ -96,15 +107,25 @@ fi
 sync
 
 echo ""
-echo "  Boot the MiSTer and select blitscrt.rbf from the menu."
-echo "  It reboots once, then configures the FPGA (test card)."
-if [ -f "$KDIR/zImage" ]; then
-    echo "  Our kernel then boots and appends a record to"
-    echo "  /media/fat/blitscrt-boot.log -- power-cycle and read that file"
-    echo "  (or watch the boot on the serial console at 115200) to confirm."
+if [ "${BLITSCRT_STANDALONE:-0}" = "1" ]; then
+    # A card that boots u-boot directly. Nothing here selects a core from a
+    # menu, and there is no MiSTer to return to.
+    echo "  Staged for a standalone card. It boots straight into BlitsCRT --"
+    echo "  no MiSTer, no menu, no hand-off."
+    echo ""
+    echo "  Watch the boot on the serial console at 115200, or read"
+    echo "  blitscrt-boot.log on the card afterwards."
 else
-    echo "  Power cycle to return to MiSTer."
+    echo "  Boot the MiSTer and select blitscrt.rbf from the menu."
+    echo "  It reboots once, then configures the FPGA (test card)."
+    if [ -f "$KDIR/zImage" ]; then
+        echo "  Our kernel then boots and appends a record to"
+        echo "  /media/fat/blitscrt-boot.log -- power-cycle and read that file"
+        echo "  (or watch the boot on the serial console at 115200) to confirm."
+    else
+        echo "  Power cycle to return to MiSTer."
+    fi
+    echo ""
+    echo "  Note: this works from the SD card only. MiSTer disables the hand-off"
+    echo "  for cores on USB storage."
 fi
-echo ""
-echo "  Note: this works from the SD card only. MiSTer disables the hand-off"
-echo "  for cores on USB storage."

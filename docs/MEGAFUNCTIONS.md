@@ -246,14 +246,27 @@ bitstream build needs them. A checkout that has not run Quartus does not have
 them, so `sim/vendor_pll_stubs.v` provides functional stand-ins: two fixed
 clocks, always locked, reconfiguration accepted and ignored.
 
-The Makefile adds that file only when the real ones are absent:
+Lint always uses the stubs and always excludes the generated wrappers:
 
 ```make
-VENDOR_STUBS := sim/vendor_stubs.v \
-                $(if $(wildcard rtl/pll_pix.v),,sim/vendor_pll_stubs.v)
+RTL_GENERATED := rtl/pll_pix.v rtl/pll_reconfig.v
+LINT_RTL      := $(filter-out $(RTL_GENERATED),$(wildcard rtl/*.v))
+VENDOR_STUBS  := sim/vendor_stubs.v sim/vendor_pll_stubs.v
 ```
 
-Including both is a duplicate-module error, and it only appears once the
-generated files exist -- so it shows up on somebody else's machine or in CI,
-never on the one that has been building all along. That is exactly how it was
-found.
+That is the right shape: lint checks that *this project's* RTL elaborates, and
+the vendor IP is Quartus's business.
+
+Conditioning on whether the files exist was tried first and is wrong twice over.
+Including both the real wrapper and the stub is a duplicate-module error; and
+excluding the stub when the wrapper is present leaves iverilog with a wrapper
+whose contents it cannot reach, since `rtl/pll_pix.v` only instantiates
+`pll_pix_0002`, which is named by the `.qip` rather than living in `rtl/`:
+
+```
+rtl/pll_pix.v:18: error: Unknown module type: pll_pix_0002
+```
+
+Neither failure can happen on a machine that has run Quartus and always had the
+stubs -- they need a checkout where the generated files are present and the
+build has never been done, which is CI, or anyone else cloning the repository.

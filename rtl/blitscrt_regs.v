@@ -45,6 +45,9 @@ module blitscrt_regs #(
      *   3.6  BUS_DIAG; the bridge gives up on a slave that never accepts
      *        instead of wedging the transport
      *   3.7  blitscrt_pllbus between the bridge and the reconfig slave
+     *   3.24 no functional change. Bumped again to force a rebuild after the
+     *        lint fix, so a local Quartus run and the release path are both
+     *        exercised on the same tree
      *   3.23 no functional change. Bumped to force a bitstream rebuild and
      *        prove the release path end to end: Quartus, the committed .rbf,
      *        the card image, and the workflow that publishes it
@@ -87,7 +90,7 @@ module blitscrt_regs #(
      * clock select pointing at a clock pin and once without -- and the only way
      * to tell them apart was whether the monitor synced.
      */
-    parameter [31:0] VERSION = 32'h0003_0017,
+    parameter [31:0] VERSION = 32'h0003_0018,
     parameter [11:0] SCANOUT_MAXW = 12'd1280,
     /* Cycles the user button ignores further edges for, covering contact
      * bounce. 20 ms at 50 MHz. A testbench overrides it to something it can

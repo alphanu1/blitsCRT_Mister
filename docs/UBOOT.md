@@ -333,28 +333,35 @@ scripts/dtc-version.sh                 the version parse
 means a patcher matched something it should not have.
 
 
-## Or don't build it at all
+## The fallback: don't build it at all
 
-The extract route needs none of the above:
+`make uboot` works, and is what `make world` uses. This route exists for when it
+does not -- a distribution whose compilers or headers break the build in some new
+way:
 
 ```
 tools/make_image.sh --extract-boot /dev/sdX boot.a2
 make image BOOT_A2=boot.a2
 ```
 
-One command, once, against a card you already have. It uses MiSTer's own
-preloader binary, so it cannot break when a distribution updates its dtc, and for
-one person building their own cards it is the simpler choice. The cost is that
-the blob is not yours to redistribute and every user needs a MiSTer card to
-extract from -- which is exactly why `make uboot` exists.
+One command, against a card you already have. It uses MiSTer's own preloader
+binary, so it cannot break when a distribution updates its dtc. The cost is that
+the blob is not yours to redistribute and it needs a MiSTer card to extract from,
+which is exactly why `make uboot` is the default.
 
-Building a 2018 tree on a modern host has needed three patches: the dtc version
-format, the boot command's location, and the libfdt include paths. It took four
-attempts, two of which looked correct and were not, and the answer came from
-reading `tools/Makefile` and asking `gcc -v` what it was actually doing rather
-than reasoning about what ought to work. A fourth incompatibility on a different
-distribution would not be surprising.
 
-Keep a working MiSTer card while testing any of this. There is no JTAG on a
+## What this cost
+
+Building a 2018 tree on a modern host needed three source patches -- the dtc
+version format, the boot command's location, and the libfdt include paths -- and
+a toolchain eight major versions older than the one everything else uses.
+
+Almost none of that was predictable, and two attempts at the libfdt problem
+looked right and were not. What settled it each time was reading the source and
+asking `gcc -v` what it was actually doing, rather than reasoning about what
+ought to work. A fourth incompatibility on a different distribution would not be
+surprising, which is why the fallback above is kept.
+
+Keep a working MiSTer card while changing any of this. There is no JTAG on a
 MiSTer Pi, and a card that will not boot has no serial output to interrupt -- a
 known-good card is the only way back.

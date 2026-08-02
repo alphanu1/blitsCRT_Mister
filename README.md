@@ -53,7 +53,7 @@ make world     # everything, ending in a card image
 That is the whole thing. `make world` ends with:
 
 ```
-  card image:  /path/to/blitsCRT_Mister/blitscrt-0.8.12-d42.img (258M)
+  card image:  /path/to/blitsCRT_Mister/blitscrt-0.8.13-d42.img (258M)
                write it with Etcher, Raspberry Pi Imager or dd
 ```
 
@@ -113,8 +113,14 @@ to recover from an environment that will not boot.
 
 ## Prerequisites
 
-`make setup` handles the toolchain. What it cannot do is buy hardware or agree to
-Intel's licence.
+`make setup` handles the software side, including both cross-compilers. What it
+cannot do is buy hardware or agree to Intel's licence.
+
+**A MiSTer install is not needed.** The card is built from scratch, bootloader
+included, and nothing of MiSTer's ends up on it. A working MiSTer card is still
+worth having while developing, since a card that will not boot has no serial
+output to interrupt and a MiSTer Pi has no JTAG -- a known-good card is the only
+way back.
 
 | | | |
 |---|---|---|
@@ -122,7 +128,7 @@ Intel's licence.
 | **Analog A/V board** | required | the only 15 kHz RGB output. Which board matters -- see below |
 | **microSD card** | required | dedicated to BlitsCRT, since it replaces the boot chain on it |
 | **A-to-A USB cable, VBUS cut** | required | host link, into the board's Type-A OTG port |
-| **Serial console** | advisable | the HPS UART at 115200 is where the boot log and the daemon appear |
+| **Serial console** | advisable | the HPS UART at 115200 is where the boot log and the daemon appear. Not needed to install, only to debug |
 | **Quartus Prime Lite** | for the bitstream | free but licensed, and a manual download |
 | **USB hub board** | must be removed | the gadget does not work with it fitted |
 
@@ -238,35 +244,15 @@ The card ends up as:
 | | |
 |---|---|
 | partition 1 | FAT32 -- bitstream, kernel, daemon |
-| partition 2 | type `a2` -- the preloader and u-boot, raw sectors |
+| partition 2 | type `a2` -- the preloader and u-boot, as raw sectors |
 
-FAT is numbered first because `bootcmd` addresses it as `mmc 0:1`, the same as a
-MiSTer card. The A2 partition still sits first on disk; table order and disk
-order are independent, and Cyclone V's BootROM scans for the partition *type*
-rather than the number.
+FAT is numbered first because `bootcmd` addresses it as `mmc 0:1`. The A2
+partition still sits first on disk -- table order and disk order are independent,
+and Cyclone V's BootROM scans for the partition *type* rather than the number.
 
-That A2 partition is the part that cannot be generated from nothing -- it is not
-a file and not in any filesystem, so formatting a card destroys it and the board
-will not boot at all: no serial output to interrupt and, on a MiSTer Pi, no JTAG
-to recover through. `make uboot` builds one; `docs/UBOOT.md` covers how, and it
-is more involved than it sounds.
-
-**Or lift one from a MiSTer card**, which needs no bootloader build at all:
-
-```
-tools/make_image.sh --extract-boot /dev/sdX boot.a2
-make image BOOT_A2=boot.a2
-```
-
-That takes everything from sector 1 up to the first filesystem, not just the A2
-partition, and writes it back at the same absolute sectors -- so if the boot
-environment lives at a raw offset on the card rather than in flash, it comes
-along. The blob is MiSTer's u-boot, GPL-2.0, so it can be passed on under the
-same terms with an offer of source, but it is not this project's code to
-relicense.
-
-`make image` prints which bootloader it used. Worth reading that line before
-writing a card, since `UBOOT_DIR` applies only to the command it is given to.
+Everything on it is built here, including the bootloader. `make uboot` produces
+that, and `docs/UBOOT.md` covers what it takes -- MiSTer's u-boot needs an old
+compiler, and three patches to build against a modern host at all.
 
 
 ### Releasing
@@ -283,8 +269,8 @@ is also what makes any tag rebuildable into the exact image it shipped:
 make bitstream
 cp quartus/output_files/blitscrt.rbf release/blitscrt.rbf
 git add release/blitscrt.rbf
-echo 0.8.13 > VERSION
-git commit -am "release 0.8.13" && git push
+echo 0.8.14 > VERSION
+git commit -am "release 0.8.14" && git push
 ```
 
 The workflow refuses to publish without that `.rbf`, and warns if anything in

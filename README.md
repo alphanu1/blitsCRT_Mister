@@ -53,7 +53,7 @@ make world     # everything, ending in a card image
 That is the whole thing. `make world` ends with:
 
 ```
-  card image:  /path/to/blitsCRT_Mister/blitscrt-0.8.13-d42.img (258M)
+  card image:  /path/to/blitsCRT_Mister/blitscrt-0.8.14-d42.img (258M)
                write it with Etcher, Raspberry Pi Imager or dd
 ```
 
@@ -269,8 +269,8 @@ is also what makes any tag rebuildable into the exact image it shipped:
 make bitstream
 cp quartus/output_files/blitscrt.rbf release/blitscrt.rbf
 git add release/blitscrt.rbf
-echo 0.8.14 > VERSION
-git commit -am "release 0.8.14" && git push
+echo 0.8.15 > VERSION
+git commit -am "release 0.8.15" && git push
 ```
 
 The workflow refuses to publish without that `.rbf`, and warns if anything in

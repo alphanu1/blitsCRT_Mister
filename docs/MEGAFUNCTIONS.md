@@ -238,3 +238,22 @@ The advertised modes and the counters `sw/pll.c` solves for them:
 Within a VCO the 640-wide and 320-wide modes are one counter apart, so
 switching between them is a C write. Switching between NTSC and PAL moves M and
 N as well.
+
+## Simulating without them
+
+`rtl/pll_pix.v` and `rtl/pll_reconfig.v` are generated and committed, because a
+bitstream build needs them. A checkout that has not run Quartus does not have
+them, so `sim/vendor_pll_stubs.v` provides functional stand-ins: two fixed
+clocks, always locked, reconfiguration accepted and ignored.
+
+The Makefile adds that file only when the real ones are absent:
+
+```make
+VENDOR_STUBS := sim/vendor_stubs.v \
+                $(if $(wildcard rtl/pll_pix.v),,sim/vendor_pll_stubs.v)
+```
+
+Including both is a duplicate-module error, and it only appears once the
+generated files exist -- so it shows up on somebody else's machine or in CI,
+never on the one that has been building all along. That is exactly how it was
+found.

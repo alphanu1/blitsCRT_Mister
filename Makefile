@@ -962,6 +962,11 @@ RTL_SRCS := $(wildcard rtl/*.v rtl/*.sv rtl/*/*.v rtl/*/*.sv rtl/*.hex) \
 # is written beside the .rbf after a successful compile.
 RTL_HASH := quartus/output_files/blitscrt.rtlhash
 
+# Where the committed copy of the bitstream lives. quartus/output_files/ and
+# build/ are both gitignored, so a bitstream needs a third home that is not --
+# see build_rbf/README.md and the release workflow.
+RBF_STAGE := build_rbf
+
 bitstream: assets
 	@if [ -z "$(QUARTUS_SH)" ]; then \
 	  $(MAKE) --no-print-directory quartus-path; exit 1; \
@@ -977,6 +982,16 @@ bitstream: assets
 	fi
 	@python3 tools/check_fit.py quartus/output_files
 	@python3 tools/gen_uboot_txt.py $(UBOOT_TXT) $(UBOOT_FLAG)
+	@# Also into build_rbf/, which is committed.
+	@#
+	@# build/ is gitignored, as build output should be, so a bitstream that
+	@# only lands there never reaches the repository and CI fails on a
+	@# missing .rbf -- which is exactly what happened. Copying here means the
+	@# committed copy cannot drift from the one just built, and the only
+	@# remaining step is `git add`.
+	@mkdir -p $(RBF_STAGE)
+	@cp -f $(RBF) $(RBF_STAGE)/blitscrt.rbf
+	@echo "staged $(RBF_STAGE)/blitscrt.rbf -- git add it before bumping VERSION"
 
 # Always recompile, ignoring the up-to-date check.
 bitstream-force:

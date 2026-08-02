@@ -20,7 +20,7 @@ rtl/render_*.txt
 # Quartus
 # ---------------------------------------------------------------------------
 quartus/output_files/
-# ...but release/blitscrt.rbf is committed on purpose. CI does not run Quartus,
+# ...but build_rbf/blitscrt.rbf is committed on purpose. CI does not run Quartus,
 # so the bitstream is built locally and versioned as a release artefact.
 # See release/README.md.
 quartus/blitscrt.txt

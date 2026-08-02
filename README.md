@@ -53,7 +53,7 @@ make world     # everything, ending in a card image
 That is the whole thing. `make world` ends with:
 
 ```
-  card image:  /path/to/blitsCRT_Mister/blitscrt-0.8.17-d42.img (258M)
+  card image:  /path/to/blitsCRT_Mister/blitscrt-0.8.20-d42.img (258M)
                write it with Etcher, Raspberry Pi Imager or dd
 ```
 
@@ -262,15 +262,16 @@ image, build set, and a changelog assembled from the commit subjects since the
 previous tag. Nothing else triggers it, so ordinary commits cost nothing.
 
 CI does not run Quartus -- it is a ~10 GB licensed install and a hosted runner
-has no state between runs. The bitstream is built locally and committed, which
-is also what makes any tag rebuildable into the exact image it shipped:
+has no state between runs. The bitstream is built locally and committed to
+`build_rbf/`, which is also what makes any tag rebuildable into the exact image
+it shipped. `make bitstream` puts it there itself, so the only manual step is
+`git add`:
 
 ```
-make bitstream
-cp quartus/output_files/blitscrt.rbf release/blitscrt.rbf
-git add release/blitscrt.rbf
-echo 0.8.18 > VERSION
-git commit -am "release 0.8.18" && git push
+make bitstream                    # also stages build_rbf/blitscrt.rbf
+git add build_rbf/blitscrt.rbf
+echo 0.8.21 > VERSION
+git commit -am "release 0.8.21" && git push
 ```
 
 The workflow refuses to publish without that `.rbf`, and warns if anything in

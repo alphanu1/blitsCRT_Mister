@@ -17,10 +17,10 @@
 # Build it locally and commit it:
 #
 #     make bitstream
-#     cp quartus/output_files/blitscrt.rbf release/blitscrt.rbf
-#     git add release/blitscrt.rbf
+#     cp quartus/output_files/blitscrt.rbf build_rbf/blitscrt.rbf
+#     git add build_rbf/blitscrt.rbf
 #
-# `release/` is deliberately not gitignored, unlike quartus/output_files/. A
+# `build_rbf/` is deliberately not gitignored, unlike quartus/output_files/. A
 # release without it is refused rather than published, since an image with no
 # bitstream boots to nothing.
 #
@@ -46,7 +46,7 @@ permissions:
 
 env:
   # The bitstream, built locally and committed. See the note above.
-  RBF_PATH: 'release/blitscrt.rbf'
+  RBF_PATH: 'build_rbf/blitscrt.rbf'
 
 jobs:
   # -------------------------------------------------------------------------
@@ -129,12 +129,23 @@ jobs:
           if [ ! -f "$RBF_PATH" ]; then
             echo "::error::no bitstream at $RBF_PATH"
             echo ""
+            echo "What git actually has in build_rbf/:"
+            git ls-files build_rbf/ | sed 's/^/  /' || true
+            echo "  (nothing above means the file was never committed)"
+            echo ""
+            echo "What is on disk in release/:"
+            ls -la build_rbf/ 2>/dev/null | sed 's/^/  /' || echo "  (no build_rbf/ directory)"
+            echo ""
+            echo "Note that names are case-sensitive here: blitsCRT.rbf and"
+            echo "blitscrt.rbf are the same file on Windows or macOS and two"
+            echo "different ones on Linux."
+            echo ""
             echo "The bitstream is built locally and committed -- CI does not run"
             echo "Quartus. Before bumping VERSION:"
             echo ""
             echo "    make bitstream"
             echo "    cp quartus/output_files/blitscrt.rbf $RBF_PATH"
-            echo "    git add $RBF_PATH"
+            echo "    git add $RBF_PATH && git commit -m 'bitstream'"
             echo ""
             exit 1
           fi

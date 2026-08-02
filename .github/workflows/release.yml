@@ -1,0 +1,278 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Build and release when VERSION changes.
+#
+# Pushing a commit that touches VERSION builds everything and publishes a
+# release, with the changelog taken from the commits since the last one.
+# Nothing else triggers it, so ordinary commits are free.
+#
+# ---------------------------------------------------------------------------
+# The bitstream
+# ---------------------------------------------------------------------------
+#
+# Not built here. Quartus Prime Lite is a ~10 GB licensed install and a hosted
+# runner has about 14 GB of free disk and no state between runs, so building it
+# in CI is not worth the trouble.
+#
+# Build it locally and commit it:
+#
+#     make bitstream
+#     cp quartus/output_files/blitscrt.rbf release/blitscrt.rbf
+#     git add release/blitscrt.rbf
+#
+# `release/` is deliberately not gitignored, unlike quartus/output_files/. A
+# release without it is refused rather than published, since an image with no
+# bitstream boots to nothing.
+#
+# It is ~2 MB and changes only when the fabric does, which is what makes
+# committing it reasonable.
+
+name: release
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'VERSION'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build but do not publish'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  # The bitstream, built locally and committed. See the note above.
+  RBF_PATH: 'release/blitscrt.rbf'
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Everything that does not need Quartus. Runs on a hosted runner.
+  # -------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      full: ${{ steps.ver.outputs.full }}
+      tag: ${{ steps.ver.outputs.tag }}
+      exists: ${{ steps.ver.outputs.exists }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The changelog needs history, and describe needs tags.
+          fetch-depth: 0
+
+      - name: Read the version
+        id: ver
+        run: |
+          v=$(cat VERSION)
+          full=$(make -s fullversion)
+          echo "version=$v"   >> "$GITHUB_OUTPUT"
+          echo "full=$full"   >> "$GITHUB_OUTPUT"
+          echo "tag=v$v"      >> "$GITHUB_OUTPUT"
+          # Refuse to re-release a version that already has a tag. Bumping
+          # VERSION is the trigger, so a tag already existing means someone
+          # pushed the same number twice.
+          if git rev-parse "v$v" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::v$v is already tagged; not releasing again"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version $v, full $full"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            iverilog device-tree-compiler python3-pil \
+            mtools dosfstools fdisk \
+            bison flex bc libssl-dev \
+            build-essential git curl file
+
+      - name: Cache the cross-compilers
+        id: toolchains
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchains
+          # Two of them, and the u-boot one is chosen by the Makefile, so key
+          # on the Makefile rather than on a version string that could drift.
+          key: toolchains-${{ runner.os }}-${{ hashFiles('Makefile', 'tools/get-toolchain.sh') }}
+
+      - name: Fetch the cross-compilers
+        if: steps.toolchains.outputs.cache-hit != 'true'
+        run: make get-toolchain
+
+      - name: Cache the kernel tree
+        id: kernel
+        uses: actions/cache@v4
+        with:
+          path: ~/src/Linux-Kernel_MiSTer
+          key: kernel-${{ hashFiles('linux/blitscrt_boot.config', 'linux/blitscrt_gadget.config') }}
+
+      - name: Clone the kernel
+        if: steps.kernel.outputs.cache-hit != 'true'
+        run: make kernel-clone KERNEL_CLONE_DIR=$HOME/src/Linux-Kernel_MiSTer
+
+      - name: Simulate and lint
+        run: |
+          make sim
+          make lint
+          make -C sw test
+
+      - name: Take the committed bitstream
+        run: |
+          if [ ! -f "$RBF_PATH" ]; then
+            echo "::error::no bitstream at $RBF_PATH"
+            echo ""
+            echo "The bitstream is built locally and committed -- CI does not run"
+            echo "Quartus. Before bumping VERSION:"
+            echo ""
+            echo "    make bitstream"
+            echo "    cp quartus/output_files/blitscrt.rbf $RBF_PATH"
+            echo "    git add $RBF_PATH"
+            echo ""
+            exit 1
+          fi
+          mkdir -p quartus/output_files
+          cp "$RBF_PATH" quartus/output_files/blitscrt.rbf
+          echo "bitstream: $RBF_PATH ($(du -h "$RBF_PATH" | cut -f1))"
+
+      - name: Warn if the bitstream is older than the RTL
+        run: |
+          # Not fatal -- a docs-only release is legitimate -- but a fabric
+          # change that never reached release/ would otherwise ship silently.
+          newest=$(ls -t rtl/*.v rtl/mister/*.sv 2>/dev/null | head -1)
+          if [ -n "$newest" ] && [ "$newest" -nt "$RBF_PATH" ]; then
+            echo "::warning::$newest is newer than $RBF_PATH -- is the bitstream stale?"
+          fi
+
+      - name: Build
+        run: make world KERNEL_SRC=$HOME/src/Linux-Kernel_MiSTer
+
+      - name: Collect what to release
+        run: |
+          mkdir -p dist
+
+          # The card image is the release. Without it there is nothing worth
+          # publishing, so fail rather than ship a release people cannot use.
+          img=$(ls blitscrt-*.img 2>/dev/null | head -1)
+          if [ -z "$img" ]; then
+            echo "::error::make world produced no card image"
+            echo ""
+            echo "It needs all three of: the bitstream, a kernel, a bootloader."
+            echo ""
+            echo "build/:"
+            ls -la build build/blitscrt 2>/dev/null || echo "  (none)"
+            echo "bootloader:"
+            ls -la "$HOME"/src/u-boot*/u-boot-with-spl.sfp 2>/dev/null || echo "  (none)"
+            exit 1
+          fi
+
+          # Name it for the tag, so the asset matches the release even if the
+          # build and VERSION ever disagree.
+          want="blitscrt-${{ steps.ver.outputs.full }}.img"
+          [ "$img" = "$want" ] || mv "$img" "$want"
+
+          # Compressed as well as raw: the image is mostly empty FAT, so it
+          # shrinks by an order of magnitude, and Etcher and Raspberry Pi Imager
+          # both read .img.xz directly.
+          echo "compressing $want ..."
+          xz -T0 -6 -k "$want"
+          mv "$want" "$want.xz" dist/
+
+          # The build set on its own, for copying onto an existing card by hand
+          # or for a MiSTer hand-off install.
+          tar czf "dist/blitscrt-${{ steps.ver.outputs.full }}-buildset.tar.gz" build
+
+          ( cd dist && sha256sum * > SHA256SUMS )
+
+          ls -la dist/
+          cat dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  # The release itself.
+  # -------------------------------------------------------------------------
+  release:
+    needs: build
+    if: needs.build.outputs.exists == 'false' && !inputs.dry_run
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Write the changelog
+        id: log
+        run: |
+          # Everything since the previous tag, or the whole history if this is
+          # the first release.
+          prev=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+          if [ -n "$prev" ]; then
+            range="$prev..HEAD"
+            echo "changes since $prev"
+          else
+            range="HEAD"
+            echo "first release; using the whole history"
+          fi
+
+          {
+            echo "## What changed"
+            echo ""
+            # Subject lines only, as a list, newest first. Merge commits are
+            # noise in a changelog.
+            git log --no-merges --pretty=format:'- %s' $range
+            echo ""
+            echo ""
+            echo "## Versions"
+            echo ""
+            echo '```'
+            make -s versions
+            echo '```'
+            echo ""
+            echo "## Installing"
+            echo ""
+            echo "Write **\`blitscrt-${{ needs.build.outputs.full }}.img\`** to a microSD"
+            echo "card with Etcher, Raspberry Pi Imager or \`dd\`. Both of those read"
+            echo "the \`.img.xz\` directly, so there is no need to decompress it."
+            echo ""
+            echo "The board boots BlitsCRT on its own: test card on the CRT, daemon"
+            echo "running, ready for a host over USB. No serial console, no u-boot"
+            echo "prompt, nothing to configure."
+            echo ""
+            echo "The \`-buildset.tar.gz\` is the same files without the card layout,"
+            echo "for copying onto an existing card by hand. \`SHA256SUMS\` covers"
+            echo "every asset."
+            echo ""
+            if [ -n "$prev" ]; then
+              echo "**Full diff:** ${{ github.server_url }}/${{ github.repository }}/compare/$prev...v${{ needs.build.outputs.version }}"
+            fi
+          } > RELEASE_NOTES.md
+
+          cat RELEASE_NOTES.md
+
+      - name: Tag and release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.build.outputs.version }}
+          name: BlitsCRT ${{ needs.build.outputs.full }}
+          body_path: RELEASE_NOTES.md
+          files: dist/*
+          draft: false
+          prerelease: ${{ startsWith(needs.build.outputs.version, '0.') }}

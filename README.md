@@ -269,6 +269,28 @@ relicense.
 writing a card, since `UBOOT_DIR` applies only to the command it is given to.
 
 
+### Releasing
+
+Pushing a commit that changes `VERSION` builds and publishes a GitHub release:
+image, build set, and a changelog assembled from the commit subjects since the
+previous tag. Nothing else triggers it, so ordinary commits cost nothing.
+
+CI does not run Quartus -- it is a ~10 GB licensed install and a hosted runner
+has no state between runs. The bitstream is built locally and committed, which
+is also what makes any tag rebuildable into the exact image it shipped:
+
+```
+make bitstream
+cp quartus/output_files/blitscrt.rbf release/blitscrt.rbf
+git add release/blitscrt.rbf
+echo 0.8.13 > VERSION
+git commit -am "release 0.8.13" && git push
+```
+
+The workflow refuses to publish without that `.rbf`, and warns if anything in
+`rtl/` is newer than it. `.github/workflows/release.yml` has the detail.
+
+
 ## Documentation
 
 | | |

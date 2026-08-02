@@ -7,25 +7,25 @@
 # Nothing else triggers it, so ordinary commits are free.
 #
 # ---------------------------------------------------------------------------
-# The bitstream
+# What CI does, and does not
 # ---------------------------------------------------------------------------
 #
-# Not built here. Quartus Prime Lite is a ~10 GB licensed install and a hosted
-# runner has about 14 GB of free disk and no state between runs, so building it
-# in CI is not worth the trouble.
+# It does not build the card. It cannot: Quartus is a ~10 GB licensed install,
+# and the kernel and u-boot each need their own cross-compiler -- u-boot's being
+# gcc 5, eight major versions behind everything else.
 #
-# Build it locally and commit it:
+# So `build/` is committed. It is the whole card: bitstream, kernel, device
+# tree, daemon, tools and the bootloader. `make world` produces all of it
+# locally and stages it there.
 #
-#     make bitstream
-#     cp quartus/output_files/blitscrt.rbf build_rbf/blitscrt.rbf
-#     git add build_rbf/blitscrt.rbf
+#     make world
+#     git add -A build
+#     echo 0.8.22 > VERSION
+#     git commit -am "release 0.8.22" && git push
 #
-# `build_rbf/` is deliberately not gitignored, unlike quartus/output_files/. A
-# release without it is refused rather than published, since an image with no
-# bitstream boots to nothing.
-#
-# It is ~2 MB and changes only when the fabric does, which is what makes
-# committing it reasonable.
+# CI then verifies every file is present, runs the tests that need no toolchain,
+# wraps build/ into a card image and publishes it. Any tag can be turned back
+# into the exact card it shipped.
 
 name: release
 
@@ -43,10 +43,6 @@ on:
 
 permissions:
   contents: write
-
-env:
-  # The bitstream, built locally and committed. See the note above.
-  RBF_PATH: 'build_rbf/blitscrt.rbf'
 
 jobs:
   # -------------------------------------------------------------------------
@@ -85,85 +81,68 @@ jobs:
           fi
           echo "version $v, full $full"
 
-      - name: Install build dependencies
+      - name: Install what an image needs
         run: |
+          # Only the image tools. Nothing here builds the card -- build/ is
+          # committed, because CI cannot produce any of it: Quartus is a
+          # licensed 10 GB install, and the kernel and u-boot each need their
+          # own cross-compiler.
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            iverilog device-tree-compiler python3-pil \
-            mtools dosfstools fdisk \
-            bison flex bc libssl-dev \
-            build-essential git curl file
+            mtools dosfstools fdisk xz-utils file
 
-      - name: Cache the cross-compilers
-        id: toolchains
-        uses: actions/cache@v4
-        with:
-          path: ~/toolchains
-          # Two of them, and the u-boot one is chosen by the Makefile, so key
-          # on the Makefile rather than on a version string that could drift.
-          key: toolchains-${{ runner.os }}-${{ hashFiles('Makefile', 'tools/get-toolchain.sh') }}
-
-      - name: Fetch the cross-compilers
-        if: steps.toolchains.outputs.cache-hit != 'true'
-        run: make get-toolchain
-
-      - name: Cache the kernel tree
-        id: kernel
-        uses: actions/cache@v4
-        with:
-          path: ~/src/Linux-Kernel_MiSTer
-          key: kernel-${{ hashFiles('linux/blitscrt_boot.config', 'linux/blitscrt_gadget.config') }}
-
-      - name: Clone the kernel
-        if: steps.kernel.outputs.cache-hit != 'true'
-        run: make kernel-clone KERNEL_CLONE_DIR=$HOME/src/Linux-Kernel_MiSTer
-
-      - name: Simulate and lint
+      - name: Check the committed card is complete
         run: |
+          # Every file the boot command loads, plus the bootloader. A missing
+          # one produces a card that boots partway and stops, which is worse
+          # than not building at all.
+          fail=0
+          for f in build/blitscrt.rbf \
+                   build/blitscrt.txt \
+                   build/blitscrt/zImage \
+                   build/blitscrt/blitscrt.dtb \
+                   build/blitscrt/blitscrtd \
+                   build/blitscrt/blitscrt-peek \
+                   build/blitscrt/gadget-setup.sh \
+                   build/u-boot-with-spl.sfp; do
+            if [ -s "$f" ]; then
+              printf 'ok       %-36s %s\n' "$f" "$(du -h "$f" | cut -f1)"
+            else
+              echo "::error::missing or empty: $f"
+              fail=1
+            fi
+          done
+
+          if [ "$fail" != 0 ]; then
+            echo ""
+            echo "build/ is committed and holds the whole card. Rebuild and add it:"
+            echo ""
+            echo "    make world"
+            echo "    git add -A build"
+            echo ""
+            echo "What git currently tracks in build/:"
+            git ls-files build/ | sed 's/^/  /' || echo "  (nothing)"
+            exit 1
+          fi
+
+          # A bitstream older than the RTL usually means a fabric change that
+          # never got rebuilt. Not fatal -- a docs-only release is fine.
+          newest=$(ls -t rtl/*.v rtl/mister/*.sv 2>/dev/null | head -1)
+          if [ -n "$newest" ] && [ "$newest" -nt build/blitscrt.rbf ]; then
+            echo "::warning::$newest is newer than build/blitscrt.rbf -- stale bitstream?"
+          fi
+
+      - name: Check the tests still pass
+        run: |
+          # Cheap, and needs no toolchain: iverilog elaborates the RTL and the
+          # daemon tests build for the host.
+          sudo apt-get install -y --no-install-recommends iverilog build-essential
           make sim
           make lint
           make -C sw test
 
-      - name: Take the committed bitstream
-        run: |
-          if [ ! -f "$RBF_PATH" ]; then
-            echo "::error::no bitstream at $RBF_PATH"
-            echo ""
-            echo "What git actually has in build_rbf/:"
-            git ls-files build_rbf/ | sed 's/^/  /' || true
-            echo "  (nothing above means the file was never committed)"
-            echo ""
-            echo "What is on disk in release/:"
-            ls -la build_rbf/ 2>/dev/null | sed 's/^/  /' || echo "  (no build_rbf/ directory)"
-            echo ""
-            echo "Note that names are case-sensitive here: blitsCRT.rbf and"
-            echo "blitscrt.rbf are the same file on Windows or macOS and two"
-            echo "different ones on Linux."
-            echo ""
-            echo "The bitstream is built locally and committed -- CI does not run"
-            echo "Quartus. Before bumping VERSION:"
-            echo ""
-            echo "    make bitstream"
-            echo "    cp quartus/output_files/blitscrt.rbf $RBF_PATH"
-            echo "    git add $RBF_PATH && git commit -m 'bitstream'"
-            echo ""
-            exit 1
-          fi
-          mkdir -p quartus/output_files
-          cp "$RBF_PATH" quartus/output_files/blitscrt.rbf
-          echo "bitstream: $RBF_PATH ($(du -h "$RBF_PATH" | cut -f1))"
-
-      - name: Warn if the bitstream is older than the RTL
-        run: |
-          # Not fatal -- a docs-only release is legitimate -- but a fabric
-          # change that never reached release/ would otherwise ship silently.
-          newest=$(ls -t rtl/*.v rtl/mister/*.sv 2>/dev/null | head -1)
-          if [ -n "$newest" ] && [ "$newest" -nt "$RBF_PATH" ]; then
-            echo "::warning::$newest is newer than $RBF_PATH -- is the bitstream stale?"
-          fi
-
-      - name: Build
-        run: make world KERNEL_SRC=$HOME/src/Linux-Kernel_MiSTer
+      - name: Build the image
+        run: make image
 
       - name: Collect what to release
         run: |

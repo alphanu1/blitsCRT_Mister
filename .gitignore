@@ -20,9 +20,7 @@ rtl/render_*.txt
 # Quartus
 # ---------------------------------------------------------------------------
 quartus/output_files/
-# ...but build_rbf/blitscrt.rbf is committed on purpose. CI does not run Quartus,
-# so the bitstream is built locally and versioned as a release artefact.
-# See release/README.md.
+# ...but build/ is committed on purpose; see the note further down.
 quartus/blitscrt.txt
 quartus/db/
 quartus/incremental_db/
@@ -89,10 +87,17 @@ sw/test_edid
 sw/test_stride
 
 # ---------------------------------------------------------------------------
-# Staged bootable set from `make build`. Collected from tracked sources and
-# build products; never committed.
+# build/ is COMMITTED. It is the whole card: bitstream, kernel, device tree,
+# daemon, tools and the bootloader.
+#
+# That is unusual for build output, and deliberate. CI cannot produce any of it
+# -- Quartus is a licensed 10 GB install, and the kernel and u-boot both need
+# their own cross-compilers. Committing the staged card means a release needs
+# nothing but `make image`, and any tag can be turned back into the exact card
+# it shipped.
+#
+# `make clean` leaves it alone for the same reason. `make distclean` removes it.
 # ---------------------------------------------------------------------------
-build/
 build-tmp/
 
 # ---------------------------------------------------------------------------

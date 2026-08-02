@@ -92,8 +92,14 @@ world: assets
 	  echo "-- skipping kernel, KERNEL_SRC=$(KERNEL_SRC) is not a directory"; \
 	else \
 	  echo "-- building kernel from $(KERNEL_SRC)"; \
-	  $(MAKE) --no-print-directory linux KERNEL_SRC="$(KERNEL_SRC)" || \
-	    echo "-- kernel build failed; staging the rest anyway"; \
+	  $(MAKE) --no-print-directory linux KERNEL_SRC="$(KERNEL_SRC)" || { \
+	    echo ""; \
+	    echo "=============================================================="; \
+	    echo "-- KERNEL BUILD FAILED"; \
+	    echo "   Staging the rest anyway, but there will be no card image:"; \
+	    echo "   an image needs the bitstream, the kernel and a bootloader."; \
+	    echo "=============================================================="; \
+	    echo ""; }; \
 	fi
 	@$(MAKE) --no-print-directory daemon CROSS_COMPILE="$(CROSS_COMPILE)" STATIC="$(STATIC)" || echo "-- daemon build skipped"
 	@$(MAKE) --no-print-directory peek CROSS_COMPILE="$(CROSS_COMPILE)" STATIC="$(STATIC)" || echo "-- peek build skipped"
@@ -107,8 +113,13 @@ world: assets
 	  echo "-- bootloader already built: $(UBOOT_SFP)"; \
 	elif [ -n "$(UBOOT_TC_GCC)" ]; then \
 	  echo "-- building the bootloader"; \
-	  $(MAKE) --no-print-directory uboot || \
-	    echo "-- bootloader build failed; see $(UBOOT_LOG)"; \
+	  $(MAKE) --no-print-directory uboot || { \
+	    echo ""; \
+	    echo "=============================================================="; \
+	    echo "-- BOOTLOADER BUILD FAILED -- see $(UBOOT_LOG)"; \
+	    echo "   There will be no card image without it."; \
+	    echo "=============================================================="; \
+	    echo ""; }; \
 	else \
 	  echo "-- skipping the bootloader, no gcc 4/5/6 ARM toolchain"; \
 	  echo "   (make uboot-toolchain installs one; without it there is no"; \
@@ -479,6 +490,15 @@ uboot: uboot-clone
 	    fi; \
 	    exit 1; }
 	@test -f $(UBOOT_SFP) || { echo "u-boot did not produce $(UBOOT_SFP)"; exit 1; }
+	@# Into build/ as well, which is committed.
+	@#
+	@# build/ is the whole card: bitstream, kernel, device tree, daemon,
+	@# tools -- and now the bootloader. Committing it means a release needs
+	@# nothing but `make image`, and CI needs no toolchain, no kernel tree and
+	@# no u-boot build. It also means a tagged release can be turned back into
+	@# the exact card it shipped.
+	@mkdir -p $(BUILD_DIR)
+	@cp -f $(UBOOT_SFP) $(BUILD_DIR)/u-boot-with-spl.sfp
 	@echo "built $(UBOOT_SFP) ($$(du -h $(UBOOT_SFP) | cut -f1))"
 	@echo "'make image' will use it; no MiSTer card needed."
 
@@ -625,18 +645,21 @@ render-scanout-i: assets
 
 # Remove transient build products. Every rm uses -f / -rf, so a missing file is
 # never an error -- clean works whether or not a full build ran. The tracked
-# sim/*.png renders are left alone; the README embeds them.
+# sim/*.png renders are left alone; the README embeds them, and so is
+# $(BUILD_DIR) -- it is committed now, so wiping it would show the whole card
+# as deleted until the next build. `make distclean` removes it.
 clean:
 	rm -f  sim/*.vvp sim/*.vcd sim/*.fst sim/*.lxt
 	rm -f  rtl/render_*.txt $(UBOOT_TXT) README_preview.html
 	rm -f  sw/*.o sw/blitscrtd sw/test_pll sw/test_pll_reconfig sw/test_modes sw/test_device
-	rm -rf $(BUILD_DIR) $(WORK_DIR)
+	rm -rf $(WORK_DIR)
 	rm -rf __pycache__ tools/__pycache__ sw/__pycache__
 	find . -name '*.pyc' -delete 2>/dev/null || true
 
 # Also remove generated assets and the Quartus output. Leaves only tracked
 # sources.
 distclean: clean
+	rm -rf $(BUILD_DIR)
 	rm -f  rtl/font8x8.hex rtl/banner.hex rtl/banner_i.hex rtl/scanout_init.hex
 	rm -rf quartus/output_files quartus/db quartus/incremental_db
 	rm -rf quartus/greybox_tmp quartus/.qsys_edit quartus/hps_isw_handoff
@@ -700,12 +723,14 @@ image: build
 	@# happened, and produced a card with a bootloader nobody meant to use.
 	@if [ -n "$(BOOT_A2)" ]; then \
 	  echo "bootloader: $(BOOT_A2)  (BOOT_A2)"; \
+	elif [ ! -f "$(UBOOT_SFP)" ] && [ -f "$(BUILD_DIR)/u-boot-with-spl.sfp" ]; then \
+	  echo "bootloader: $(BUILD_DIR)/u-boot-with-spl.sfp  (committed)"; \
 	elif [ -f "$(UBOOT_SFP)" ]; then \
 	  echo "bootloader: $(UBOOT_SFP)"; \
 	  echo "            (from UBOOT_DIR=$(UBOOT_DIR) -- pass UBOOT_DIR or"; \
 	  echo "             BOOT_A2 if that is not the one you just built)"; \
 	fi
-	@test -n "$(BOOT_A2)" -o -f "$(UBOOT_SFP)" || { \
+	@test -n "$(BOOT_A2)" -o -f "$(UBOOT_SFP)" -o -f "$(BUILD_DIR)/u-boot-with-spl.sfp" || { \
 	  echo ""; \
 	  echo "An image needs a bootloader for the A2 partition, and there is"; \
 	  echo "none yet. Lift one off a MiSTer card:"; \
@@ -730,7 +755,7 @@ image: build
 	@# install_sd.sh must not stop to ask about a missing MiSTer install.
 	@BLITSCRT_STANDALONE=1 ./tools/install_sd.sh $(IMAGE_STAGE) >/dev/null
 	@cp tools/blitsenv.txt $(IMAGE_STAGE)/
-	@BOOT_A2="$(if $(BOOT_A2),$(BOOT_A2),$(UBOOT_SFP))" \
+	@BOOT_A2="$(if $(BOOT_A2),$(BOOT_A2),$(if $(wildcard $(UBOOT_SFP)),$(UBOOT_SFP),$(BUILD_DIR)/u-boot-with-spl.sfp))" \
 	  OUT="$(IMAGE)" STAGE="$(IMAGE_STAGE)" \
 	  FAT_MB="$(IMAGE_MB)" ./tools/make_image.sh
 
@@ -962,10 +987,7 @@ RTL_SRCS := $(wildcard rtl/*.v rtl/*.sv rtl/*/*.v rtl/*/*.sv rtl/*.hex) \
 # is written beside the .rbf after a successful compile.
 RTL_HASH := quartus/output_files/blitscrt.rtlhash
 
-# Where the committed copy of the bitstream lives. quartus/output_files/ and
-# build/ are both gitignored, so a bitstream needs a third home that is not --
-# see build_rbf/README.md and the release workflow.
-RBF_STAGE := build_rbf
+
 
 bitstream: assets
 	@if [ -z "$(QUARTUS_SH)" ]; then \
@@ -982,16 +1004,6 @@ bitstream: assets
 	fi
 	@python3 tools/check_fit.py quartus/output_files
 	@python3 tools/gen_uboot_txt.py $(UBOOT_TXT) $(UBOOT_FLAG)
-	@# Also into build_rbf/, which is committed.
-	@#
-	@# build/ is gitignored, as build output should be, so a bitstream that
-	@# only lands there never reaches the repository and CI fails on a
-	@# missing .rbf -- which is exactly what happened. Copying here means the
-	@# committed copy cannot drift from the one just built, and the only
-	@# remaining step is `git add`.
-	@mkdir -p $(RBF_STAGE)
-	@cp -f $(RBF) $(RBF_STAGE)/blitscrt.rbf
-	@echo "staged $(RBF_STAGE)/blitscrt.rbf -- git add it before bumping VERSION"
 
 # Always recompile, ignoring the up-to-date check.
 bitstream-force:

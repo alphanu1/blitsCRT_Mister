@@ -53,7 +53,7 @@ make world     # everything, ending in a card image
 That is the whole thing. `make world` ends with:
 
 ```
-  card image:  /path/to/blitsCRT_Mister/blitscrt-0.8.20-d42.img (258M)
+  card image:  /path/to/blitsCRT_Mister/blitscrt-0.8.22-d42.img (258M)
                write it with Etcher, Raspberry Pi Imager or dd
 ```
 
@@ -261,21 +261,26 @@ Pushing a commit that changes `VERSION` builds and publishes a GitHub release:
 image, build set, and a changelog assembled from the commit subjects since the
 previous tag. Nothing else triggers it, so ordinary commits cost nothing.
 
-CI does not run Quartus -- it is a ~10 GB licensed install and a hosted runner
-has no state between runs. The bitstream is built locally and committed to
-`build_rbf/`, which is also what makes any tag rebuildable into the exact image
-it shipped. `make bitstream` puts it there itself, so the only manual step is
-`git add`:
+**CI does not build the card.** It cannot: Quartus is a ~10 GB licensed install,
+and the kernel and u-boot each need their own cross-compiler -- u-boot's being
+gcc 5, eight major versions behind everything else.
+
+So **`build/` is committed**. It is the whole card: bitstream, kernel, device
+tree, daemon, tools and the bootloader. `make world` stages all of it.
 
 ```
-make bitstream                    # also stages build_rbf/blitscrt.rbf
-git add build_rbf/blitscrt.rbf
-echo 0.8.21 > VERSION
-git commit -am "release 0.8.21" && git push
+make world
+git add -A build
+echo 0.8.22 > VERSION
+git commit -am "release 0.8.22" && git push
 ```
 
-The workflow refuses to publish without that `.rbf`, and warns if anything in
-`rtl/` is newer than it. `.github/workflows/release.yml` has the detail.
+CI then checks every file is present, runs the tests that need no toolchain,
+wraps `build/` into an image and publishes it. It refuses to release if anything
+is missing, and warns if the bitstream is older than the RTL.
+
+That also makes any tag rebuildable into the exact card it shipped, which a
+release built from sources at head would not be.
 
 
 ## Documentation

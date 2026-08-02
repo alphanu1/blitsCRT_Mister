@@ -126,6 +126,7 @@ world: assets
 	  echo "    card image, though build/ is still usable by hand)"; \
 	fi
 	@$(MAKE) --no-print-directory build   # build is idempotent (cp -f); safe
+	@$(MAKE) --no-print-directory stage-uboot
 	@if [ -f "$(UBOOT_SFP)" ] || [ -n "$(BOOT_A2)" ]; then \
 	  if [ -f build/blitscrt.rbf ] && [ -f build/blitscrt/zImage ]; then \
 	    echo ""; \
@@ -373,6 +374,25 @@ uboot-toolchain:
 	  tar xf "$$tb" -C "$(HOME)/toolchains" && rm -f "$$tb" && \
 	  echo "installed to $(HOME)/toolchains/$$top" && \
 	  "$(HOME)/toolchains/$$top"/bin/*-gcc --version 2>/dev/null | head -1; \
+	fi
+
+# Copy the bootloader into build/, which is committed.
+#
+# Separate from `uboot` on purpose. That target does nothing when the tree is
+# already built, so a bootloader built before this staging existed never reached
+# build/ -- and CI failed on a missing .sfp that was sitting on the machine that
+# made it. This runs from `world` regardless of whether u-boot was rebuilt.
+.PHONY: stage-uboot
+stage-uboot:
+	@sfp="$(if $(wildcard $(UBOOT_SFP)),$(UBOOT_SFP),$(firstword $(wildcard $(HOME)/src/u-boot*/u-boot-with-spl.sfp)))"; \
+	if [ -n "$$sfp" ] && [ -f "$$sfp" ]; then \
+	  mkdir -p $(BUILD_DIR); \
+	  cp -f "$$sfp" $(BUILD_DIR)/u-boot-with-spl.sfp; \
+	  echo "staged $(BUILD_DIR)/u-boot-with-spl.sfp ($$(du -h "$$sfp" | cut -f1))"; \
+	elif [ -f $(BUILD_DIR)/u-boot-with-spl.sfp ]; then \
+	  echo "using the committed $(BUILD_DIR)/u-boot-with-spl.sfp"; \
+	else \
+	  echo "-- no bootloader to stage; 'make uboot' builds one"; \
 	fi
 
 uboot: uboot-clone

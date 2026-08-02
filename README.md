@@ -53,7 +53,7 @@ make world     # everything, ending in a card image
 That is the whole thing. `make world` ends with:
 
 ```
-  card image:  /path/to/blitsCRT_Mister/blitscrt-0.8.22-d42.img (258M)
+  card image:  /path/to/blitsCRT_Mister/blitscrt-0.8.23-d42.img (258M)
                write it with Etcher, Raspberry Pi Imager or dd
 ```
 
@@ -266,7 +266,9 @@ and the kernel and u-boot each need their own cross-compiler -- u-boot's being
 gcc 5, eight major versions behind everything else.
 
 So **`build/` is committed**. It is the whole card: bitstream, kernel, device
-tree, daemon, tools and the bootloader. `make world` stages all of it.
+tree, daemon, tools and the bootloader. `make world` stages all of it, including
+the bootloader -- `make stage-uboot` does that part alone, and finds an existing
+`.sfp` without rebuilding u-boot.
 
 ```
 make world

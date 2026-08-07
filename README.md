@@ -125,26 +125,28 @@ way back.
 | | | |
 |---|---|---|
 | **DE10-Nano or MiSTer Pi** | required | the board itself |
-| **Analog A/V board** | required | the only 15 kHz RGB output. Which board matters -- see below |
+| **I/O Analog Pro** | required | the ADV7125 board. The only 15 kHz RGB output, and the one this was brought up against -- see below |
 | **microSD card** | required | dedicated to BlitsCRT, since it replaces the boot chain on it |
-| **A-to-A USB cable, VBUS cut** | required | host link, into the board's Type-A OTG port |
+| **USB cable, VBUS cut** | required | host link. Which cable depends on where it goes -- see **USB** |
 | **Serial console** | advisable | the HPS UART at 115200 is where the boot log and the daemon appear. Not needed to install, only to debug |
 | **Quartus Prime Lite** | for the bitstream | free but licensed, and a manual download |
-| **USB hub board** | must be removed | the gadget does not work with it fitted |
+| **USB hub board** | optional | may stay fitted. Its upstream micro-B is the host link |
 
 ### Which A/V board
 
-There are two and they are not interchangeable.
+**I/O Analog Pro** is the required board. There are two and they are not
+interchangeable, and this was brought up against the Pro -- the older one is
+supported but untested here.
 
 **The older analog I/O board** takes RGB666 straight off the FPGA pins into a
 passive resistor ladder. No ICs on the video path.
 
-**The newer A/V board** carries an Analog Devices ADV7125 video DAC, plainly
-visible as a 48-pin QFP. A DAC latches nothing without a clock, so it needs three
-signals the older board did not, and MiSTer puts them on the pins the older board
-used for status LEDs:
+**I/O Analog Pro** carries an Analog Devices ADV7125 video DAC, plainly visible
+as a 48-pin QFP. A DAC latches nothing without a clock, so it needs three signals
+the older board did not, and MiSTer puts them on the pins the older board used
+for status LEDs:
 
-| pin | ball | older board | newer board |
+| pin | ball | older board | I/O Analog Pro |
 |---|---|---|---|
 | `LED_USER` | Y15 | user LED | `VCLK`, the DAC's latch clock |
 | `LED_POWER` | AG28 | power LED | `BLANK*`, driven by data enable |
@@ -166,14 +168,35 @@ secondary SD card pins, which this fabric does not drive.
 
 ### USB
 
-The host link goes into the board's USB OTG port, driven by the HPS `dwc2`
-controller in peripheral mode. On a DE10-Nano that is the micro-AB connector; a
-MiSTer Pi fits a **Type-A** receptacle instead, so the cable is A-to-A with VBUS
-cut on the board side -- both ends look like hosts and only one may supply power.
+The host link is driven by the HPS `dwc2` controller in peripheral mode. There
+are two places to plug it in, and both work.
 
-The micro-USB on an assembled MiSTer Pi belongs to the hub add-on, not the OTG
-port. A PC plugged into it enumerates a 7-port hub and nothing else. The hub must
-come off entirely: it and the gadget share the same controller.
+**With the hub board fitted.** The cable goes into the hub board's upstream
+micro-B. That connector is wired in parallel with the hub's 4-pin `USB IN`
+header -- same D+, D-, VBUS and GND -- so it reaches `dwc2` through the bridge,
+and the hub board stays bolted on with every port still facing out. This is the
+route to prefer: nothing comes apart, and a normal MiSTer stack becomes a
+BlitsCRT one by moving a cable.
+
+**With the hub board removed.** The cable goes into the board's own OTG port. On
+a DE10-Nano that is the micro-AB connector; a MiSTer Pi fits a **Type-A**
+receptacle instead, so the cable is A-to-A there.
+
+**The cable must have VBUS cut, whichever route.** Both ends of the link
+look like hosts and only one may supply power. Into the hub's micro-B it matters
+twice over: the hub's VBUS is common with the header's, so a stock cable powers
+the hub controller directly -- which then presents its own pull-up and wins the
+enumeration -- and backfeeds 5 V into the board's OTG VBUS at the same time. A
+stock cable there reproduces the original failure exactly. Lift pin 1 in the plug
+shell, or use a data-only lead.
+
+The hub does **not** have to come off. An earlier revision of this document said
+it did, on the strength of a host enumerating a 7-port hub instead of the gadget.
+That was observed while `/sys/class/udc/` was still empty -- there was no gadget
+for the host to find, and the board was sourcing VBUS because `dwc2` had come up
+as host. One pull-up unopposed, not two in contention. With the gadget registered
+and VBUS cut, the hub controller is unpowered and silent, and the host finds the
+display.
 
 
 ## Build
@@ -381,7 +404,7 @@ TIMING HOST
 
 Pulling the cable leaves the last frame frozen on screen. The revert to the test
 card is driven by `FUNCTIONFS_DISABLE`, and dwc2 raises that from VBUS going
-away -- which the A-to-A cable, with VBUS cut on the board side, never sees. Worse
+away -- which the cable, with VBUS cut on the board side, never sees. Worse
 than cosmetic: on X11 a host can panic when a live output disappears underneath
 it.
 
@@ -395,7 +418,7 @@ desktop, or unplug at leisure.
 
 ### Where they actually are
 
-On a board fitted with the newer A/V board, none of these are on the pins their
+On a board fitted with I/O Analog Pro, none of these are on the pins their
 names suggest. The `LED_*` pins carry the DAC's clock, blank and sync, and the
 `BTN_*` pins carry nothing. All six are behind an **MCP23009 I2C expander**, on a
 bus bit-banged in the fabric -- `IO_SCL` on `PIN_U14` and `IO_SDA` on `PIN_AG9`,
@@ -462,7 +485,7 @@ what it cost to get working.
 
 - **Unplugging the cable still leaves the last frame frozen.** The user button is
   the way to disconnect cleanly; pulling the cable is not detectable, because the
-  A-to-A cable has VBUS cut and that is what dwc2 raises `FUNCTIONFS_DISABLE`
+  cable has VBUS cut and that is what dwc2 raises `FUNCTIONFS_DISABLE`
   from. `/sys/class/udc/<name>/state` reports `configured` independently of the
   FunctionFS event stream, so polling it would catch an unannounced unplug too.
 - **RGB888 is not offered.** `scanout_fetch.v` needs a two-beat read window for a

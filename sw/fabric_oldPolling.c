@@ -645,79 +645,60 @@ int blitscrt_fabric_pll_reconfig(struct blitscrt_fabric *f,
 	 * why the caller holds the video pipeline in reset. */
 	{
 		/*
-		 * Poll STATUS. It is safe to, and the old comment here was
-		 * wrong.
+		 * Wait, then look. Do not poll.
 		 *
-		 * This used to back off -- 5, 10, 20 ... 640 ms between single
-		 * reads -- on the theory that reading STATUS while the core
-		 * waits for lock stops it ever reaching LOCKED. It does not.
-		 * Two separate causes were mistaken for that:
+		 * Reading STATUS repeatedly while the core waits for lock stops
+		 * it ever reaching LOCKED -- proven on hardware: the identical
+		 * write sequence followed by a single read after a pause
+		 * succeeds every time, while the same sequence followed by a
+		 * tight poll never does, however long the poll runs. Two seconds
+		 * of it failed where one read at 500 ms worked.
 		 *
-		 *   1. MODE. `status` is literally (current_state == LOCKED),
-		 *      and in waitrequest mode the machine returns from
-		 *      WAIT_ON_LOCK straight to IDLE and never enters LOCKED.
-		 *      MODE=0 plus polling can therefore never succeed, at any
-		 *      interval. pll_reconfig_build() writes PLL_MODE_POLL.
-		 *   2. The mgmt read FSM. Holding mgmt_read re-ran the slave's
-		 *      read FSM, whose readdata alternates between the value
-		 *      and zero while it cycles -- the garbage that prompted
-		 *      the delay in the first place. Fixed in regs 3.8, and
-		 *      this daemon warns below that version.
-		 *
-		 * sim/tb_pll_reconfig.v polls STATUS 200 times with no gap at
-		 * all, real IP through the real bridge, and reaches ready.
-		 *
-		 * The floor below is not superstition: lock does not drop the
-		 * instant the counters shift in, so an immediate read can see
-		 * the PREVIOUS mode still LOCKED and return before the new
-		 * clock is up. That race is the only reason to wait at all.
+		 * So this backs off instead of hammering: a short wait, one
+		 * read, and if it is not ready yet a longer wait. Returns as
+		 * soon as the PLL is ready, and touches the register a handful
+		 * of times rather than thousands.
 		 */
-		enum { PLL_FLOOR_US = 200, PLL_GAP_US = 50,
-		       PLL_DEADLINE_US = 20000 };
+		static const unsigned waits_ms[] = { 5, 10, 20, 40, 80, 160,
+						     320, 640 };
 		uint32_t st = 0;
 		unsigned total = 0;
-		struct timespec t0, now;
+		size_t i;
 
-		usleep(PLL_FLOOR_US);
-		clock_gettime(CLOCK_MONOTONIC, &t0);
-		for (;;) {
+		for (i = 0; i < sizeof waits_ms / sizeof waits_ms[0]; i++) {
+			/* Slice the wait and feed the watchdog between slices;
+			 * a second of silence drops hps_alive and the raster
+			 * falls back to the test card mid-modeset. */
+			unsigned left = waits_ms[i];
+			while (left) {
+				unsigned slice = left > 50 ? 50 : left;
+				usleep(slice * 1000u);
+				left -= slice;
+				fabric_tick(f);
+			}
+			total += waits_ms[i];
 			st = blitscrt_fabric_read(f, BLITSCRT_PLLRECFG_OFFSET +
 						      (PLL_RECONFIG_STATUS * 4));
 			if (st & PLL_STATUS_READY) {
-				if (total > 2000)
-					fprintf(stderr, "blitscrt: PLL ready "
-						"after %u us\n",
-						total + PLL_FLOOR_US);
+				if (i > 1)
+					fprintf(stderr, "blitscrt: PLL ready after "
+						"%u ms\n", total);
 				return 0;
 			}
-			clock_gettime(CLOCK_MONOTONIC, &now);
-			total = (unsigned)((now.tv_sec - t0.tv_sec) * 1000000
-				 + (now.tv_nsec - t0.tv_nsec) / 1000);
-			if (total > PLL_DEADLINE_US)
-				break;
-			usleep(PLL_GAP_US);
 		}
-		/* Well inside the ~1.5 s watchdog now, so no tick slicing. */
-		fabric_tick(f);
-		total = (total + PLL_FLOOR_US) / 1000;
 		fprintf(stderr,
 			"blitscrt: PLL reconfig did not complete after %u ms\n"
 			"  STATUS  (0x%04x) = 0x%08x  ready=%d\n"
 			"  MODE    (0x%04x) = 0x%08x\n"
-			"  STATUS is (state == LOCKED). MODE must read 1: in\n"
-			"  waitrequest mode the core never enters LOCKED, so\n"
-			"  STATUS can never read ready however long this waits.\n"
-			"  BUS_DIAG = 0x%08x -- starts/counter-writes/accepts\n"
-			"  reaching the reconfig slave, and bit 3 is PLL lock.\n"
-			"  All zero there means the sequence never arrived,\n"
-			"  which is a transport fault, not a PLL one.\n",
+			"  STATUS is (state == LOCKED), and reading it while the\n"
+			"  core waits for lock stops it getting there -- so this\n"
+			"  waits between looks rather than polling.\n",
 			total,
 			BLITSCRT_PLLRECFG_OFFSET + PLL_RECONFIG_STATUS * 4, st,
 			(st & PLL_STATUS_READY) ? 1 : 0,
 			BLITSCRT_PLLRECFG_OFFSET + PLL_RECONFIG_MODE * 4,
 			blitscrt_fabric_read(f, BLITSCRT_PLLRECFG_OFFSET +
-						PLL_RECONFIG_MODE * 4),
-			blitscrt_fabric_read(f, BLITSCRT_REG_BUS_DIAG));
+						PLL_RECONFIG_MODE * 4));
 	}
 	return -1;
 }

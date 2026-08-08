@@ -124,51 +124,7 @@ void blitscrt_modelist_defaults(struct blitscrt_dev *d)
 				    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC);
 	blitscrt_modelist_add(d, &m);
 
-	/*
-	 * Second mode: 632x240p60. Opt-in, for timing a mode switch.
-	 *
-	 * A single advertised mode leaves no way to make a host issue a
-	 * SET_MODE, so there is nothing to measure the modeset path with.
-	 * This gives a host something to switch to.
-	 *
-	 * 632 for the same reason 648 is 648: a width no Switchres modeline
-	 * will produce, so a log line names which mode is live without
-	 * ambiguity. 632 at 16bpp is 1264 bytes, 158 f2sdram beats exactly,
-	 * so it needs no stride padding either -- the switch being timed is
-	 * then a mode switch and not a padding path.
-	 *
-	 * Same 12.600 MHz and same 800-total line, so the PLL counters do not
-	 * change between the two. blitscrt_fabric_pll_reconfig() is called
-	 * regardless, so the reconfig wait is still exercised; what is not
-	 * exercised is a VCO change. A 632-wide active cannot fit an 800/2
-	 * line, so there is no half-clock partner for it -- timing a
-	 * clock-changing switch needs a narrower mode than this one.
-	 *
-	 * What does change is v_total and the interlace flag: 525 interlaced
-	 * against 262 progressive. That is the whole set_mode path, timing
-	 * registers, scanout geometry and the LIVE_* confirm included.
-	 *
-	 * Advertised unconditionally, like every other mode here. Set
-	 * BLITSCRT_MODES=noswitchtest to suppress it once it has served its
-	 * purpose, or delete this block.
-	 */
-	{
-		const char *ml = getenv("BLITSCRT_MODES");
 
-		if (!(ml && strstr(ml, "noswitchtest"))) {
-			blitscrt_mode_from_modeline(&m, 12600,
-						    632, 656, 716, 800,
-						    240, 243, 246, 262,
-						    BLITSCRT_MF_NHSYNC |
-						    BLITSCRT_MF_NVSYNC);
-			if (blitscrt_modelist_add(d, &m) == 0)
-				fprintf(stderr, "blitscrtd: switch-test mode "
-						"632x240p60 advertised\n");
-			else
-				fprintf(stderr, "blitscrtd: switch-test mode "
-						"632x240p60 REFUSED\n");
-		}
-	}
 }
 
 /*

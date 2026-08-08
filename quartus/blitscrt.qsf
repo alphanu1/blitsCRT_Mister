@@ -97,6 +97,11 @@ set_global_assignment -name VERILOG_FILE ../rtl/pll_modes.v
 # threshold -- every advertised mode still solves exactly on integers and never
 # reaches it. See docs/MEGAFUNCTIONS.md.
 #
+# Quartus warns "Ignored N assignments for entity pll_pix_frac -- entity does
+# not exist in design" while the macro is commented out. That is expected: the
+# IP files are listed so the core is available, and the RTL only instantiates
+# it when the macro is defined. Harmless, and the alternative is commenting out
+# the QIP lines too, which makes switching a four-line edit instead of one.
 #set_global_assignment -name VERILOG_MACRO "BLITSCRT_PLL_FRAC=1"
 
 set_global_assignment -name QIP_FILE ../rtl/pll_pix.qip

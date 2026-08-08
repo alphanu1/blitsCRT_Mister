@@ -492,22 +492,59 @@ module blitscrt_top #(
     localparam integer SCANOUT_AW    = $clog2(SCANOUT_W * SCANOUT_H);
 
     wire [19:0] sc_addr;
-    wire [11:0] sc_x, sc_y;
+    wire [11:0] sc_x, sc_y, sc_y_next;
     wire [31:0] sc_word;
     wire        sc_underrun;
+    wire        sc_late;      // a line missed its swap
     wire [15:0] sc_beats;
 
     generate
     if (SCANOUT_SRC == "DDR3") begin : g_ddr3
 
-        /* One request per line, raised at the line boundary for the line about
-         * to be displayed. The fetch then has the whole horizontal blanking
-         * interval -- 136 pixels, about 10.8 us at 12.6 MHz -- against roughly
-         * 2 us to move 160 beats, so five times the margin at the slowest mode
-         * and half that at 25.2 MHz. Requesting a line ahead instead would give
-         * a full line time, but needs the *next* line's source row, which is
-         * awkward across a field boundary and buys margin that is not short. */
-        wire [11:0] h_act_start = t_hsy + t_hbp;
+        /* One request per line, raised at the line boundary for the line to be
+         * displayed NEXT.
+         *
+         * This used to request the line about to be displayed on this same
+         * line, which left only the sync and back porch to fetch it -- 83
+         * pixel clocks at 320x240, about 12.4 us. The comment here said that
+         * was five times the margin needed and not worth improving.
+         *
+         * It was not enough. On hardware, at 320x240 with the raster running
+         * and nothing else attached, `peek -g` caught underruns climbing and
+         * one line reporting zero beats: a fetch that returned nothing at all.
+         * f2sdram shares the SDRAM controller with the HPS, and a worst-case
+         * stall is nothing like the average -- DDR3 refresh alone can hold a
+         * burst for microseconds.
+         *
+         * Requesting a line ahead gives the fetch a whole line period instead:
+         * 426 clocks, 63.9 us in that mode, five times what it had. The two
+         * line buffers already exist for exactly this and were being used as
+         * same-line staging.
+         *
+         * The cost is one line of latency and the next line's source row,
+         * which scanout now provides -- ypos is {yr, field} in interlace, so
+         * the next displayed line is two away rather than one. */
+        /*
+         * The porches the raster is ACTUALLY running, not the mode table's.
+         *
+         * This read t_hsy + t_hbp -- the front-panel table's -- while
+         * video_timing runs on v_hsy/v_hbp, which follow the host when a host
+         * owns the timing. The same mistake as the test card geometry above,
+         * in the one place that fix did not reach.
+         *
+         * The effect: the buffer swap fired at the table's active start rather
+         * than the raster's, so with the table at 648 (60+70=130) and a host at
+         * 320 (32+55=87) the flip landed 39 pixels INTO the picture. Everything
+         * left of that came from the previous line's buffer -- a band down the
+         * left edge, one scanline late.
+         *
+         * Measured on hardware at a fixed 47 pixels regardless of the host's
+         * width, which is the signature: it is the difference between two
+         * constants, so it does not scale with the mode. It vanished whenever
+         * the host's porches matched the table's, which is why 648x480 was
+         * always clean.
+         */
+        wire [11:0] h_act_start = v_hsy + v_hbp;
 
         reg  req_pulse, show_pulse;
         always @(posedge clk_pix or negedge rst_n) begin
@@ -515,6 +552,9 @@ module blitscrt_top #(
                 req_pulse <= 1'b0; show_pulse <= 1'b0;
             end else begin
                 req_pulse  <= (hcnt == 12'd0);
+                /* The row fetched at this line's request is shown on the next
+                 * line, so the show pulse consumes what the previous line
+                 * asked for. */
                 /* Four clocks before active video: the read port is registered,
                  * so the buffer has to be swapped before scanout presents the
                  * first column or pixel zero comes out of the old line. */
@@ -555,9 +595,10 @@ module blitscrt_top #(
             .sc_base(r_sc_base), .sc_stride(r_sc_stride[15:0]),
             .sc_w(r_sc_w), .sc_format(r_sc_format),
             .clk_pix(clk_pix), .rst_pix_n(rst_n),
-            .line_req(req_pulse), .line_y(sc_y), .line_show(show_pulse),
+            .line_req(req_pulse), .line_y(sc_y_next), .line_show(show_pulse),
             .line_valid(), .line_done(), .busy(),
-            .underrun_tog(sc_underrun), .beats_last(sc_beats),
+            .underrun_tog(sc_underrun), .late_tog(sc_late),
+            .beats_last(sc_beats),
             .rd_x(sc_x), .rd_q(sc_word)
         );
 
@@ -576,6 +617,7 @@ module blitscrt_top #(
 
         assign sc_word     = {16'd0, sc_q};
         assign sc_underrun = 1'b0;
+        assign sc_late     = 1'b0;
         assign sc_beats    = 16'd0;
 
     end
@@ -598,7 +640,8 @@ module blitscrt_top #(
         .sc_format(r_sc_format),
         .hdouble(hdouble), .vdouble(vdouble),
         .mem_addr(sc_addr), .mem_q(sc_word),
-        .x_src(sc_x), .y_src_o(sc_y),
+        .x_src(sc_x), .y_src_o(sc_y), .ilace(v_ilace),
+        .y_src_next_o(sc_y_next),
         .r(sc_r), .g(sc_g), .b(sc_b)
     );
 
@@ -804,7 +847,8 @@ module blitscrt_top #(
         .io_vga_en(VGA_EN), .io_av_present(av_present),
         .io_mcp_present(mcp_present), .io_mcp_btn(mcp_btn),
         .io_btn_user(btn_user_eff),
-        .scanout_underrun_tog(sc_underrun), .scanout_beats(sc_beats),
+        .scanout_underrun_tog(sc_underrun), .scanout_late_tog(sc_late),
+        .scanout_beats(sc_beats),
         /* Post-mux, so this reports what the raster is really running on
          * rather than what was asked for. */
         .live_hsy(v_hsy),   .live_hbp(v_hbp),

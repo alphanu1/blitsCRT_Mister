@@ -205,7 +205,7 @@ module tb_scanout_write;
         chk("GEOM reports 16x8                 ", readdata == {16'd8, 16'd16});
 
         rd(14'h004);
-        chk("VERSION reads 3.26                ", readdata == 32'h0003_001A);
+        chk("VERSION reads 3.31                ", readdata == 32'h0003_001F);
 
         rd(14'h07C);
         chk("CAPS reports the build            ", readdata == 32'h0000_0001);

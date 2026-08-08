@@ -70,6 +70,13 @@ module scanout #(
      * deriving it a second time and risking a different answer. */
     output wire [11:0]   x_src,
     output wire [11:0]   y_src_o,
+    /* The source row of the NEXT displayed line, so the fetch can be started a
+     * line early and have a whole line period rather than the blanking. In
+     * interlace ypos is {yr, field}, so the next displayed line is two away;
+     * progressive, one. Line doubling may make it the same row, which is
+     * correct -- that row is simply fetched twice. */
+    input  wire          ilace,
+    output wire [11:0]   y_src_next_o,
 
     output wire [5:0]    r,
     output wire [5:0]    g,
@@ -103,7 +110,11 @@ module scanout #(
 
     assign mem_addr = index[AW-1:0];
     assign x_src     = x_src_w;
-    assign y_src_o   = y_src;
+    wire [11:0] ypos_next = ypos + (ilace ? 12'd2 : 12'd1);
+    wire [11:0] y_src_next = vdouble ? {1'b0, ypos_next[11:1]} : ypos_next;
+
+    assign y_src_o      = y_src;
+    assign y_src_next_o = y_src_next;
 
     // de follows the address by one clock, so it lands with the data
     reg de_q;

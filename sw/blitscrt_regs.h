@@ -293,6 +293,11 @@
 #define BLITSCRT_LIVE_CLKSEL(v)     (((v) >> 2) & 3u)
 #define BLITSCRT_DIAG_BEATS(v)      ((v) & 0xffffu)
 #define BLITSCRT_DIAG_UNDERRUNS(v)  (((v) >> 16) & 0xffu)
+/* Lines fetched too late for their swap, so the previous line was displayed
+ * again. Distinct from an underrun: the fetch completes, just not by the swap
+ * four clocks before active video. A picture can have one fault without the
+ * other, and a displaced band with zero underruns is this. Fabric 3.28. */
+#define BLITSCRT_DIAG_LATE(v)       (((v) >> 24) & 0xFFu)
 
 /* Physical base of the DDR3 window the fabric scans out of. Reserved from Linux
  * by mem= in the boot arguments; see tools/blitsenv.txt. */

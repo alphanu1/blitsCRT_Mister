@@ -449,6 +449,36 @@ passes through untouched and a machine that does not need this never sees it.
 `docs/INTERLACE.md` has the reasoning and the `crt_range` lines for both profiles.
 
 
+## Timing constraints on the output pads
+
+`make check-fit` reported PASS for weeks on a design carrying **-5.641 ns of
+setup slack and -214 ns of TNS**, because it read synthesis notes and constraint
+coverage and never looked at slack at all.
+
+Every failing path was an output pad:
+
+```
+From: overlay|de_out   To: HDMI_TX_D[1]   Latch Clock: n/a   Relationship: 12.000
+Clock Skew : -8.932    Data Delay : 8.709
+```
+
+The 12 ns was invented and could never be met -- the pixel clock takes 8.9 ns to
+reach the output registers, leaving 3.1 ns for 8.7 ns of routing. Not a
+functional fault: at a 79 ns pixel period the outputs are fine, and both HDMI
+and the CRT have worked throughout. But it buried the report, and a real failure
+would have been invisible underneath it.
+
+| | |
+|---|---|
+| done | HDMI constrained source-synchronously against the forwarded `HDMI_TX_CLK`, which is what the ADV7513 actually samples with |
+| done | VGA relaxed to 25 ns with min and max, since what matters is skew between the six bits of a channel rather than absolute delay, and the DAC has no clock pin of its own |
+| done | `check-fit` fails on negative slack, reports each fault once, and stops matching the report's own table of contents |
+| done | `make failing-paths` names the endpoints, which the summary never does |
+
+The registers-only report was clean throughout -- worst slack **+3.397 ns** in
+`scanout_fetch` -- so the fabric itself was never the problem.
+
+
 **M7 -- Windows host. Not started, and probably not here.** GUD is a wire
 protocol, not a Linux one: request codes, a mode structure, a buffer format.
 Nothing about the board depends on what is at the other end, so a Windows host

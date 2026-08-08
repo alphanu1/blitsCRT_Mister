@@ -126,6 +126,17 @@ int main(int argc, char **argv)
 			printf("underruns       %u%s\n",
 			       BLITSCRT_DIAG_UNDERRUNS(diag),
 			       BLITSCRT_DIAG_UNDERRUNS(diag) == 255 ? " (saturated)" : "");
+			if (blitscrt_fabric_read(f, BLITSCRT_REG_VERSION) >= 0x0003001Cu) {
+				unsigned late = BLITSCRT_DIAG_LATE(diag);
+				printf("late lines      %u%s\n", late,
+				       late == 255 ? " (saturated)" : "");
+				if (late)
+					printf("  a line was fetched but missed its swap, so the\n"
+					       "  previous one was displayed again -- a band of the\n"
+					       "  picture displaced sideways. The fetch has only the\n"
+					       "  sync and back porch to complete, and write traffic\n"
+					       "  into DDR3 arbitrates against it.\n");
+			}
 			if (BLITSCRT_DIAG_BEATS(diag) == 0)
 				printf("  zero beats: the f2sdram port is not answering.\n"
 				       "  Check FPGAPORTRST (devmem 0xFFC25080) before\n"

@@ -444,6 +444,7 @@ int blitscrt_scanout_configure(struct blitscrt_fabric *f,
 		}
 		if (map_scanout_window(f) < 0)
 			return -1;
+
 		blitscrt_fabric_write(f, BLITSCRT_REG_SCANOUT_BASE, f->sc_phys);
 	}
 

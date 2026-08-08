@@ -30,13 +30,54 @@ Things that do not fix it:
   computes a modeline per title from the actual refresh, so a fixed list cannot
   anticipate them without running to hundreds of entries, and a host picking from
   a list still would not get the exact clock.
-- **The 15 kHz kernel patches.** `02_linux_15khz_interlaced_mode_fix.patch` is
-  the right idea — it stops DRM trusting a hardware vblank counter for interlaced
-  modes, because those count frames rather than fields. But it works by falling
-  back to timestamps when a hardware counter exists, and `gud` has no vblank at
-  all. Nothing for it to correct.
+- **The 15 kHz kernel patches**, mostly. See below -- one is the right idea and
+  has nothing here to correct; three may matter after all.
 - **`interlace 0` in switchres.ini.** Gets 60 Hz motion by not being interlaced:
   224 progressive lines instead of 448.
+
+## The 15 kHz kernel patches
+
+`D0023R/linux_kernel_15khz` carries the patch set GroovyArcade and Batocera use.
+Most of it makes a real graphics card emit 15 kHz, which this project does not
+need -- the board generates its own raster and the host only sends pixels.
+
+| patch | what it does | here |
+|---|---|---|
+| `01_linux_15khz` | a hard-coded 15 kHz mode table selected by `video=VGA-1:640x480ieS` | not needed; modes arrive over GUD |
+| `02_..._interlaced_mode_fix` | stops DRM trusting the hardware vblank counter for interlaced modes | **right idea, nothing to correct** |
+| `03/04_..._dcn/dce_interlaced_mode_fix` | enable interlaced mode on amdgpu | **possibly relevant -- see below** |
+| `05_..._amdgpu_pll_fix` | amdgpu PLL calculation | possibly, same reason |
+| `06_..._switchres_kms_drm_modesetting` | Switchres through KMS, bypassing xrandr | untested, and it targets the right layer |
+| `07_..._fix_ddc` | oops when probing DDC with no adapter | unrelated |
+| `08_..._interlace_force_even` | force even fields on amd DCN1 | unrelated |
+
+**Patch 02 is worth understanding even though it does not apply.** It is the
+same diagnosis reached here from the other end:
+
+```c
+/* We can't use the hw counter for interlace modes */
+if (max_vblank_count && !(crtc->hwmode.flags & DRM_MODE_FLAG_INTERLACE)) {
+        /* trust the hw counter when it's around */
+```
+
+Hardware vblank counters tick once per **frame** in interlace, so a vsynced
+application gets 30 ticks a second where it needs 60. The fix falls back to
+timestamps and `framedur_ns`, which is derived from the halved `crtc_vtotal` and
+therefore counts fields. That is exactly what correct looks like.
+
+It cannot help here because it works by distrusting a hardware counter, and
+`gud` has none -- confirmed on the board:
+
+```
+$ sudo ls /sys/kernel/debug/dri/3-4:1.0/
+clients  crtc-0  encoder-0  framebuffer  name  state  VGA-1
+```
+
+No vblank entry. There is no interrupt to fix.
+
+**Patches 03-05 were dismissed too early.** The reasoning was that this project
+does not use a GPU for output, which is true of the video path and false of the
+render path -- see the GPU section below.
 
 ## What does
 

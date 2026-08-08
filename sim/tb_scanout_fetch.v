@@ -230,6 +230,9 @@ module tb_scanout_fetch;
         chk("beats_last agrees with the count     ", beats_last == 16'd80);
 
         $display("");
+        check_cdc;
+
+        $display("");
         if (fails == 0) $display("PASS");
         else            $display("FAIL  %0d checks", fails);
         $finish;
@@ -238,5 +241,59 @@ module tb_scanout_fetch;
     initial begin
         #50000000; $display("FAIL  timeout"); $finish;
     end
+
+
+    // -------------------------------------------------------------------
+    // the line number must be settled before the flag moves
+    // -------------------------------------------------------------------
+    /*
+     * A simulation cannot show metastability, so this checks the property
+     * that avoids it instead: when req_tog changes, req_y must already have
+     * been stable for a cycle.
+     *
+     * It was not. req_tog and req_y were assigned on the same edge, so the
+     * reader -- which synchronises the flag through two flops and then samples
+     * the whole twelve-bit bus -- could catch that bus mid-transition and fetch
+     * a line from base + wrong_y * stride. On hardware that is a block edge
+     * stepping part-way along a scan, with underruns at zero throughout,
+     * because the fetch completes perfectly and simply fetches the wrong line.
+     *
+     * Nothing else in this testbench notices: in simulation the wrong value is
+     * never sampled, because there is no timing to get wrong.
+     */
+    /* Initialised to the DUT's reset values, so the first toggle is not
+       compared against X. */
+    reg [11:0] req_y_prev = 12'd0;
+    reg        req_tog_prev = 1'b0;
+    integer    cdc_fails = 0;
+    integer    cdc_seen  = 0;
+
+    /* Sampled a delta after the edge, with blocking assignments, so what is
+       read is the settled post-edge value rather than whatever the scheduler
+       happens to have updated first. Comparing across a clock edge is exactly
+       the case where reading mid-update gives an answer that means nothing. */
+    always @(posedge clk_pix) begin
+        #1;
+        if (dut.req_tog !== req_tog_prev) begin
+            cdc_seen = cdc_seen + 1;
+            if (dut.req_y !== req_y_prev) begin
+                cdc_fails = cdc_fails + 1;
+                $display("  req_y moved on the same edge as req_tog (y=%0d)",
+                         dut.req_y);
+            end
+        end
+        req_y_prev   = dut.req_y;
+        req_tog_prev = dut.req_tog;
+    end
+
+    task check_cdc;
+        begin
+            $display("the request crossing");
+            chk("req_tog moved at least once           ", cdc_seen > 0);
+            chk("req_y settled before every toggle     ", cdc_fails == 0);
+            $display("        %0d toggles, %0d with a moving line number",
+                     cdc_seen, cdc_fails);
+        end
+    endtask
 
 endmodule

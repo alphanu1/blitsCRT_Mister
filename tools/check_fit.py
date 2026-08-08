@@ -70,10 +70,63 @@ for rpt in ('blitscrt.sta.rpt', 'blitscrt.fit.rpt'):
         if 'blitscrt.sdc' in m.group(2):
             problems.append('SDC constraint matched nothing: %s at %s'
                             % (m.group(1), m.group(2)))
-    if re.search(r'[Uu]nconstrained [Cc]lock', txt):
-        for m in re.finditer(r'^\s*;\s*([\w\|\[\]\.:~]+)\s*;\s*$', txt, re.M):
-            pass  # names vary by report shape; the flag below is what matters
-        notes.append('%s mentions unconstrained clocks -- read it' % rpt)
+    # Only a real count, not the section heading. This used to match the
+    # words anywhere in the report -- including its own table of contents --
+    # so it fired on every build and meant nothing.
+    m = re.search(r'Unconstrained Clocks\s*;\s*(\d+)\s*;\s*(\d+)', txt)
+    if m and (int(m.group(1)) or int(m.group(2))):
+        problems.append('%s: %s unconstrained clocks -- those paths are not '
+                        'timed at all' % (rpt, m.group(1)))
+
+    # Slack. The check ran for weeks without looking at it, and reported PASS
+    # on a design carrying -5.641 ns of setup slack and -214 ns of TNS.
+    #
+    # A path that misses timing is not wrong, it is late: the logic is right,
+    # every counter reads clean, and the value is occasionally sampled before
+    # it settles. That is a hard fault to place from behaviour, and exactly
+    # the kind a report is supposed to hand you for free.
+    # The boxed heading, not the entry in the report's own table of contents.
+    #
+    # A plain find() matches the contents listing first and then scans the legal
+    # notice, finds no table, and says so -- which is how this check reported
+    # "no multicorner summary" on a report that had one, carrying -5.641 ns.
+    # The same mistake as the unconstrained-clocks check above: matching a
+    # heading rather than the thing under it.
+    mm = re.search(r'^;\s*Multicorner Timing Analysis Summary', txt, re.M)
+    i = mm.start() if mm else -1
+    if i >= 0:
+        seen = False
+        for line in txt[i:i + 8000].split('\n'):
+            if not line.startswith(';'):
+                continue
+            cells = [c.strip() for c in line.split(';')[1:-1]]
+            # Skip the summary's own header and its roll-up rows: they carry
+            # the same number as the clock that caused them, and reporting one
+            # fault three times reads like three faults.
+            if len(cells) < 2 or not cells[0]:
+                continue
+            if cells[0].startswith('Design-wide') or \
+               cells[0].startswith('Worst-case') or \
+               cells[0] in ('Clock', 'Type', 'Slack'):
+                continue
+            try:
+                setup = float(cells[1])
+            except ValueError:
+                continue
+            seen = True
+            short = cells[0] if len(cells[0]) < 58 else '...' + cells[0][-55:]
+            if setup < 0.0:
+                problems.append('setup slack %+.3f ns on %s -- the design does '
+                                'not meet timing' % (setup, short))
+        if not seen:
+            notes.append('%s: could not read slack from the multicorner summary'
+                         % rpt)
+    elif rpt.endswith('sta.rpt'):
+        # Only the timing report is expected to carry one; the fit report is
+        # not, and saying so every build is the noise this check exists to
+        # avoid.
+        notes.append('%s has no multicorner summary -- read the timing by hand'
+                     % rpt)
 
 for n in notes:
     print('  note: %s' % n)

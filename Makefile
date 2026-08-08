@@ -608,6 +608,15 @@ sim: assets
 # Reads what came out rather than trusting what was ticked, since GUI labels
 # move between Quartus releases. See docs/MEGAFUNCTIONS.md.
 # Reads the Quartus reports for things it says but does not fail on.
+# Which paths miss timing. check-fit says a design does not meet it; this says
+# between which nodes, which is the difference between a constraint on an output
+# pad and a real problem in the fabric.
+.PHONY: failing-paths
+failing-paths:
+	@if [ -z "$(QUARTUS_STA)" ]; then \
+	  echo "quartus_sta not found -- try: make quartus-path"; exit 1; fi
+	@cd quartus && $(QUARTUS_STA) -t ../tools/failing_paths.tcl blitscrt
+
 check-fit:
 	@python3 tools/check_fit.py quartus/output_files
 
@@ -1326,3 +1335,6 @@ build: assets $(UBOOT_TXT) daemon peek
 	@echo "copy the contents of $(BUILD_DIR)/ to the SD card root. the layout"
 	@echo "already matches what blitscrt.txt loads: .rbf and .txt at the root,"
 	@echo "the kernel and gadget files under blitscrt/."
+
+# The timing analyser lives beside the shell, so no second search.
+QUARTUS_STA := $(if $(QUARTUS_SH),$(dir $(QUARTUS_SH))quartus_sta,)

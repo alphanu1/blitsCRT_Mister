@@ -45,6 +45,46 @@ module blitscrt_regs #(
      *   3.6  BUS_DIAG; the bridge gives up on a slave that never accepts
      *        instead of wedging the transport
      *   3.7  blitscrt_pllbus between the bridge and the reconfig slave
+     *   3.31 the buffer swap used the mode table's porches, not the raster's.
+     *        h_act_start read t_hsy + t_hbp while video_timing runs on
+     *        v_hsy/v_hbp, which follow the host -- so with the table at 640
+     *        (60+76=136) and a host at 320 (32+55=87) the flip landed 45 pixels
+     *        INTO the picture, and everything left of it came from the previous
+     *        line's buffer. A band down the left edge, one scanline late,
+     *        measured on hardware at about 47 pixels. The same mistake as the
+     *        test card geometry, in the one place that fix did not reach, which
+     *        is why 648x480 was always clean: its porches match the table's
+     *   3.30 the line fetch is requested a line ahead. It used to be raised for
+     *        the line about to be displayed, leaving only the sync and back
+     *        porch -- 12.4 us at 320x240 -- and on hardware that was not
+     *        enough: underruns climbed and one line came back with zero beats,
+     *        a fetch that returned nothing. f2sdram shares the SDRAM controller
+     *        with the HPS and a worst-case stall is nothing like the average.
+     *        Now it gets a whole line period, 63.9 us in that mode. The two
+     *        line buffers already existed for this and were being used as
+     *        same-line staging
+     *   3.29 the second line buffer was a quarter the size of the first. The
+     *        buffers are indexed by concatenation, so each occupies 2**DAW --
+     *        1024 -- while the array was sized 2*DEPTH, 1280. Buffer 1 got
+     *        1024..1279, or 256 beats against the 640 intended. Enough for 648
+     *        at RGB565 and not for XRGB8888 or a 1280-wide mode, where every
+     *        alternate line would lose everything past beat 256. Also: the
+     *        control synchroniser widened from 6 bits to 9, so av_force, av_dac
+     *        and av_clk_inv stop crossing clock domains unsynchronised
+     *   3.28 count lines that miss their swap. The fetch is requested at
+     *        hcnt 0 and must land by h_act_start-4, so it has only the sync and
+     *        back porch -- and write traffic into DDR3 arbitrates against it.
+     *        A fetch that misses shows the previous line again, which looks
+     *        like a band displaced sideways, and underrun_tog does not catch it
+     *        because that fires only when the NEXT request finds a fetch still
+     *        running. Reported by peek -g as "late lines"
+     *   3.27 the line-fetch request crossing settles the line number a cycle
+     *        before raising its flag. Both were assigned on the same edge, so
+     *        the reader could sample a twelve-bit bus mid-transition and fetch
+     *        a line from base + wrong_y * stride -- a block edge stepping
+     *        part-way along a scan, with underruns at zero throughout because
+     *        the fetch completed perfectly and simply fetched the wrong line.
+     *        Found with a static fill: no host, no USB, no compression
      *   3.26 no functional change. Forces a rebuild so the whole staging path
      *        can be watched: bitstream, kernel, dtb, daemon and bootloader all
      *        landing in build/, which is committed
@@ -96,7 +136,7 @@ module blitscrt_regs #(
      * clock select pointing at a clock pin and once without -- and the only way
      * to tell them apart was whether the monitor synced.
      */
-    parameter [31:0] VERSION = 32'h0003_001A,
+    parameter [31:0] VERSION = 32'h0003_001F,
     parameter [11:0] SCANOUT_MAXW = 12'd1280,
     /* Cycles the user button ignores further edges for, covering contact
      * bounce. 20 ms at 50 MHz. A testbench overrides it to something it can
@@ -170,6 +210,10 @@ module blitscrt_regs #(
     input  wire        io_btn_user,       // debounced user button, active low
 
     input  wire        scanout_underrun_tog,
+    /* A line fetched too late to be displayed, so the previous one was shown
+     * again. Distinct from an underrun: the fetch completes, just not in time
+     * for the swap four clocks before active video. */
+    input  wire        scanout_late_tog,
     input  wire [15:0] scanout_beats,
 
     /* What video_timing is actually being fed, after the ownership mux. Static
@@ -330,6 +374,9 @@ module blitscrt_regs #(
     reg [1:0]  ur_meta;
     reg        ur_seen;
     reg [7:0]  ur_count;
+    reg [1:0]  lt_meta;
+    reg        lt_seen;
+    reg [7:0]  lt_count;
     reg [15:0] beats_meta, beats_sync;
     reg [11:0] lv_hsy, lv_hbp, lv_hact, lv_hfp;
     reg [11:0] lv_vsy, lv_vbp, lv_vact, lv_vfp;
@@ -338,12 +385,18 @@ module blitscrt_regs #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             ur_meta <= 2'b00; ur_seen <= 1'b0; ur_count <= 8'd0;
+            lt_meta <= 2'b00; lt_seen <= 1'b0; lt_count <= 8'd0;
             beats_meta <= 16'd0; beats_sync <= 16'd0;
         end else begin
             ur_meta <= {ur_meta[0], scanout_underrun_tog};
             if (ur_meta[1] != ur_seen) begin
                 ur_seen <= ur_meta[1];
                 if (ur_count != 8'hFF) ur_count <= ur_count + 8'd1;
+            end
+            lt_meta <= {lt_meta[0], scanout_late_tog};
+            if (lt_meta[1] != lt_seen) begin
+                lt_seen <= lt_meta[1];
+                if (lt_count != 8'hFF) lt_count <= lt_count + 8'd1;
             end
             beats_meta <= scanout_beats;
             beats_sync <= beats_meta;
@@ -589,7 +642,11 @@ module blitscrt_regs #(
                 /* BTN_EVENT: bit 0 set once the user button has been pressed.
                  * Write 1 to clear. */
                 8'hA4: readdata <= {31'd0, btn_user_latch};
-                8'h80: readdata <= {8'd0, ur_count, beats_sync};
+                /* The spare byte carries the late count: lines fetched too
+                 * late for their swap, so the previous line was shown again.
+                 * An underrun and a late line are different faults and a
+                 * picture can have one without the other. */
+                8'h80: readdata <= {lt_count, ur_count, beats_sync};
                 8'h84: readdata <= {4'd0, lv_hbp,  4'd0, lv_hsy};
                 8'h88: readdata <= {4'd0, lv_hfp,  4'd0, lv_hact};
                 8'h8C: readdata <= {4'd0, lv_vbp,  4'd0, lv_vsy};
@@ -728,10 +785,26 @@ module blitscrt_regs #(
 
     /* Control bits are static from the video side's point of view; a two-flop
      * synchroniser each is enough. */
-    reg [5:0] ctrl_meta, ctrl_vid;
+    /* Nine bits, matching s_ctrl.
+     *
+     * This was six, so `ctrl_meta <= s_ctrl` dropped bits 6, 7 and 8 --
+     * av_force, av_dac and av_clk_inv. Quartus said so on every build:
+     *
+     *   Warning (10230): truncated value with size 9 to match size of
+     *   target (6) at blitscrt_regs.v(765)
+     *
+     * It worked because those three were taken straight from s_ctrl instead,
+     * which crosses into the video domain with no synchroniser at all. They are
+     * static after configuration so nothing has gone wrong, but a bus crossing
+     * clock domains unsynchronised is not something to leave written down.
+     */
+    reg [8:0] ctrl_meta, ctrl_vid;
     always @(posedge clk_pix or negedge vid_cfg_rst_n) begin
-        if (!vid_cfg_rst_n) begin ctrl_meta <= 6'b010110; ctrl_vid <= 6'b010110; end
-        else begin ctrl_meta <= s_ctrl; ctrl_vid <= ctrl_meta; end
+        if (!vid_cfg_rst_n) begin
+            ctrl_meta <= 9'b0_1001_0110; ctrl_vid <= 9'b0_1001_0110;
+        end else begin
+            ctrl_meta <= s_ctrl; ctrl_vid <= ctrl_meta;
+        end
     end
 
     assign scanout_en  = ctrl_vid[0];
@@ -741,9 +814,9 @@ module blitscrt_regs #(
     assign hdmi_en     = ctrl_vid[4];
     assign hps_timing  = ctrl_vid[5];
     assign hps_timing_bus = s_ctrl[5];
-    assign av_force      = s_ctrl[6];
-    assign av_dac        = s_ctrl[7];
-    assign av_clk_inv    = s_ctrl[8];
+    assign av_force      = ctrl_vid[6];
+    assign av_dac        = ctrl_vid[7];
+    assign av_clk_inv    = ctrl_vid[8];
 
 endmodule
 

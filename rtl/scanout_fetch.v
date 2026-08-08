@@ -93,6 +93,9 @@ module scanout_fetch #(
      * f2sdram interface from wrong address arithmetic -- the two look identical
      * on screen. */
     output reg             underrun_tog,
+    /* Toggles when a line misses its swap: fetched too late to be displayed,
+     * so the previous line is shown again. Not the same as underrun_tog. */
+    output reg             late_tog,
     output reg  [15:0]     beats_last,
 
     // read port, feeding scanout.mem_q
@@ -104,6 +107,21 @@ module scanout_fetch #(
     localparam integer LANEB  = $clog2(BYTES);          // lane select bits
     localparam integer DEPTH  = (MAXW * 4) / BYTES;     // beats for the widest line
     localparam integer DAW    = $clog2(DEPTH);
+    /*
+     * The buffers are indexed by concatenation -- {sel, addr} -- so each one
+     * occupies a full 2**DAW, not DEPTH.
+     *
+     * With DEPTH 640 that is 1024, while the array was sized 2*DEPTH = 1280.
+     * Buffer 0 got its 1024 and buffer 1 got what was left: 1024..1279, or 256
+     * beats. Enough for 648 at RGB565, which needs 162, and not enough for
+     * XRGB8888 at 640 or RGB565 at 1280, both of which need 320 -- every
+     * alternate line would lose everything past beat 256, which is exactly the
+     * shape of a line going missing and reappearing on the next one.
+     *
+     * Sizing to 2**DAW makes the concatenation honest. It costs M10K that is
+     * not scarce here: 155 Kbit of 5.6 Mbit is in use.
+     */
+    localparam integer SLOT   = (1 << DAW);
 
     localparam [2:0] FMT_RGB565   = 3'd0;
     localparam [2:0] FMT_RGB888   = 3'd1;
@@ -124,7 +142,24 @@ module scanout_fetch #(
      * declines to infer RAM at all: 2 x 512 x 64 bits becomes 65,536 registers
      * plus the muxes to read them, which is a design that does not fit. The
      * shape below is char_ram.v's, which infers cleanly on this device. */
-    (* ramstyle = "M10K" *) reg [DW-1:0] linebuf [0:2*DEPTH-1];
+    /*
+     * Quartus infers this as a dual-clock RAM and warns:
+     *
+     *   Warning (276027): Inferred dual-clock RAM node "linebuf_rtl_0" ...
+     *   The read-during-write behavior of a dual-clock RAM is undefined and
+     *   may not match the behavior of the original design.
+     *
+     * Which is true and does not apply, because the two halves are never
+     * touched at once: the read address carries show_sel and the write address
+     * carries fill_sel_q, and those alternate. A read and a write can only land
+     * on the same address if the two selects agree, which happens when a line
+     * fails to complete before its swap -- the case late_tog counts.
+     *
+     * So the warning is a genuine hazard guarded by the handshake rather than
+     * by the memory, and late_tog reading zero is what says the guard is
+     * holding.
+     */
+    (* ramstyle = "M10K" *) reg [DW-1:0] linebuf [0:2*SLOT-1];
 
     reg             fill_sel;               // buffer being filled, clk_mem
     reg             fill_sel_q;             // ...which buffer fill_data belongs to
@@ -149,9 +184,38 @@ module scanout_fetch #(
     // request handshake across the clock boundary
     // -------------------------------------------------------------------
     /* Toggles rather than pulses, so neither side has to catch a single cycle
-     * of the other's clock. The same shape blitscrt_regs uses for APPLY. */
+     * of the other's clock. The same shape blitscrt_regs uses for APPLY.
+     *
+     * The line number must settle BEFORE the toggle is raised.
+     *
+     * req_tog and req_y used to be assigned on the same edge:
+     *
+     *     end else if (line_req) begin
+     *         req_tog <= ~req_tog;
+     *         req_y   <= line_y;        // changing as the flag goes out
+     *     end
+     *
+     * The reader synchronises req_tog through two flops and then samples
+     * req_y, which is a twelve-bit bus changing at that same moment on the
+     * other clock. Usually the two-flop delay covers it. When the edges line
+     * up badly it does not, and the fetch reads a line number part-way through
+     * a transition -- so that line is fetched from base + wrong_y * stride and
+     * lands displaced on the screen.
+     *
+     * Found with a static fill written by hand: no host, no USB, no
+     * compression, nothing changing over time, and the edges of a plain
+     * rectangle still stepped part-way along a scan. Underruns stayed at zero
+     * throughout, because the fetch completes perfectly -- it simply fetches
+     * the wrong line.
+     *
+     * So req_y is now registered one cycle ahead of the toggle. line_req sets
+     * the data; the cycle after, the flag goes. By the time two flops of
+     * synchroniser have passed it on, the bus has been stable for at least
+     * three clk_pix edges.
+     */
     reg        req_tog;                     // clk_pix
-    reg [11:0] req_y;
+    reg [11:0] req_y;                       // stable before req_tog moves
+    reg        req_arm;                     // one-cycle delay on the toggle
     reg [1:0]  req_meta;                    // clk_mem
     reg        req_seen;
     reg        ack_tog;                     // clk_mem
@@ -160,10 +224,18 @@ module scanout_fetch #(
 
     always @(posedge clk_pix or negedge rst_pix_n) begin
         if (!rst_pix_n) begin
-            req_tog <= 1'b0; req_y <= 12'd0;
-        end else if (line_req) begin
-            req_tog <= ~req_tog;
-            req_y   <= line_y;
+            req_tog <= 1'b0;
+            req_y   <= 12'd0;
+            req_arm <= 1'b0;
+        end else begin
+            /* Capture first. */
+            req_arm <= line_req;
+            if (line_req)
+                req_y <= line_y;
+
+            /* Announce a cycle later, with req_y already settled. */
+            if (req_arm)
+                req_tog <= ~req_tog;
         end
     end
 
@@ -308,7 +380,7 @@ module scanout_fetch #(
     always @(posedge clk_pix or negedge rst_pix_n) begin
         if (!rst_pix_n) begin
             show_sel <= 1'b1; has_line <= 1'b0; line_done <= 1'b0;
-            pending  <= 1'b0;
+            pending  <= 1'b0; late_tog <= 1'b0;
         end else begin
             line_done <= 1'b0;
             if (ack_meta[1] != ack_seen) begin
@@ -319,6 +391,25 @@ module scanout_fetch #(
                 show_sel <= ~show_sel;
                 has_line <= 1'b1;
                 pending  <= 1'b0;
+            end else if (line_show && has_line) begin
+                /*
+                 * The line was not ready in time.
+                 *
+                 * line_show comes four clocks before active video, so a fetch
+                 * that has not landed by then misses its swap and the previous
+                 * line is displayed again -- which looks like part of the
+                 * picture displaced sideways.
+                 *
+                 * underrun_tog does not catch this. It fires when a new request
+                 * arrives with a fetch still in flight, which is the deadline
+                 * at hcnt == 0 of the next line. A fetch can miss the swap and
+                 * still finish comfortably before that, so the display is wrong
+                 * and nothing is recorded.
+                 *
+                 * has_line qualifies it so the first lines after a modeset,
+                 * before anything has been fetched at all, are not counted.
+                 */
+                late_tog <= ~late_tog;
             end
         end
     end

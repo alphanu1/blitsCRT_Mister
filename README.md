@@ -1,46 +1,70 @@
 # blitsCRT_Mister
 
-A 15kHz analog video card that enumerates over USB as a display.
+**A 15kHz analog video card that plugs into USB and makes a CRT an ordinary
+monitor.**
 
-Plug it into a PC and a CRT appears as an ordinary monitor -- listed alongside
-the real ones, selectable, resizable, with nothing to install on the host. The
-desktop renders on it. Emulators run full-screen at 60 fps. Underneath, the pixel
-clock is synthesised on the board for whatever mode is asked for, so a timing the
-fabric was never compiled for still works.
-
-Running on hardware today: 648x480i60 at a 15.750 kHz line rate from a 12.600 MHz
-pixel clock, over USB with LZ4 compression, full-screen at 60 fps.
-
-`make setup && make world` builds everything from source and writes a card image.
-Nothing of MiSTer's ends up on the card.
-
-Both outputs carry the same pixel stream. Analog RGB666 goes out of the A/V
-board's VGA connector for a CRT, and the same raster goes out of HDMI as Direct
-Video. For SCART, `CTRL` bit 3 selects composite sync on the HS pin -- on by
-default -- and a VGA-to-SCART lead does the rest.
-
-The host side is the in-tree Linux `gud` driver, nothing bespoke. GUD is a wire
-protocol rather than a Linux one, so a Windows driver would work against the same
-board unchanged; that is **M7**.
+It takes the place of a graphics card's analog output, which modern hardware no
+longer has, and drives a television or arcade monitor directly -- no emulator in
+the middle, no scaler, no line doubler.
 
 ![blitsCRT_Mister running on a MiSTer Pi](docs/images/first_light_640x480i.jpg)
 
 
-## What it is for
+## What it does
 
-A CRT that any operating system can drive, without an emulator in the middle and
-without a scaler. The board takes the place of a graphics card's analog output,
-which modern hardware no longer has, and generates broadcast-rate timings a
-television or arcade monitor will actually lock to.
+**Every emulator works unmodified. All of them. Today.**
 
-One advertised mode exists as a fallback. The intended use is **Switchres**,
-which computes a modeline for the monitor in front of it and sets it through the
-GUD protocol -- a timing that was never in any list. Everything the fabric does is
-built around that: the PLL is reconfigured at runtime, porches and active size are
-inputs rather than constants, and the scanout stride is padded so any width works.
+RetroArch, MAME, DOSBox, PPSSPP, ScummVM, PCSX2 -- and equally a browser, a video
+player, or the desktop itself. Not one of them knows the display is unusual,
+because it is not: the board enumerates as a **USB graphics device**, the kernel's
+own `gud` driver binds to it, and a CRT appears in the display list beside the
+real monitors.
 
-Before this I wrote MME4CRT, RetroArch's 15kHz support, and CRTPi. This is the
-same problem approached from the hardware end.
+No patches. No shims. No `LD_PRELOAD`. Nothing to install on the host -- `gud` has
+been in-tree since Linux 5.13, so a current distribution already has everything.
+
+Applications draw to a screen. The pixels come out of a SCART socket at 15 kHz.
+
+That is the point of building it at this layer. MME4CRT, RetroArch's 15 kHz
+support and CRTPi -- all of which I wrote -- each needed changes inside the
+application, and every new emulator meant the work again. This needs none,
+because the CRT support sits below the application entirely.
+
+### What the board does that a graphics card cannot
+
+| | |
+|---|---|
+| **15.750 kHz line rate** | broadcast timings a television or arcade monitor locks to, which no modern GPU will emit |
+| **Any modeline, not a list** | the pixel clock is synthesised on the board per mode. A timing the fabric was never compiled for still works -- 320x224, 256x240, whatever the content wants |
+| **Exact clocks** | 0 ppm across the 15 kHz and 31 kHz bands with the fractional PLL. A wrong clock is a slipped frame you can see |
+| **Real interlace** | fields interleaved on the read, from a progressive surface the host renders normally |
+| **Analog and HDMI together** | the same raster out of both. RGB666 to the CRT, Direct Video out of HDMI |
+| **Composite sync for SCART** | `CTRL` bit 3, on by default. A VGA-to-SCART lead does the rest |
+
+### The one thing to arrange
+
+**Resolution.** A CRT wants a modeline matched to the content -- 320x224 for a
+Mega Drive game, 256x240 for a NES one, and the right refresh for each. Two ways:
+
+| | |
+|---|---|
+| **Switchres** | computes a modeline per title from a monitor profile and sets it over GUD. The intended path, and what the fabric is built around: runtime PLL reconfiguration, porches and active size as inputs rather than constants, and a scanout stride padded so any width works |
+| **By hand** | `xrandr --newmode` and `--addmode` with a modeline you choose. Fine for a fixed setup, and enough to prove the board before adding anything |
+
+Neither involves the emulator. A mode set either way applies to whatever is on
+screen at the time, and one mode is advertised as a fallback so a host with
+neither still gets a picture.
+
+### Where it is
+
+Running on hardware: **648x480i60** at a 15.750 kHz line rate from a 12.600 MHz
+pixel clock, over USB with LZ4 compression, full-screen at 60 fps.
+
+`make setup && make world` builds everything from source -- bitstream, kernel,
+daemon, bootloader -- and writes a card image. Nothing of MiSTer's ends up on it.
+
+GUD is a wire protocol rather than a Linux one, so a Windows driver would work
+against the same board unchanged. That is **M7**.
 
 
 ## Quick start

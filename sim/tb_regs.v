@@ -97,7 +97,7 @@ module tb_regs;
 
         $display("identify");
         rd(14'h000); chk("ID reads BCRT", readdata == 32'h42435254);
-        rd(14'h004); chk("VERSION reads 3.26", readdata == 32'h0003_001A);
+        rd(14'h004); chk("VERSION reads 3.31", readdata == 32'h0003_001F);
 
         /* The PLL reconfig aperture at 0x1000 used to decode as register 0x00,
          * so a modeset wrote the M counter into H_SY, the C counter into H_BP

@@ -21,6 +21,7 @@
  * a higher VCO, which gives better jitter.
  */
 
+#include <string.h>
 #include "pll.h"
 
 #include <stdlib.h>
@@ -63,7 +64,19 @@ int pll_solve(unsigned long long target_hz,
 	if (!target_hz || !lim || !out)
 		return -1;
 
-	out->ops = 0;
+	/*
+	 * Clear the whole config, not just ops.
+	 *
+	 * This used to zero ops alone and leave everything else to be filled by
+	 * the search, which was fine while every field was written. Adding the
+	 * fractional numerator broke that silently: an integer solution never
+	 * touches k, so it carried whatever the caller happened to have there
+	 * and the reconfig sequence wrote a stray fraction to the PLL.
+	 *
+	 * An integer solve must leave k == 0, because that is what makes the
+	 * same write sequence correct for both cores.
+	 */
+	memset(out, 0, sizeof *out);
 
 	for (n = lim->n_min; n <= lim->n_max; n++) {
 		unsigned long long pfd = lim->fin_hz / n;
@@ -128,5 +141,152 @@ done:
 	out->error_hz  = (long long)out->actual_hz - (long long)target_hz;
 	out->error_ppm = target_hz ? (out->error_hz * 1000000ll) /
 				     (long long)target_hz : 0;
+	return 0;
+}
+
+/*
+ * Fractional-N: the same search, with a 32-bit fraction on M.
+ *
+ * The integer solver picks M, N and C and lives with whatever VCO that reaches.
+ * Here the VCO is continuous, so the job inverts: choose N and C, work out the
+ * exact M that would hit the target, and split it into an integer part and a
+ * 32-bit fraction.
+ *
+ *   fout  = fin * (m + k/2^32) / (n * c)
+ *   m+f   = fout * n * c / fin
+ *   k     = round(f * 2^32)
+ *
+ * The residual is then only the rounding of k, which at 2^-32 of the VCO is
+ * fractions of a hertz -- parts per billion. What limits the result in practice
+ * is the VCO and PFD ranges, exactly as for the integer search.
+ */
+int pll_solve_frac(unsigned long long target_hz,
+		   const struct pll_limits *lim,
+		   struct pll_config *out)
+{
+	unsigned int n, c;
+	unsigned long long best_err = ~0ull, best_vco = 0;
+	int found = 0;
+
+	if (!target_hz || !lim || !out)
+		return -1;
+
+	memset(out, 0, sizeof *out);
+
+	for (n = lim->n_min; n <= lim->n_max; n++) {
+		unsigned long long pfd = lim->fin_hz / n;
+
+		if (pfd < lim->pfd_min_hz || pfd > lim->pfd_max_hz)
+			continue;
+
+		for (c = lim->c_min; c <= lim->c_max; c++) {
+			/*
+			 * The VCO this N and C would need. Work in a long
+			 * double so the fraction survives: at 400 MHz a 2^-32
+			 * step is 0.09 Hz, and a double's 53-bit mantissa
+			 * carries that comfortably, but the intermediate
+			 * products are large enough to be worth the headroom.
+			 */
+			long double vco_want = (long double)target_hz * c;
+			long double m_want;
+			unsigned long long m_int, k, vco, fout;
+
+			if (vco_want < (long double)lim->vco_min_hz ||
+			    vco_want > (long double)lim->vco_max_hz)
+				continue;
+
+			m_want = vco_want * n / (long double)lim->fin_hz;
+			m_int  = (unsigned long long)m_want;
+
+			if (m_int < lim->m_min || m_int > lim->m_max)
+				continue;
+
+			k = (unsigned long long)
+			    ((m_want - (long double)m_int) * 4294967296.0L + 0.5L);
+
+			/* Rounding up can carry into the integer part. */
+			if (k >= 4294967296ull) {
+				k = 0;
+				m_int++;
+				if (m_int > lim->m_max)
+					continue;
+			}
+
+			out->ops++;
+
+			/* What that actually reaches, back through the same
+			 * arithmetic the hardware does. */
+			vco = (unsigned long long)
+			      ((long double)lim->fin_hz *
+			       ((long double)m_int + (long double)k / 4294967296.0L)
+			       / n + 0.5L);
+			fout = (unsigned long long)
+			       ((long double)vco / c + 0.5L);
+
+			{
+				unsigned long long err = fout > target_hz
+						       ? fout - target_hz
+						       : target_hz - fout;
+
+				if (err < best_err ||
+				    (err == best_err && vco > best_vco)) {
+					best_err = err;
+					best_vco = vco;
+					out->m = (unsigned int)m_int;
+					out->n = n;
+					out->c = c;
+					out->k = (unsigned int)k;
+					out->vco_hz = vco;
+					out->actual_hz = fout;
+					found = 1;
+				}
+			}
+		}
+	}
+
+	if (!found)
+		return -1;
+
+	out->target_hz = target_hz;
+	out->error_hz  = (long long)out->actual_hz - (long long)target_hz;
+	out->error_ppm = target_hz ? (out->error_hz * 1000000ll) /
+				     (long long)target_hz : 0;
+	return 0;
+}
+
+/*
+ * Integer where it is good enough, fractional where it is not.
+ *
+ * Fractional-N dithers the M divider between two integers to average the
+ * fraction, and that dithering is periodic. Periodic phase noise correlates
+ * with pixel position, which is why video PLLs traditionally stay integer. So
+ * the fraction is not taken unless it is buying something: below the threshold
+ * an integer solution has no error worth removing.
+ *
+ * Every mode the fabric advertises solves to 0 ppm on integers, so the common
+ * cases never reach the fractional path at all.
+ */
+int pll_solve_best(unsigned long long target_hz,
+		   const struct pll_limits *lim,
+		   struct pll_config *out)
+{
+	struct pll_config frac;
+	long long ppm;
+
+	if (pll_solve(target_hz, lim, out) < 0)
+		return pll_solve_frac(target_hz, lim, out);
+
+	ppm = out->error_ppm < 0 ? -out->error_ppm : out->error_ppm;
+	if (ppm <= PLL_FRAC_PPM_THRESHOLD)
+		return 0;
+
+	if (pll_solve_frac(target_hz, lim, &frac) == 0) {
+		long long fppm = frac.error_ppm < 0 ? -frac.error_ppm
+						    : frac.error_ppm;
+		if (fppm < ppm) {
+			frac.ops += out->ops;
+			*out = frac;
+		}
+	}
 	return 0;
 }

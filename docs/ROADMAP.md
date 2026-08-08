@@ -417,6 +417,38 @@ deflection circuit can be damaged by sync outside its band, so `mode_check()`
 clamps against `blitscrt_limits_15khz` on every timing a host sets, advertised or
 not. Widening that band for a multisync should stay a deliberate act.
 
+## Interlace at 60 Hz
+
+Some kernels rate an interlaced mode at its field rate and render 60 frames a
+second; others rate it at the frame rate and render 30. Measured on the same
+daemon, same distribution, same X11:
+
+| kernel | desktop | 320x448i |
+|---|---|---|
+| 7.1.6-arch-1-1 | XFCE, Intel Iris | 60 fields/s |
+| 7.1.5-zen1-2-zen | Plasma (compositing on or off), RX 9070 XT | 30 fields/s |
+
+Where it halves, nothing on this side can change what X tells an application --
+but it can change what the application is asked for. `mode_check` rewrites a
+**31 kHz progressive** mode into a 15 kHz interlaced one, so the host allocates a
+full-height surface, renders at the full rate because nothing told it the mode was
+interlaced, and the fabric interleaves on the read. Each field then comes from a
+different render, which is what an interlaced console does.
+
+No fabric changes: `video_timing.v` already interleaves. The conversion fires only
+for progressive modes out of band whose half is in band, so an interlaced mode
+passes through untouched and a machine that does not need this never sees it.
+
+| | |
+|---|---|
+| done | the rewrite, with the clock solved from the wanted field rate rather than halved -- an interlaced frame is 2*field+1 lines, so an even host total does not halve cleanly and exactly half runs 1912 ppm slow |
+| done | the clock carried in Hz, not the mode's integer kHz, which was costing 75 ppm on its own |
+| done | a warning when the converted hsync is the wrong width, since horizontal porches pass through unchanged and only halve correctly if the 31 kHz profile carries half the times |
+| note | not the compositor -- the PC halves it with KWin on and off. Two candidates left, and the GPU is the more interesting: a discrete card makes the gud output a reverse-PRIME sink, which puts amdgpu in the render path and makes the 15 kHz set's amdgpu interlace patches relevant after all. `LIBGL_ALWAYS_SOFTWARE=1` would implicate or clear it. The kernel version is the weaker second candidate |
+
+`docs/INTERLACE.md` has the reasoning and the `crt_range` lines for both profiles.
+
+
 **M7 -- Windows host. Not started, and probably not here.** GUD is a wire
 protocol, not a Linux one: request codes, a mode structure, a buffer format.
 Nothing about the board depends on what is at the other end, so a Windows host

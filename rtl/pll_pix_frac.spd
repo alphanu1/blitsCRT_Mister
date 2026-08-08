@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<simPackage>
+ <file path="pll_pix_frac_sim/pll_pix_frac.vo" type="VERILOG" />
+ <topLevel name="pll_pix_frac" />
+ <deviceFamily name="cyclonev" />
+</simPackage>

@@ -185,6 +185,28 @@ int main(void)
 	{
 		struct blitscrt_mode m;
 		struct blitscrt_timing t;
+		double sync_us;
+
+		/* Stock VGA converts, but its sync is twice as wide as a 15 kHz
+		 * set wants -- 96 px at 25.175 MHz doubles to 7.6 us. Allowed
+		 * through with a warning, because the fix is in the monitor
+		 * profile and refusing would just mean no picture. */
+		blitscrt_mode_from_modeline(&m, 25175, 640, 656, 752, 800,
+					    480, 490, 492, 525,
+					    BLITSCRT_MF_NHSYNC | BLITSCRT_MF_NVSYNC);
+		check("stock VGA still converts",
+		      blitscrt_mode_check(&m, &blitscrt_limits_15khz, &t)
+		      == BLITSCRT_MODE_OK);
+		/* pixels / pixel clock, and the clock is line_hz * h_total */
+		sync_us = (double)t.h_sy / (t.line_hz * (double)t.h_total) * 1e6;
+		check("its sync is too wide for 15 kHz, as expected",
+		      sync_us > 6.5);
+		printf("        hsync %u px -> %.2f us (a 15 kHz set wants ~4.7)\n",
+		       t.h_sy, sync_us);
+	}
+	{
+		struct blitscrt_mode m;
+		struct blitscrt_timing t;
 
 		/* An interlaced mode is never rewritten, whatever its rate. */
 		blitscrt_mode_from_modeline(&m, 12600, 648, 670, 730, 800,

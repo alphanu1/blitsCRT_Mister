@@ -315,10 +315,11 @@ release built from sources at head would not be.
 | `docs/ROADMAP.md` | the milestones in detail, and what each one cost |
 | `docs/DESIGN.md` | how it works: mode selection, the write path, the PLL solver |
 | `docs/BRINGUP.md` | step by step to first picture |
+| `docs/INTERLACE.md` | interlace at 60 Hz, and the two monitor profiles |
 | `docs/UBOOT.md` | the bootloader: why MiSTer's, what gets patched, and why |
 | `docs/UBOOT_ENV.md` | the boot environment: importing, changing, recovery |
 | `docs/BOOT.md` | how the bitstream reaches the FPGA |
-| `docs/MEGAFUNCTIONS.md` | regenerating the PLL and its reconfiguration block |
+| `docs/MEGAFUNCTIONS.md` | the PLLs: integer against fractional, and how to switch |
 | `docs/GP_FINDINGS.md` | the HPS-to-fabric transport, measured on hardware |
 | `docs/DIRECTION.md` | what the project is for and what it is not |
 
@@ -339,6 +340,27 @@ makes the two impossible to confuse in a log.
 **This is a fallback, not a limit.** A host can set a timing that was never in the
 list, which is the Switchres case and the intended one. The list exists so a host
 without Switchres still gets a picture.
+
+### Interlace
+
+An interlaced mode is passed through as it arrives, and the fabric interleaves on
+the read -- `video_timing.v` turns a 480-line surface into two 240-line fields.
+Whether that runs at 60 Hz motion depends on the host: some kernels rate an
+interlaced mode at its field rate and render 60 frames a second, others rate it at
+the frame rate and render 30. Measured on the same daemon: 60 on a laptop with an
+Intel iGPU, 30 on a desktop with a Radeon RX 9070 XT. Not the compositor -- that
+machine halves it with KWin on and off. `docs/INTERLACE.md` has what is and is
+not ruled out.
+
+Where it halves, the daemon offers a way round: a **31 kHz progressive** mode is
+rewritten into a 15 kHz interlaced one on arrival, so the host is never told the
+display is interlaced and renders at the full rate. The conversion fires only for
+progressive modes out of the 15 kHz band whose half is inside it, so an interlaced
+mode is never touched and a 240p mode is never touched.
+
+Which route is used is decided by the monitor profile, not by any setting here.
+`docs/INTERLACE.md` has both, the `crt_range` lines for each, and why the 31 kHz
+range must carry half the porch times of the 15 kHz one.
 
 The scanout stride is padded to a whole 8-byte f2sdram beat, so **any** width
 works. The port is 64 bits and Avalon reads are word-addressed, so line *n* at
@@ -488,6 +510,11 @@ what it cost to get working.
   cable has VBUS cut and that is what dwc2 raises `FUNCTIONFS_DISABLE`
   from. `/sys/class/udc/<name>/state` reports `configured` independently of the
   FunctionFS event stream, so polling it would catch an unannounced unplug too.
+- **A host framebuffer larger than the mode is cropped, not scaled.** An X screen
+  that has not followed a mode switch sends rects wider than the raster; the blit
+  clips them to the left edge and the daemon says so once. The fix is on the host
+  -- Switchres has `screen_compositing` and `screen_reordering` for it.
+
 - **RGB888 is not offered.** `scanout_fetch.v` needs a two-beat read window for a
   3-byte pixel that straddles a beat. RGB565 is the only format advertised. This
   is about what the host sends, not about output depth -- see below.

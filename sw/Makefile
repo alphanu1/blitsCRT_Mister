@@ -119,7 +119,22 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 #       halving. An interlaced frame is 2*field+1 lines, so an even host total
 #       does not halve cleanly -- exactly half runs 1912 ppm slow, a dropped
 #       field every nine seconds. Solving for the rate lands on 0 ppm
-BLITSCRTD_BUILD ?= d49
+#   d50 warn when a converted mode's hsync is the wrong width for 15 kHz. The
+#       daemon does not rescale horizontal porches -- pixel counts pass through
+#       and halving the clock doubles their duration, which is right only if the
+#       31 kHz profile carries half-width porches. Stock VGA gives 7.6 us where
+#       4.7 is wanted, and nothing would have said why
+#   d51 the blit clipped a too-wide rect but then strode the source by the
+#       clipped width -- reading each row's left half, then its right half as
+#       the next row. A 640-wide framebuffer into a 320-wide raster came out
+#       squeezed and doubled rather than cropped. Warns once when it happens,
+#       since the cause is an X screen that did not follow the mode switch
+#   d52 fractional-N PLL. A 32-bit fraction on the M counter takes every clock
+#       in both bands from a 409/880 ppm worst case to 0. Taken only when the
+#       integer solution is worse than 50 ppm, since the fraction is dithered
+#       and that pattern correlates with pixel position -- every advertised
+#       mode still solves exactly on integers and never reaches it
+BLITSCRTD_BUILD ?= d52
 CFLAGS  += -DBLITSCRTD_BUILD='"$(BLITSCRTD_BUILD)"'
 # -lpthread: the bulk endpoint runs on its own thread, so a blocking read cannot
 # stop ep0 being serviced. Static linking needs it named explicitly.
@@ -163,11 +178,14 @@ blitscrt-peek: peek.o $(CORE:.c=.o)
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-test: test_pll test_pll_reconfig test_modes test_device test_lz4 test_edid \
-      test_stride
+test: test_pll test_pll_frac test_pll_reconfig test_modes test_device test_lz4 test_edid \
+      test_stride test_clip
 	@echo ""
 	@./test_pll
 	@echo ""
+	@echo
+	@./test_pll_frac
+	@echo
 	@./test_pll_reconfig
 	@echo ""
 	@./test_modes
@@ -177,9 +195,14 @@ test: test_pll test_pll_reconfig test_modes test_device test_lz4 test_edid \
 	@./test_edid
 	@echo
 	@./test_stride
+	@echo
+	@./test_clip
 
 test_pll: tests/test_pll.c pll.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+test_pll_frac: tests/test_pll_frac.c pll.c
+	$(CC) $(CFLAGS) -I. -o $@ $^ -lm
 
 test_pll_reconfig: tests/test_pll_reconfig.c pll_reconfig.c pll.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
@@ -191,6 +214,9 @@ test_modes: tests/test_modes.c modes.c pll.c
 # bumping the build number alone would leave the old object in place and the
 # binary would report a version it is not. Depend on the Makefile so it cannot.
 main.o: Makefile
+
+test_clip: tests/test_clip.c
+	$(CC) $(CFLAGS) -I. -o $@ $<
 
 test_stride: tests/test_stride.c
 	$(CC) $(CFLAGS) -I. -o $@ $<

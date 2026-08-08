@@ -12,6 +12,7 @@
  * count to. A 31kHz line rate on a 15kHz set is a repair bill.
  */
 
+#include <stdio.h>
 #include "modes.h"
 
 #include <string.h>
@@ -188,6 +189,44 @@ blitscrt_mode_check(const struct blitscrt_mode *m,
 			}
 			conv.flags |= BLITSCRT_MF_INTERLACE;
 
+			/*
+			 * Horizontal porches are NOT adjusted, and that is a
+			 * dependency on the monitor profile worth stating.
+			 *
+			 * Pixel counts pass through unchanged, so halving the
+			 * clock doubles every horizontal duration. That is
+			 * exactly right when the 31 kHz modeline was generated
+			 * with half-width porches -- 32 px of sync is 2.45 us at
+			 * 31 kHz and 4.91 us at 15 kHz, which is what the CRT
+			 * wants. It is why crt_range1 in docs/INTERLACE.md
+			 * carries half the times of crt_range0.
+			 *
+			 * With a stock VGA modeline instead it is wrong: 96 px
+			 * of sync at 25.175 MHz is 3.81 us, and doubling gives
+			 * 7.63 where 4.7 is wanted. The picture shifts, and a
+			 * fussy set may not lock at all.
+			 *
+			 * Rescaling here was considered and rejected: Switchres
+			 * computes porches from the monitor profile on purpose,
+			 * and second-guessing it would fight the tool that knows
+			 * the monitor. So warn and let it through -- a shifted
+			 * picture with an explanation beats a shifted picture
+			 * without one.
+			 */
+			{
+				double sync_us = (double)(m->hsync_end -
+							  m->hsync_start) /
+						 clk_hz * 1e6;
+
+				if (sync_us < 3.0 || sync_us > 6.5)
+					fprintf(stderr,
+						"blitscrt: %.2f us of hsync after"
+						" conversion, wanted about 4.7 --"
+						" is crt_range1 carrying half the"
+						" porch times of crt_range0? see"
+						" docs/INTERLACE.md\n", sync_us);
+			}
+
 			m = &conv;
 			converted = 1;
 		}
@@ -264,8 +303,17 @@ blitscrt_mode_check(const struct blitscrt_mode *m,
 	out->field_hz = field_hz;
 	out->frame_hz = interlaced ? field_hz / 2.0 : field_hz;
 
-	if (pll_solve((unsigned long long)(clk_hz + 0.5),
-		      &pll_cyclonev, &out->pll) < 0)
+	/*
+	 * Integer where it is exact enough, fractional where it is not.
+	 *
+	 * Every mode the fabric advertises solves to 0 ppm on integers, so the
+	 * common cases never touch the fractional path and never take its
+	 * dithering. An awkward Switchres clock does: the integer worst case in
+	 * the 15 kHz band is 409 ppm, a slipped frame every 41 seconds, and the
+	 * fraction takes that to nothing.
+	 */
+	if (pll_solve_best((unsigned long long)(clk_hz + 0.5),
+			   &pll_cyclonev, &out->pll) < 0)
 		return BLITSCRT_MODE_NO_PLL;
 
 	out->from_progressive = converted;

@@ -35,7 +35,8 @@ HAVE_IVERILOG := $(shell command -v iverilog 2>/dev/null)
 #
 # Conditioning on whether the files exist was tried and is wrong -- the wrapper
 # being present says nothing about whether the rest of the IP is reachable.
-RTL_GENERATED := rtl/pll_pix.v rtl/pll_reconfig.v
+RTL_GENERATED := rtl/pll_pix.v rtl/pll_reconfig.v \
+                 rtl/pll_pix_frac.v rtl/pll_reconfig_frac.v
 LINT_RTL      := $(filter-out $(RTL_GENERATED),$(wildcard rtl/*.v))
 VENDOR_STUBS  := sim/vendor_stubs.v sim/vendor_pll_stubs.v
 HAVE_PILLOW   := $(shell python3 -c "import PIL" 2>/dev/null && echo yes)

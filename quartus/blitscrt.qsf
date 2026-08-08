@@ -79,6 +79,26 @@ set_global_assignment -name VERILOG_FILE ../rtl/overlay.v
 set_global_assignment -name VERILOG_FILE ../rtl/char_ram.v
 set_global_assignment -name VERILOG_FILE ../rtl/font_rom.v
 set_global_assignment -name VERILOG_FILE ../rtl/pll_modes.v
+# ---------------------------------------------------------------------------
+# The pixel PLL: integer or fractional
+# ---------------------------------------------------------------------------
+#
+# Both cores are compiled in; the RTL picks one with `ifdef BLITSCRT_PLL_FRAC.
+# Uncomment the macro below to fit the fractional one.
+#
+# Integer M/N/C gets coarse where the output is high and the C divider small:
+# worst case 409 ppm in the 15 kHz band and 880 in the 31 kHz band, which is a
+# slipped frame every 41 and 19 seconds. A 32-bit fraction on M takes every
+# clock in both bands to 0 ppm.
+#
+# What it costs is dithering: the M divider alternates between two integers to
+# average the fraction, and that pattern correlates with pixel position. Which
+# is why software only takes the fraction when the integer error exceeds a
+# threshold -- every advertised mode still solves exactly on integers and never
+# reaches it. See docs/MEGAFUNCTIONS.md.
+#
+#set_global_assignment -name VERILOG_MACRO "BLITSCRT_PLL_FRAC=1"
+
 set_global_assignment -name QIP_FILE ../rtl/pll_pix.qip
 set_global_assignment -name QIP_FILE ../rtl/pll_reconfig/pll_reconfig.qip
 set_global_assignment -name VERILOG_FILE ../rtl/mode_table.v
@@ -93,3 +113,8 @@ set_global_assignment -name SDC_FILE blitscrt.sdc
 source pins.tcl
 
 set_global_assignment -name LAST_QUARTUS_VERSION "24.1std.0 Lite Edition"
+
+set_global_assignment -name QIP_FILE ../rtl/pll_pix_frac.qip
+set_global_assignment -name SIP_FILE ../rtl/pll_pix_frac.sip
+set_global_assignment -name QIP_FILE ../rtl/pll_reconfig_frac.qip
+set_global_assignment -name SIP_FILE ../rtl/pll_reconfig_frac.sip

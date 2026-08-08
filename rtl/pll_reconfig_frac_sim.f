@@ -1,0 +1,4 @@
+pll_reconfig_frac_sim/pll_reconfig_frac.v
+pll_reconfig_frac_sim/altera_pll_reconfig/altera_pll_reconfig_top.v
+pll_reconfig_frac_sim/altera_pll_reconfig/altera_pll_reconfig_core.v
+pll_reconfig_frac_sim/altera_pll_reconfig/altera_std_synchronizer.v

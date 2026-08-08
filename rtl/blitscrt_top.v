@@ -350,7 +350,11 @@ module blitscrt_top #(
      * reconfig block sits idle and the PLL runs at its power-on frequencies,
      * which is exactly M1/early-M2 behaviour.
      */
+`ifdef BLITSCRT_PLL_FRAC
+    pll_reconfig_frac u_pll_reconfig (
+`else
     pll_reconfig u_pll_reconfig (
+`endif
         .mgmt_clk         (FPGA_CLK1_50),
         .mgmt_reset       (~rst50_n),
         .mgmt_address     (pll_avs_address),

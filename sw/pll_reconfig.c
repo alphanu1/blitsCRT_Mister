@@ -110,6 +110,22 @@ int pll_reconfig_build(const struct pll_config *p,
 	out->w[out->count].data = m.raw;
 	out->count++;
 
+	/*
+	 * The fractional numerator on M, when there is one.
+	 *
+	 * Written unconditionally: k is zero for an integer solution, and zero
+	 * is what an integer PLL wants there anyway, so the same write sequence
+	 * suits both cores. That is what lets the fractional IP be swapped in
+	 * by changing two QIP_FILE lines and nothing else.
+	 *
+	 * On a PLL generated without fractional support the register is simply
+	 * not implemented and the write is discarded -- so this is safe against
+	 * the integer core rather than merely harmless.
+	 */
+	out->w[out->count].addr = PLL_RECONFIG_K;
+	out->w[out->count].data = p->k;
+	out->count++;
+
 	/* The C write carries which of the eighteen output counters it means. */
 	out->w[out->count].addr = PLL_RECONFIG_C;
 	out->w[out->count].data = c.raw |

@@ -41,7 +41,23 @@ module pll_modes (
 
     wire c_full, c_half;
 
+    /*
+     * Integer or fractional, chosen at compile time.
+     *
+     * The two cores are pin-compatible -- same ports, same reconfiguration
+     * interface -- and differ only in whether the M counter carries a 32-bit
+     * fraction. Software writes the fractional numerator either way, because
+     * zero is what an integer PLL wants there, so nothing else in the design
+     * needs to know which is fitted.
+     *
+     * Define BLITSCRT_PLL_FRAC to fit the fractional one. See
+     * docs/MEGAFUNCTIONS.md for what it buys and what it costs.
+     */
+`ifdef BLITSCRT_PLL_FRAC
+    pll_pix_frac u_pll (
+`else
     pll_pix u_pll (
+`endif
         .refclk            (refclk),
         .rst               (rst),
         .outclk_0          (c_full),        // 12.600 MHz at power-on

@@ -65,15 +65,20 @@ int main(void)
 				continue;
 			}
 			check("sequence builds", pll_reconfig_build(&p, 0, &q) == 0);
-			check("five writes", q.count == 5);
+			/* MODE, N, M, K, C, START. K carries the fractional
+			 * numerator and is written even when it is zero, so the
+			 * same sequence drives an integer or a fractional PLL. */
+			check("six writes", q.count == 6);
 			check("mode word first", q.w[0].addr == PLL_RECONFIG_MODE);
 			check("start last", q.w[q.count-1].addr == PLL_RECONFIG_START);
 			check("N round trips",
 			      pll_decode_counter(q.w[1].data) == p.n);
 			check("M round trips",
 			      pll_decode_counter(q.w[2].data) == p.m);
+			check("K carries the fraction",
+			      q.w[3].addr == PLL_RECONFIG_K && q.w[3].data == p.k);
 			check("C round trips",
-			      pll_decode_counter(q.w[3].data & 0x3ffff) == p.c);
+			      pll_decode_counter(q.w[4].data & 0x3ffff) == p.c);
 
 			printf("  %-16s M=%-3u N=%-2u C=%-3u  ", modes[i].n, p.m, p.n, p.c);
 			for (j = 1; j < q.count - 1; j++)

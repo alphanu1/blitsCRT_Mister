@@ -13,6 +13,17 @@ struct pll_limits {
 
 struct pll_config {
 	unsigned int m, n, c;
+	/*
+	 * Fractional numerator on the M counter, 32 bits, so the effective
+	 * multiplier is m + k/2^32. Zero on an integer solution, and zero is
+	 * also what an integer PLL wants written -- so a config solved either
+	 * way can be applied to either PLL without the caller caring.
+	 *
+	 * The generated fractional IP reports the same arrangement:
+	 *   fractional_cout(32)  fractional_division("274877907")
+	 * where 274877907/2^32 is 0.064, giving M = 8.064 for 12.600 MHz.
+	 */
+	unsigned int k;
 	unsigned long long vco_hz;
 	unsigned long long target_hz;
 	unsigned long long actual_hz;
@@ -27,5 +38,41 @@ extern const struct pll_limits pll_cyclonev;
 int pll_solve(unsigned long long target_hz,
 	      const struct pll_limits *lim,
 	      struct pll_config *out);
+
+/*
+ * The same, with the M counter's 32-bit fraction in play.
+ *
+ * Integer M/N/C gets coarse where the output is high and C is small: at 25 MHz
+ * the C divider is only 24-64, so the reachable steps are wide and the worst
+ * case in the 15 kHz band is 409 ppm -- a slipped frame every 41 seconds, which
+ * is visible and defeats the point of Switchres computing an exact modeline.
+ *
+ * A fraction on M makes the VCO continuous rather than stepped, so the error
+ * becomes the quantisation of k/2^32 -- parts per billion, not parts per
+ * million. What it costs is that the fraction is dithered rather than exact:
+ * the M divider alternates between two integers to average correctly, and that
+ * dithering is periodic. Periodic phase noise correlates with pixel position,
+ * which is the classic reason video PLLs stay integer.
+ *
+ * So this is not simply better. It trades a rate error you can measure for a
+ * jitter pattern you might see. Which is why both solvers exist and the choice
+ * is made per solve, not once at build time -- see pll_solve_best().
+ */
+int pll_solve_frac(unsigned long long target_hz,
+		   const struct pll_limits *lim,
+		   struct pll_config *out);
+
+/*
+ * Integer if it is close enough, fractional otherwise.
+ *
+ * Below the threshold an integer solution has no rate error worth removing and
+ * brings no dithering, so it wins. Above it the rate error is the larger fault
+ * and the fraction earns its jitter.
+ */
+#define PLL_FRAC_PPM_THRESHOLD  50
+
+int pll_solve_best(unsigned long long target_hz,
+		   const struct pll_limits *lim,
+		   struct pll_config *out);
 
 #endif

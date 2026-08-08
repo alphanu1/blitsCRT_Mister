@@ -518,6 +518,7 @@ static void *blit_worker(void *arg)
 	 * sending four rects a frame made the old figure read 4x -- 189
 	 * fps at 60 Hz, with `available` collapsing to match. */
 	unsigned long long px_done = 0;
+	int warned_oversize = 0;
 
 	for (;;) {
 		struct gud_set_buffer_req r;
@@ -574,6 +575,25 @@ static void *blit_worker(void *arg)
 		t_blit += now_us() - t0;
 		d->stat_flush++;
 		px_done += (unsigned long long)r.width * r.height;
+
+		/*
+		 * A rect wider than the mode means the host's framebuffer is
+		 * bigger than the raster -- an X screen that did not follow a
+		 * mode change. The blit crops it, so the picture is the left
+		 * portion of a larger image and looks like the wrong
+		 * resolution. Said once, not once a frame.
+		 */
+		if (d->active_valid && r.width > d->active_mode.hdisplay &&
+		    !warned_oversize) {
+			fprintf(stderr, "blitscrtd: host sent a %ux%u rect into "
+					"a %ux%u mode -- its framebuffer is "
+					"larger than the raster, so the picture "
+					"is cropped. Check the X screen size "
+					"followed the mode switch.\n",
+				r.width, r.height,
+				d->active_mode.hdisplay, d->active_mode.vdisplay);
+			warned_oversize = 1;
+		}
 
 		if (++frames >= 60) {
 			/*

@@ -73,11 +73,51 @@ phase noise correlates with pixel position, which is the classic reason video
 PLLs stay integer. At 12.6 MHz a pixel is 79 ns and the jitter is small in absolute terms. It is patterned rather than diffuse, which is what makes it
 visible.
 
-Integer is the starting point because every advertised mode is exact and
-`sw/pll_reconfig.c` is written for integer counters. If a modeline lands badly
-in practice, switching means regenerating this IP as Fractional-N and teaching
-`pll_reconfig.c` to write the K register at `PLL_RECONFIG_K`. The RTL does not
-change.
+**Both are now generated**, as `pll_pix` and `pll_pix_frac`, with the reconfig
+blocks to match. The RTL picks between them at compile time:
+
+```
+#set_global_assignment -name VERILOG_MACRO "BLITSCRT_PLL_FRAC=1"
+```
+
+Uncomment that in `quartus/blitscrt.qsf` to fit the fractional core. Nothing
+else changes: the two are pin-compatible, and software writes the fractional
+numerator either way because zero is what an integer PLL wants there.
+
+### What it measured
+
+Sweeping both bands in 1 kHz steps, 23001 clocks:
+
+| | integer worst | fractional worst |
+|---|---|---|
+| 15 kHz, 5-13 MHz | 409 ppm | **0 ppm** |
+| 31 kHz, 20-28 MHz | 880 ppm | **0 ppm** |
+
+Every clock in both bands is reachable exactly. The two cases recorded above as
+hardware limits are not:
+
+```
+12.494 MHz   integer -409 ppm (M=281 N=9 C=125)
+             frac      +0 ppm (M=31 + 4228996598/2^32, N=1 C=128)
+24.978 MHz   integer +880 ppm (M=32 N=1 C=64)
+             frac      +0 ppm (M=31 + 4174021017/2^32, N=1 C=64)
+```
+
+### When it is used
+
+Not always. `pll_solve_best()` takes the integer solution unless it is worse
+than 50 ppm, because the dithering is a real cost and there is no point paying
+it to remove an error that is already invisible. Every mode the fabric
+advertises solves to 0 ppm on integers and never reaches the fractional path.
+
+The modeline log says which ran:
+
+```
+  PLL M=31+4228996598/2^32 (fractional) N=1 C=128
+```
+
+An integer solve prints `M=63 N=2 C=125` with no fraction. That line is the
+first thing to check if a mode judders or shows patterned noise.
 
 Worth checking when you generate it: fractional and integer PLLs are not
 always interchangeable on a given device, and the count of each differs.

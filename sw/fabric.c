@@ -527,6 +527,7 @@ long blitscrt_scanout_blit(struct blitscrt_fabric *f,
 			   const uint16_t *src)
 {
 	unsigned row, col;
+	uint32_t w_src;                  /* rect width as sent, before clipping */
 	long n = 0;
 
 	if (!f || !src) return -1;
@@ -535,6 +536,20 @@ long blitscrt_scanout_blit(struct blitscrt_fabric *f,
 		return -1;
 	}
 	if (x >= f->sc_w || y >= f->sc_h) return 0;
+
+	/*
+	 * Clipping the width must not change how far the source advances.
+	 *
+	 * src holds w_src pixels per row, whatever the scanout is. Clipping w
+	 * and then striding the source by the clipped value reads row 0's left
+	 * half, then row 0's right half as though it were row 1 -- a 640-wide
+	 * image squeezed into a 320-wide raster and doubled vertically, rather
+	 * than the left half cropped.
+	 *
+	 * That happens whenever the host's framebuffer is larger than the mode,
+	 * which an X screen that has not followed a mode change does routinely.
+	 */
+	w_src = w;
 	if (w > f->sc_w - x) w = f->sc_w - x;
 	if (h > f->sc_h - y) h = f->sc_h - y;
 
@@ -546,7 +561,7 @@ long blitscrt_scanout_blit(struct blitscrt_fabric *f,
 		for (row = 0; row < h; row++)
 			memcpy((void *)(f->sc_win + (size_t)(y + row) * f->sc_stride
 					+ (size_t)x * f->sc_bpp),
-			       (const uint8_t *)src + (size_t)row * w * f->sc_bpp,
+			       (const uint8_t *)src + (size_t)row * w_src * f->sc_bpp,
 			       (size_t)w * f->sc_bpp);
 		return (long)w * h;
 	}
@@ -555,7 +570,7 @@ long blitscrt_scanout_blit(struct blitscrt_fabric *f,
 		blitscrt_scanout_seek(f, (uint32_t)((y + row) * f->sc_w + x));
 		for (col = 0; col < w; col++, n++)
 			blitscrt_fabric_write16(f, BLITSCRT_REG_SCANOUT_WDATA,
-						src[row * w + col]);
+						src[row * w_src + col]);
 	}
 	return n;
 }
@@ -788,6 +803,16 @@ int blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 	 */
 	{
 		int il = (t->mode_flags & BLITSCRT_MODE_INTERLACE) ? 1 : 0;
+		char frac[40];
+
+		/* k is the 32-bit numerator on M, zero on an integer solve. Say
+		 * so, because which solver ran is the first thing to check if a
+		 * mode judders or shows patterned noise. */
+		if (t->pll.k)
+			snprintf(frac, sizeof frac, "+%u/2^32 (fractional)",
+				 t->pll.k);
+		else
+			frac[0] = '\0';
 
 		/* line_hz and field_hz come from mode_check, computed against
 		 * the clock actually solved rather than the one requested. */
@@ -796,7 +821,7 @@ int blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 			"  H   %u %u %u %u   total %u\n"
 			"  V   %u %u %u %u   total %u%s\n"
 			"  clk %.6f MHz asked, %.6f MHz solved (%+lld ppm)\n"
-			"  PLL M=%u N=%u C=%u\n"
+			"  PLL M=%u%s N=%u C=%u\n"
 			"  ->  %.3f kHz line, %.2f Hz %s, %u lines a frame\n"
 			"  host renders at %.2f Hz%s%s\n",
 			t->h_act, t->v_act, il ? "i" : "p",
@@ -806,7 +831,7 @@ int blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 			t->pll.target_hz / 1e6,
 			t->pll.actual_hz / 1e6,
 			t->pll.error_ppm,
-			t->pll.m, t->pll.n, t->pll.c,
+			t->pll.m, frac, t->pll.n, t->pll.c,
 			t->line_hz / 1000.0,
 			il ? t->field_hz : t->frame_hz,
 			il ? "field" : "frame",

@@ -79,7 +79,9 @@ int main(void)
 		/* One mode. A host is expected to drive this through Switchres,
 		 * which computes its own timings; the advertised one is a
 		 * fallback for a host that does not. */
-		check("one mode advertised", count == 1);
+		/* Two: the 648 fallback and the 632 switch-test mode. */
+		check("two modes advertised", count == 2);
+		check("the second is the 632 switch test", m[1].hdisplay == 632);
 		check("648x480i60, wide enough that Switchres cannot collide",
 		      m[0].hdisplay == 648 && m[0].vdisplay == 480 &&
 		      (m[0].flags & GUD_DISPLAY_MODE_FLAG_INTERLACE) &&
@@ -156,7 +158,7 @@ int main(void)
 		      buf[0] == GUD_STATUS_INVALID_PARAMETER);
 	}
 
-	printf("\nrefusing what the CRT cannot take\n");
+	printf("\n31 kHz progressive becomes 15 kHz interlaced\n");
 	{
 		struct gud_state_req s;
 		memset(&s, 0, sizeof s);
@@ -167,7 +169,41 @@ int main(void)
 		s.mode.vsync_end = 492; s.mode.vtotal = 525;
 		s.format = GUD_PIXEL_FORMAT_RGB565;
 
-		check("SET_STATE_CHECK stalls on a 31kHz mode",
+		/* Stock VGA, and the CRT cannot take 31 kHz -- so it is halved
+		 * into 480i rather than refused. The host is never told, and
+		 * renders 60 whole frames a second because as far as it knows
+		 * the mode is progressive. */
+		check("SET_STATE_CHECK accepts it",
+		      req(GUD_REQ_SET_STATE_CHECK, 0, &s, sizeof s) == 0);
+		check("and commits",
+		      req(GUD_REQ_SET_STATE_COMMIT, 0, NULL, 0) == 0);
+		check("the raster is now interlaced",
+		      (dev.active_timing.mode_flags & 1u) != 0);
+		check("at half the line rate",
+		      dev.active_timing.line_hz > 15000.0 &&
+		      dev.active_timing.line_hz < 16500.0);
+		check("marked as rewritten",
+		      dev.active_timing.from_progressive == 1);
+		printf("        %.3f kHz line, %.2f Hz field, %u lines a frame\n",
+		       dev.active_timing.line_hz / 1000.0,
+		       dev.active_timing.field_hz,
+		       dev.active_timing.frame_lines);
+	}
+
+	printf("\nrefusing what the CRT cannot take\n");
+	{
+		struct gud_state_req s;
+		memset(&s, 0, sizeof s);
+		/* 800x600p60: 37.9 kHz, and half of that is 18.9 -- still
+		 * outside the band, so there is no rewrite that saves it. */
+		s.mode.clock = 40000;
+		s.mode.hdisplay = 800; s.mode.hsync_start = 840;
+		s.mode.hsync_end = 968; s.mode.htotal = 1056;
+		s.mode.vdisplay = 600; s.mode.vsync_start = 601;
+		s.mode.vsync_end = 605; s.mode.vtotal = 628;
+		s.format = GUD_PIXEL_FORMAT_RGB565;
+
+		check("SET_STATE_CHECK stalls on a mode nothing can reach",
 		      req(GUD_REQ_SET_STATE_CHECK, 0, &s, sizeof s) < 0);
 		check("status is INVALID_PARAMETER",
 		      req(GUD_REQ_GET_STATUS, 0, NULL, 0) == 1 &&

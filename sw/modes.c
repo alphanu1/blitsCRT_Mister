@@ -71,6 +71,13 @@ blitscrt_mode_check(const struct blitscrt_mode *m,
 		    struct blitscrt_timing *out)
 {
 	int interlaced;
+	/* A 31 kHz progressive mode is rewritten into a 15 kHz interlaced one
+	 * here; conv holds the rewrite and m is repointed at it. */
+	struct blitscrt_mode conv;
+	int converted = 0;
+	/* The pixel clock in Hz. Normally clock_khz*1000, but a converted mode
+	 * needs finer resolution than a whole kHz -- see the conversion. */
+	double clk_hz = 0.0;
 	uint32_t v_total_field, v_act_field;
 	double line_hz, field_hz;
 
@@ -93,12 +100,108 @@ blitscrt_mode_check(const struct blitscrt_mode *m,
 
 	if (m->hdisplay > lim->h_max || m->vdisplay > lim->v_max)
 		return BLITSCRT_MODE_TOO_BIG;
+
+	/*
+	 * A 31 kHz progressive mode becomes a 15 kHz interlaced one.
+	 *
+	 * This exists because of how the display stack rates interlaced modes.
+	 * RandR reports an interlaced mode at its *frame* rate, so a host told
+	 * "480i60" renders 30 frames a second and the CRT gets 60 fields drawn
+	 * from 30 renders -- correct 480i, but half the motion an interlaced
+	 * console produces. Measured: 320x448i asks for 59.92 Hz and the host
+	 * delivers 33, with the device idle two thirds of the time.
+	 *
+	 * Nothing on this side can change what X tells an application. What it
+	 * can change is what the application is asked for. A 448-line
+	 * *progressive* mode at 31 kHz has no interlace flag, so nothing halves
+	 * it: the host allocates 448 lines and renders 60 frames a second into
+	 * them. The fabric then emits a 15 kHz interlaced raster reading
+	 * alternate rows, so each field comes from a different render -- 448
+	 * distinct lines at 60 Hz motion, which is what the console does.
+	 *
+	 * The conversion is exact and refresh-preserving by construction:
+	 * halving the clock and the vertical total divides both sides of
+	 * clock/(htotal*vtotal), so the field rate equals the progressive rate
+	 * the host was given, whatever Switchres computed and however the PLL
+	 * later rounds it.
+	 *
+	 *   in   13.036 MHz / 416 / 522     31.337 kHz, 60.03 Hz progressive
+	 *   out   6.518 MHz / 416 / 261 i   15.668 kHz, 60.03 Hz field
+	 *
+	 * Only modes out of the sink's band whose half is inside it convert, so
+	 * a 224p mode at 15 kHz is left exactly as it arrives. Requires a
+	 * dual-range monitor profile on the host: 15 kHz for the short modes,
+	 * 31 kHz for the tall ones. See docs/INTERLACE.md.
+	 */
+	{
+		double lr = (double)m->clock_khz * 1000.0 / (double)m->htotal;
+
+		if (lr > lim->line_hz_max && !(m->flags & BLITSCRT_MF_INTERLACE) &&
+		    lr / 2.0 >= lim->line_hz_min && lr / 2.0 <= lim->line_hz_max) {
+			conv = *m;
+
+			/*
+			 * The clock comes from the rate, not from halving.
+			 *
+			 * An interlaced frame is 2*field+1 lines. The half line
+			 * is what offsets one field against the other; without
+			 * it both fields land on the same scanlines and the
+			 * picture is 224 lines drawn twice rather than 448. So
+			 * it cannot be dropped to make the arithmetic tidy.
+			 *
+			 * Which means an even host total does not simply halve.
+			 * 522 progressive lines become 261 field lines plus the
+			 * half line -- 261.5 -- and a clock of exactly half runs
+			 * the field rate 1912 ppm slow. That is 0.11 frames a
+			 * second, a slip every nine seconds, plainly visible.
+			 *
+			 * But the fabric's clock is ours to choose. What has to
+			 * match is the field rate, not the ratio to the host's
+			 * clock. So solve for it:
+			 *
+			 *   fabric = host * (field + 0.5) / vtotal
+			 *
+			 * which is exactly half when the total is odd, and a
+			 * little over half when it is even. Both land on 0 ppm.
+			 *
+			 *   522 even   half 6.518000 MHz  -1912 ppm
+			 *              solved 6.530487 MHz     0 ppm
+			 *
+			 * The deviation from "half" is invisible: 0.19% on a
+			 * pixel clock changes nothing a CRT can see, while
+			 * 0.19% on the frame rate is a dropped field every nine
+			 * seconds.
+			 */
+			{
+				unsigned field = m->vtotal / 2u;
+
+				/* Exact, in Hz. clock_khz is an integer, and
+				 * rounding 6530.487 kHz to 6530 costs 75 ppm --
+				 * small, but there is no reason to spend it
+				 * when the PLL solver takes Hz anyway. */
+				clk_hz = (double)m->clock_khz * 1000.0 *
+					 ((double)field + 0.5) /
+					 (double)m->vtotal;
+
+				conv.clock_khz = (uint32_t)(clk_hz / 1000.0 + 0.5);
+				conv.vtotal    = 2u * field + 1u;
+			}
+			conv.flags |= BLITSCRT_MF_INTERLACE;
+
+			m = &conv;
+			converted = 1;
+		}
+	}
+
 	if (m->clock_khz < lim->pclk_khz_min || m->clock_khz > lim->pclk_khz_max)
 		return BLITSCRT_MODE_NO_PLL;
 
 	interlaced = (m->flags & BLITSCRT_MF_INTERLACE) ? 1 : 0;
 
-	line_hz = (double)m->clock_khz * 1000.0 / (double)m->htotal;
+	if (clk_hz == 0.0)
+		clk_hz = (double)m->clock_khz * 1000.0;
+
+	line_hz = clk_hz / (double)m->htotal;
 	if (line_hz < lim->line_hz_min || line_hz > lim->line_hz_max)
 		return BLITSCRT_MODE_LINE_RATE;
 
@@ -161,9 +264,11 @@ blitscrt_mode_check(const struct blitscrt_mode *m,
 	out->field_hz = field_hz;
 	out->frame_hz = interlaced ? field_hz / 2.0 : field_hz;
 
-	if (pll_solve((unsigned long long)m->clock_khz * 1000ull,
+	if (pll_solve((unsigned long long)(clk_hz + 0.5),
 		      &pll_cyclonev, &out->pll) < 0)
 		return BLITSCRT_MODE_NO_PLL;
+
+	out->from_progressive = converted;
 
 	return BLITSCRT_MODE_OK;
 }

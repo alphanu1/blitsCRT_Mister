@@ -51,6 +51,10 @@ struct blitscrt_timing {
 	uint32_t mode_flags;                  /* BLITSCRT_MODE_* for the fabric */
 	uint32_t h_total, v_total_field, frame_lines;
 	double   line_hz, field_hz, frame_hz;
+	/* Set when a 31 kHz progressive mode was rewritten into this 15 kHz
+	 * interlaced one -- the host is rendering whole frames at the field
+	 * rate, so each field comes from a different render. */
+	int      from_progressive;
 	struct pll_config pll;
 };
 

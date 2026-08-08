@@ -558,6 +558,47 @@ int blitscrt_handle_ctrl(struct blitscrt_dev *d,
 		}
 
 		mode_from_gud(&r->mode, &m);
+
+		/*
+		 * The mode exactly as the host sent it, before anything here
+		 * touches it.
+		 *
+		 * Everything downstream logs the mode after mode_check has
+		 * split an interlaced one into fields, by which point a mode we
+		 * advertised and a mode Switchres invented look identical. The
+		 * difference that matters -- whether the host is describing
+		 * frames or fields, and what refresh it therefore thinks the
+		 * mode has -- is only visible here.
+		 *
+		 * `drm refresh` is what DRM's drm_mode_vrefresh() computes:
+		 * clock/(htotal*vtotal), doubled for interlace. If the host is
+		 * rendering at half that, it is reading the rate from somewhere
+		 * else -- RandR rates an interlaced mode at its frame rate and
+		 * does not double.
+		 */
+		{
+			const struct gud_display_mode_req *q = &r->mode;
+			unsigned ht = q->htotal, vt = q->vtotal;
+			int il = (q->flags &
+				  GUD_DISPLAY_MODE_FLAG_INTERLACE) ? 1 : 0;
+			double vr = (ht && vt)
+				  ? (double)q->clock * 1000.0 / (ht * vt)
+				    * (il ? 2 : 1)
+				  : 0.0;
+
+			fprintf(stderr,
+				"blitscrtd: host asks for %ux%u%s  clk %u kHz\n"
+				"  H %u %u %u %u   V %u %u %u %u   flags 0x%x\n"
+				"  drm refresh %.2f Hz%s\n",
+				q->hdisplay, q->vdisplay, il ? "i" : "p",
+				q->clock,
+				q->hdisplay, q->hsync_start, q->hsync_end, ht,
+				q->vdisplay, q->vsync_start, q->vsync_end, vt,
+				q->flags,
+				vr, il ? " (doubled for interlace)" : "");
+			fflush(stderr);
+		}
+
 		res = blitscrt_mode_check(&m, &blitscrt_limits_15khz,
 					  &d->pending_timing);
 		if (res != BLITSCRT_MODE_OK) {

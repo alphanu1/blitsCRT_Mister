@@ -773,6 +773,74 @@ int blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 			return -1;
 	}
 
+	/*
+	 * The whole modeline, once per modeset.
+	 *
+	 * The per-second fps line carries the resolution and nothing else, which
+	 * is enough to see *that* a mode is running and useless for asking
+	 * whether it is running at the right rate. A picture that is subtly wrong
+	 * -- a monitor not quite locking, pixels leaning -- is a question about
+	 * porches and the achieved pixel clock, and neither was ever printed.
+	 *
+	 * ppm is the honest number: the PLL solves M/N/C over integers, so the
+	 * clock it reaches is rarely the one asked for. 0 ppm is exact; a few
+	 * hundred is a frame slipping every half minute or so.
+	 */
+	{
+		int il = (t->mode_flags & BLITSCRT_MODE_INTERLACE) ? 1 : 0;
+
+		/* line_hz and field_hz come from mode_check, computed against
+		 * the clock actually solved rather than the one requested. */
+		fprintf(stderr,
+			"blitscrt: mode %ux%u%s applied\n"
+			"  H   %u %u %u %u   total %u\n"
+			"  V   %u %u %u %u   total %u%s\n"
+			"  clk %.6f MHz asked, %.6f MHz solved (%+lld ppm)\n"
+			"  PLL M=%u N=%u C=%u\n"
+			"  ->  %.3f kHz line, %.2f Hz %s, %u lines a frame\n"
+			"  host renders at %.2f Hz%s%s\n",
+			t->h_act, t->v_act, il ? "i" : "p",
+			t->h_sy, t->h_bp, t->h_act, t->h_fp, t->h_total,
+			t->v_sy, t->v_bp, t->v_act, t->v_fp,
+			t->v_total_field, il ? " per field" : "",
+			t->pll.target_hz / 1e6,
+			t->pll.actual_hz / 1e6,
+			t->pll.error_ppm,
+			t->pll.m, t->pll.n, t->pll.c,
+			t->line_hz / 1000.0,
+			il ? t->field_hz : t->frame_hz,
+			il ? "field" : "frame",
+			t->frame_lines,
+			/*
+			 * What the host is drawing at, which is not always what
+			 * reaches the screen.
+			 *
+			 * DRM derives a mode's refresh as clock/(htotal*vtotal)
+			 * and doubles it for an interlaced mode, because the
+			 * framebuffer holds whole frames and the hardware picks
+			 * alternate lines. So an interlaced mode wants the FRAME
+			 * vtotal advertised, not the per-field one: 525 for
+			 * 480i, giving 30 doubled to 60.
+			 *
+			 * Send 262 instead and DRM reads 60 and doubles to 120;
+			 * send a frame count where a field count belongs and it
+			 * halves. Either way the host renders at the wrong rate
+			 * and nothing else complains, so it is printed here
+			 * beside the rate the CRT actually gets.
+			 */
+			(t->h_total && t->frame_lines)
+			  ? (double)t->pll.actual_hz /
+			    ((double)t->h_total * t->frame_lines) * (il ? 2 : 1)
+			  : 0.0,
+			il ? " (interlaced: DRM doubles the frame rate)" : "",
+			t->from_progressive
+			  ? "\n  rewritten from a 31 kHz progressive mode: the host"
+			    " renders whole\n  frames at the field rate, so each"
+			    " field is a different render"
+			  : "");
+		fflush(stderr);
+	}
+
 	/* Claim the raster, then check what it is actually running.
 	 *
 	 * This began as a workaround. The APPLYING bit was not trustworthy across
@@ -794,14 +862,52 @@ int blitscrt_fabric_set_mode(struct blitscrt_fabric *f,
 				      c | BLITSCRT_CTRL_HPS_TIMING);
 	}
 
-	for (spin = 0; spin < 200; spin++) {
-		struct blitscrt_live lv;
-		if (blitscrt_fabric_live(f, &lv) < 0)
-			return -1;
-		if (lv.hps_timing && lv.h_act == t->h_act &&
-		    lv.h_total == t->h_total && lv.v_total == t->v_total_field &&
-		    lv.interlace == ((t->mode_flags & BLITSCRT_MODE_INTERLACE) ? 1 : 0))
-			return 0;
+	/*
+	 * Wait on a clock, not on a loop count.
+	 *
+	 * The staged timing latches at a vblank -- that is the whole point of
+	 * the handshake, so a mode never changes mid-frame. At 60 Hz the next
+	 * one is up to 16.7 ms away, and slower at 50 Hz or on a long-vtotal
+	 * mode.
+	 *
+	 * This used to spin 200 times with no delay between reads. Two hundred
+	 * register reads over the gp bridge take well under a millisecond, so
+	 * the loop could expire before the vblank ever arrived and report a
+	 * modeset as failed while it was about to succeed. Intermittent by
+	 * nature: whether it caught the vblank depended on where in the frame
+	 * the request landed.
+	 *
+	 * 100 ms covers several frames at any rate this project supports, and
+	 * a modeset is rare enough that waiting is free.
+	 */
+	{
+		enum { CONFIRM_DEADLINE_US = 100000, CONFIRM_GAP_US = 200 };
+		struct timespec c0, cnow;
+		unsigned waited = 0;
+
+		clock_gettime(CLOCK_MONOTONIC, &c0);
+		for (spin = 0; ; spin++) {
+			struct blitscrt_live lv;
+			if (blitscrt_fabric_live(f, &lv) < 0)
+				return -1;
+			if (lv.hps_timing && lv.h_act == t->h_act &&
+			    lv.h_total == t->h_total &&
+			    lv.v_total == t->v_total_field &&
+			    lv.interlace ==
+			      ((t->mode_flags & BLITSCRT_MODE_INTERLACE) ? 1 : 0)) {
+				if (waited > 20000)
+					fprintf(stderr, "blitscrt: mode latched "
+							"after %u ms\n",
+						waited / 1000);
+				return 0;
+			}
+			clock_gettime(CLOCK_MONOTONIC, &cnow);
+			waited = (unsigned)((cnow.tv_sec - c0.tv_sec) * 1000000
+				 + (cnow.tv_nsec - c0.tv_nsec) / 1000);
+			if (waited > CONFIRM_DEADLINE_US)
+				break;
+			usleep(CONFIRM_GAP_US);
+		}
 	}
 	{
 		struct blitscrt_live lv;

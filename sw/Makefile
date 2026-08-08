@@ -88,7 +88,38 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 #       worked around, and mode counts followed the list down to one
 #   d41 the user button toggles the USB connection: unbind the UDC so the host
 #       sees an orderly detach, and stay disconnected until pressed again
-BLITSCRTD_BUILD ?= d42
+#   d43 log the whole modeline on every modeset -- porches, the solved pixel
+#       clock and its ppm error, the PLL counters, and the derived line and
+#       field rates. The fps line carries the resolution and nothing else,
+#       which cannot answer whether a mode is running at the right rate
+#   d44 fps counted from pixels blitted, not from transfers. `frames` counted
+#       damage rects, so a host sending several a frame read as several times
+#       the rate -- 189 fps at 60 Hz -- and `available` collapsed to match.
+#       rects/s is reported alongside, since how the host splits its damage is
+#       worth knowing on its own
+#   d45 the modeline log also prints the refresh the *host* will compute --
+#       DRM derives it from clock/(htotal*vtotal) and doubles it for interlace,
+#       so an interlaced mode advertised with per-field totals makes the host
+#       render at twice or half the intended rate and nothing else complains
+#   d46 the modeset confirmation waits on a clock, not a loop count. It spun
+#       200 times with no delay -- under a millisecond -- while the timing
+#       latches at a vblank up to 16.7 ms away, so a modeset could be reported
+#       as failed while it was about to succeed. Also: interlaced rates counted
+#       against a field rather than a frame
+#   d47 log the incoming mode exactly as the host sent it, before mode_check
+#       splits an interlaced one into fields. By the time anything else logs it,
+#       a mode we advertised and one Switchres invented look identical -- and
+#       the difference is the whole question, since ours runs at 60 and theirs
+#       at 30
+#   d48 a 31 kHz progressive mode is halved into 15 kHz interlaced. RandR rates
+#       an interlaced mode at its frame rate, so a host told 448i renders 30 --
+#       told 448p at 31 kHz it renders 60, and the fabric interlaces on the read
+#       so each field is a different render. See docs/INTERLACE.md
+#   d49 the converted clock is solved from the wanted field rate rather than by
+#       halving. An interlaced frame is 2*field+1 lines, so an even host total
+#       does not halve cleanly -- exactly half runs 1912 ppm slow, a dropped
+#       field every nine seconds. Solving for the rate lands on 0 ppm
+BLITSCRTD_BUILD ?= d49
 CFLAGS  += -DBLITSCRTD_BUILD='"$(BLITSCRTD_BUILD)"'
 # -lpthread: the bulk endpoint runs on its own thread, so a blocking read cannot
 # stop ep0 being serviced. Static linking needs it named explicitly.

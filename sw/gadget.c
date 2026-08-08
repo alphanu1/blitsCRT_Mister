@@ -513,6 +513,11 @@ static void *blit_worker(void *arg)
 	struct blitscrt_dev *d = g->dev;
 	uint64_t t_lz4 = 0, t_blit = 0, t_wall = 0;
 	unsigned frames = 0;
+	/* Pixels actually written, so the rate is honest however the
+	 * host splits its damage. `frames` counts rects, and a host
+	 * sending four rects a frame made the old figure read 4x -- 189
+	 * fps at 60 Hz, with `available` collapsing to match. */
+	unsigned long long px_done = 0;
 
 	for (;;) {
 		struct gud_set_buffer_req r;
@@ -568,6 +573,7 @@ static void *blit_worker(void *arg)
 		}
 		t_blit += now_us() - t0;
 		d->stat_flush++;
+		px_done += (unsigned long long)r.width * r.height;
 
 		if (++frames >= 60) {
 			/*
@@ -596,18 +602,60 @@ static void *blit_worker(void *arg)
 					? "i" : "p",
 				d->active_valid ? "host timing" : "NO MODE SET");
 
-			fprintf(stderr, "%.1f fps -- wait %.1f ms, "
-					"xfer %.1f ms at %.1f MB/s, lz4 %.1f ms, "
-					"blit %.1f ms, critical path %.1f of "
-					"%.1f available\n",
-				wall > 0 ? 60.0 / wall : 0.0,
-				g->ms_wait, g->ms_xfer, g->mbs,
-				t_lz4 / 60000.0, t_blit / 60000.0,
-				(t_lz4 + t_blit) / 60000.0,
-				wall > 0 ? wall * 1000.0 / 60.0 : 0.0);
+			{
+				/*
+				 * Two rates, because they answer different
+				 * questions.
+				 *
+				 * fps is whole frames' worth of pixels a
+				 * second. It is what the screen is doing, and
+				 * it is derived from area rather than from a
+				 * count of transfers -- a host is free to send
+				 * one rect a frame or twenty.
+				 *
+				 * rects/s is how the host chose to split that.
+				 * A high number with a low fps means many small
+				 * updates, which costs per-transfer overhead
+				 * and is worth knowing.
+				 */
+				/*
+				 * Against a field, not a frame, for interlaced
+				 * modes.
+				 *
+				 * A host driving 480i sends field-sized damage
+				 * -- 240 lines -- once per field, so dividing
+				 * by a whole frame halves the answer and makes
+				 * a mode running correctly at 60 look like 30.
+				 */
+				int ilace = d->active_valid &&
+					(d->active_mode.flags &
+					 BLITSCRT_MF_INTERLACE);
+				double fpx = (d->active_valid &&
+					      d->active_mode.hdisplay &&
+					      d->active_mode.vdisplay)
+					   ? (double)d->active_mode.hdisplay *
+					     d->active_mode.vdisplay /
+					     (ilace ? 2.0 : 1.0) : 0.0;
+				double fps = (wall > 0 && fpx > 0)
+					   ? (double)px_done / fpx / wall : 0.0;
+
+				fprintf(stderr, "%.1f %s/s (%.0f rects/s) -- "
+						"wait %.1f ms, "
+						"xfer %.1f ms at %.1f MB/s, "
+						"lz4 %.1f ms, blit %.1f ms, "
+						"critical path %.1f of "
+						"%.1f available\n",
+					fps, ilace ? "fields" : "frames",
+					wall > 0 ? 60.0 / wall : 0.0,
+					g->ms_wait, g->ms_xfer, g->mbs,
+					t_lz4 / 60000.0, t_blit / 60000.0,
+					(t_lz4 + t_blit) / 60000.0,
+					fps > 0 ? 1000.0 / fps : 0.0);
+			}
 			fflush(stderr);
 			t_lz4 = t_blit = 0;
 			t_wall = 0;
+			px_done = 0;
 			frames = 0;
 		}
 

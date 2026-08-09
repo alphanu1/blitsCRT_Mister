@@ -134,7 +134,22 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 #       integer solution is worse than 50 ppm, since the fraction is dithered
 #       and that pattern correlates with pixel position -- every advertised
 #       mode still solves exactly on integers and never reaches it
-BLITSCRTD_BUILD ?= d52
+#   d53 the fractional threshold drops from 50 ppm to 0: the fraction is taken
+#       whenever it is closer, and an integer solution kept only when already
+#       exact. 50 ppm is a slipped frame every five and a half minutes, and on
+#       a 15 kHz display showing 2D games that scroll a whole screen at a
+#       constant rate that is a visible hitch. Dither is a noise floor; a
+#       slipped frame is an event. 100% of clocks in both bands now solve exact
+#   d54 the fractional solver keeps MFRAC inside 0.05-0.95, which AN-661 asks
+#       for: a delta-sigma modulator is at its worst near the ends, where the
+#       dither repeats slowly and concentrates into spurs rather than
+#       spreading. Costs nothing -- the search runs over every N and C, and all
+#       23001 clocks in both bands still solve exact
+#   d55 the solver stays on integers unless CAPS bit 2 says a fractional PLL is
+#       fitted. The K write is ignored on an integer core, so a fractional
+#       solution would run the integer part of M alone -- 6.327 MHz where 6.518
+#       was asked for -- and nothing would report it
+BLITSCRTD_BUILD ?= d55
 CFLAGS  += -DBLITSCRTD_BUILD='"$(BLITSCRTD_BUILD)"'
 # -lpthread: the bulk endpoint runs on its own thread, so a blocking read cannot
 # stop ep0 being serviced. Static linking needs it named explicitly.

@@ -45,6 +45,42 @@ module blitscrt_regs #(
      *   3.6  BUS_DIAG; the bridge gives up on a slave that never accepts
      *        instead of wedging the transport
      *   3.7  blitscrt_pllbus between the bridge and the reconfig slave
+     *   3.38 CAPS bit 2 reports whether the fractional PLL is fitted. The
+     *        daemon's solver returns a fractional M for most clocks, and on an
+     *        integer core the K write is ignored -- so it would run the integer
+     *        part alone, 6.327 MHz where 6.518 was asked for, with nothing to
+     *        say so. The solver now stays on integers until CAPS says otherwise
+     *   3.37 the output pad constraints go back to 12 ns, failing. Relaxing
+     *        them to a meetable 25 ns is what broke the colour: what matters on
+     *        VGA_R/G/B is skew, since the DAC latches all six bits of a channel
+     *        on one edge, and an unachievable max-delay makes the fitter
+     *        minimise every path as hard as it can. Made meetable, it stops
+     *        early and the bits spread -- low bits carrying the previous
+     *        pixel's value is exactly a wrong gamma curve. check-fit now
+     *        expects the failure rather than the constraint being loosened to
+     *        quiet the report
+     *   3.36 back to 3.34's arrangement: the synchroniser is nine bits and
+     *        av_force/av_dac/av_clk_inv stay on s_ctrl. 3.35 reverted the width
+     *        as well, on the theory that only a byte-identical revert would
+     *        settle it, and that was worse on hardware. So the width was never
+     *        the problem -- moving those three onto the synchroniser was, and
+     *        3.33 had already fixed that
+     *   3.35 the CTRL synchroniser goes back to six bits, completing the revert
+     *        3.33 started. 3.33 moved av_force/av_dac/av_clk_inv back to
+     *        s_ctrl but left the register nine bits wide, so the synthesised
+     *        result still did not match the build that was known good. The
+     *        truncation warning returns with it and is expected: ctrl_vid
+     *        carries the six bits the video side reads, and the other three
+     *        belong to the DAC clock path. Also: 3.32's CSYNC change is undone
+     *        -- the original reset value never had it, the two differ only for
+     *        the two clk_pix cycles before the synchroniser propagates, and it
+     *        was never the cause of anything
+     *   3.34 the fractional-N PLL is fitted. Both cores have been compiled in
+     *        since 3.29; this selects the fractional one. Software has been
+     *        ready the whole time -- pll_solve_best takes the fraction only
+     *        when the integer error exceeds 50 ppm, and writes K regardless
+     *        because zero is what an integer PLL wants there. Worst case
+     *        across both bands goes from 409 and 880 ppm to 0
      *   3.33 av_force, av_dac and av_clk_inv go back to s_ctrl rather than the
      *        synchroniser. Moving them onto ctrl_vid in 3.29 looked like the
      *        tidy thing to do and changed the colour on a CRT: av_dac gates the
@@ -151,7 +187,7 @@ module blitscrt_regs #(
      * clock select pointing at a clock pin and once without -- and the only way
      * to tell them apart was whether the monitor synced.
      */
-    parameter [31:0] VERSION = 32'h0003_0021,
+    parameter [31:0] VERSION = 32'h0003_0026,
     parameter [11:0] SCANOUT_MAXW = 12'd1280,
     /* Cycles the user button ignores further edges for, covering contact
      * bounce. 20 ms at 50 MHz. A testbench overrides it to something it can
@@ -800,27 +836,24 @@ module blitscrt_regs #(
 
     /* Control bits are static from the video side's point of view; a two-flop
      * synchroniser each is enough. */
-    /* Nine bits, matching s_ctrl.
+    /* Nine bits wide, but only the low six are read here.
      *
-     * This was six, so `ctrl_meta <= s_ctrl` dropped bits 6, 7 and 8 --
-     * av_force, av_dac and av_clk_inv. Quartus said so on every build:
+     * Six bits truncated the assignment from the nine-bit s_ctrl, which Quartus
+     * warns about on every build. Nine silences that and changes nothing
+     * functional: bits 6, 7 and 8 land in the register and nothing reads them,
+     * because av_force, av_dac and av_clk_inv are taken from s_ctrl directly
+     * below.
      *
-     *   Warning (10230): truncated value with size 9 to match size of
-     *   target (6) at blitscrt_regs.v(765)
-     *
-     * It worked because those three were taken straight from s_ctrl instead,
-     * which crosses into the video domain with no synchroniser at all. They are
-     * static after configuration so nothing has gone wrong, but a bus crossing
-     * clock domains unsynchronised is not something to leave written down.
+     * That distinction matters. Moving those three onto this synchroniser --
+     * which is what 3.29 did -- changed the colour on a CRT: av_dac gates the
+     * DAC clock and av_clk_inv picks its edge, so both belong to the clock path
+     * and are sensitive to being driven from a clk_pix register rather than a
+     * static wire. Reverting the width as well as the assignments, in 3.35, was
+     * worse still. So: nine bits, and the three stay on s_ctrl.
      */
     reg [8:0] ctrl_meta, ctrl_vid;
     always @(posedge clk_pix or negedge vid_cfg_rst_n) begin
         if (!vid_cfg_rst_n) begin
-            /* The same value s_ctrl resets to. Widening this from 6 bits to
-             * 9 was typed as 0_1001_0110 and dropped bit 3, CSYNC -- so
-             * composite sync was off until software wrote CTRL, and a set
-             * recovering its AGC and black level from that pin came up with
-             * the levels wrong. */
             ctrl_meta <= 9'b0_1001_1110; ctrl_vid <= 9'b0_1001_1110;
         end else begin
             ctrl_meta <= s_ctrl; ctrl_vid <= ctrl_meta;

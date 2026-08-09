@@ -196,6 +196,11 @@
 #define BLITSCRT_REG_CAPS           0x007Cu
 #define BLITSCRT_CAP_SCANOUT_DDR3   (1u << 0) /* fabric reads HPS DDR3 over f2sdram */
 #define BLITSCRT_CAP_RECT_PORT      (1u << 1) /* WADDR/WDATA reach on-chip memory */
+/* The pixel PLL is fractional-N, so the K register is live and a fractional M
+ * will actually be reached. Without this the solver must stay on integers: the
+ * K write is ignored on an integer core, so a fractional solution would run the
+ * integer part alone -- 6.327 MHz where 6.518 was asked for, silently. */
+#define BLITSCRT_CAP_PLL_FRAC       (1u << 2)
 
 /*
  * RO diagnostics for the line fetcher, so a wrong picture is one register read

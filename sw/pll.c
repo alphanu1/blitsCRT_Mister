@@ -212,6 +212,30 @@ int pll_solve_frac(unsigned long long target_hz,
 					continue;
 			}
 
+			/*
+			 * Keep the fraction away from the ends.
+			 *
+			 * AN-661: "For optimum performance, set the MFRAC value
+			 * between 0.05 and 0.95." A delta-sigma modulator is at
+			 * its worst near 0 and 1 -- the dither pattern repeats
+			 * over a long period and its energy concentrates into a
+			 * few spurs rather than spreading, which on a display is
+			 * the difference between a noise floor and visible
+			 * structure.
+			 *
+			 * Nothing is lost by refusing them. A fraction below
+			 * 0.05 means an integer M is already within 5% of a
+			 * counter step, so pll_solve reaches it about as well;
+			 * and the search runs over every N and C, so another
+			 * combination almost always lands in the middle of the
+			 * range.
+			 */
+			if (k != 0) {
+				long double f = (long double)k / 4294967296.0L;
+				if (f < 0.05L || f > 0.95L)
+					continue;
+			}
+
 			out->ops++;
 
 			/* What that actually reaches, back through the same
@@ -257,21 +281,44 @@ int pll_solve_frac(unsigned long long target_hz,
 /*
  * Integer where it is good enough, fractional where it is not.
  *
+ * The fraction is taken whenever it is closer, and the threshold is zero -- so
+ * an integer solution is kept only when it is already exact.
+ *
  * Fractional-N dithers the M divider between two integers to average the
- * fraction, and that dithering is periodic. Periodic phase noise correlates
- * with pixel position, which is why video PLLs traditionally stay integer. So
- * the fraction is not taken unless it is buying something: below the threshold
- * an integer solution has no error worth removing.
+ * fraction, and that dithering is periodic, which is why video PLLs
+ * traditionally stay integer. But the thing this drives is a 15 kHz display
+ * showing 2D games that scroll a whole screen at a constant rate, and a rate
+ * mismatch there is a repeated or dropped frame -- a hitch in a smoothly moving
+ * background. Dither is a noise floor; a slipped frame is an event you see.
  *
  * Every mode the fabric advertises solves to 0 ppm on integers, so the common
- * cases never reach the fractional path at all.
+ * cases still never reach the fractional path.
  */
+/*
+ * Whether the fabric has a fractional PLL fitted.
+ *
+ * Off until the daemon reads CAPS and says otherwise, because getting this
+ * wrong is silent: on an integer core the K write is ignored, so a fractional
+ * solution runs the integer part of M alone -- 6.327 MHz where 6.518 was asked
+ * for -- and nothing reports it. Defaulting to integer means a wrong guess
+ * costs accuracy, not correctness.
+ */
+static int pll_have_frac;
+
+void pll_set_fractional(int available)
+{
+	pll_have_frac = available ? 1 : 0;
+}
+
 int pll_solve_best(unsigned long long target_hz,
 		   const struct pll_limits *lim,
 		   struct pll_config *out)
 {
 	struct pll_config frac;
 	long long ppm;
+
+	if (!pll_have_frac)
+		return pll_solve(target_hz, lim, out);
 
 	if (pll_solve(target_hz, lim, out) < 0)
 		return pll_solve_frac(target_hz, lim, out);

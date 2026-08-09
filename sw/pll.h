@@ -63,13 +63,29 @@ int pll_solve_frac(unsigned long long target_hz,
 		   struct pll_config *out);
 
 /*
- * Integer if it is close enough, fractional otherwise.
+ * Integer only when it is exact. Otherwise the fraction, always.
  *
- * Below the threshold an integer solution has no rate error worth removing and
- * brings no dithering, so it wins. Above it the rate error is the larger fault
- * and the fraction earns its jitter.
+ * This had a 50 ppm threshold, on the reasoning that a small rate error is not
+ * worth the dithering a fraction brings. That is the wrong trade for what this
+ * drives. A 15 kHz 2D game scrolls a whole screen horizontally at a constant
+ * rate, and any mismatch between the source's frame rate and the display's
+ * shows as a repeated or dropped frame -- a visible hitch in a smoothly moving
+ * background, which is exactly the artefact these modelines exist to avoid.
+ * 50 ppm is a slip every five and a half minutes. Dither is a noise floor;
+ * a slipped frame is an event you see.
+ *
+ * So the fraction is taken whenever it is closer. Zero keeps the integer
+ * solution only when it is already exact -- which every advertised mode is, so
+ * the common cases still carry no dithering at all.
  */
-#define PLL_FRAC_PPM_THRESHOLD  50
+#define PLL_FRAC_PPM_THRESHOLD  0
+
+/*
+ * Tell the solver whether the fabric has a fractional PLL. Read from CAPS bit
+ * 2 at startup; off until then, so a build that never calls this stays on
+ * integers rather than silently running 3% out.
+ */
+void pll_set_fractional(int available);
 
 int pll_solve_best(unsigned long long target_hz,
 		   const struct pll_limits *lim,

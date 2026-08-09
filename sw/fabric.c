@@ -8,6 +8,7 @@
  */
 
 #include "fabric.h"
+#include "pll.h"
 #include "blitscrt_regs.h"
 
 #include <fcntl.h>
@@ -269,6 +270,17 @@ struct blitscrt_fabric *blitscrt_fabric_open(void)
 			fprintf(stderr, "blitscrt: CAPS read unstable; re-reading\n");
 			f->caps = blitscrt_fabric_read(f, BLITSCRT_REG_CAPS);
 		}
+
+		/* Tell the PLL solver which core is fitted, for the same reason
+		 * this word exists at all: choosing wrong fails silently. The K
+		 * write is ignored on an integer PLL, so a fractional solution
+		 * would run the integer part of M alone -- 6.327 MHz where
+		 * 6.518 was asked for -- with nothing to report it. */
+		pll_set_fractional(f->caps & BLITSCRT_CAP_PLL_FRAC);
+		fprintf(stderr, "blitscrt: pixel PLL is %s\n",
+			(f->caps & BLITSCRT_CAP_PLL_FRAC)
+			  ? "fractional-N; awkward clocks solve exact"
+			  : "integer; worst case about 400 ppm");
 
 		/* Take the rest of the scanout state from the fabric too, rather
 		 * than assuming RGB565 and a packed stride. Whatever configured

@@ -43,46 +43,38 @@ set_false_path -to   [get_ports {LED_USER LED_HDD LED_POWER}]
 # constrain against. What does matter is skew between the colour bits and
 # sync -- a few nanoseconds of spread shows up as coloured fringing on a
 # sharp edge. Bound it rather than false-pathing the whole bus.
-# 25 ns, not 12.
+# 12 ns, and it does not meet -- deliberately.
 #
-# The 12 ns figure was invented and could never be met: the pixel clock takes
-# 8.9 ns to reach the output registers, so the constraint left 3.1 ns for 8.7 ns
-# of routing and every one of these pins failed by about 5.6 ns. That put -214 ns
-# of total negative slack in the report -- enough to bury anything real, and it
-# very nearly did.
+# This was relaxed to 25 ns because 12 could never be met: the pixel clock takes
+# 8.9 ns to reach the output registers, leaving 3.1 ns for 8.7 ns of routing, so
+# every one of these pins failed by about 5.6 ns and put -214 ns of TNS in the
+# report. That looked like a constraint written badly.
 #
-# What actually matters here is not absolute delay but skew between the bits:
-# the DAC on the A/V board latches all six bits of each channel together, so
-# they must arrive within a fraction of a pixel. 25 ns is comfortably longer
-# than the worst path and still far inside the 79 ns pixel period at 12.6 MHz,
-# or 40 ns at 25.2 MHz, so the bits stay bunched without demanding routing the
-# fitter cannot deliver.
+# Relaxing it changed the colour on a CRT, and the reason is instructive. What
+# matters on these pins is not absolute delay but SKEW: the DAC latches all six
+# bits of a channel on one edge, so they must arrive together. An unachievable
+# max-delay makes the fitter minimise every one of these paths as hard as it
+# can, which bunches them. An achievable one makes it stop as soon as each is
+# under the number -- so paths that all sat near 8.7 ns were free to spread
+# anywhere up to 25, and low bits carrying the previous pixel's value while high
+# bits carry this one is exactly a wrong-looking gamma curve.
 #
-# The DAC has no clock pin of its own on this board -- see the note about
-# VGA_TX_CLK in blitscrt_top.v -- so a source-synchronous constraint is not
-# available for VGA the way it is for HDMI below.
-set_max_delay -to [get_ports {VGA_R[*] VGA_G[*] VGA_B[*] VGA_HS VGA_VS}] 25.0
-set_min_delay -to [get_ports {VGA_R[*] VGA_G[*] VGA_B[*] VGA_HS VGA_VS}] 0.0
+# So the failing constraint was doing useful work. It is left failing, and
+# check-fit is told to expect it rather than the constraint being loosened to
+# make the report quiet.
+#
+# The right fix is a proper source-synchronous constraint against a forwarded
+# DAC clock. This board does not bring one out -- see the VGA_TX_CLK note in
+# blitscrt_top.v -- so that needs hardware, not SDC.
+set_max_delay -to [get_ports {VGA_R[*] VGA_G[*] VGA_B[*] VGA_HS VGA_VS}] 12.0
 set_min_delay -to [get_ports {VGA_R[*] VGA_G[*] VGA_B[*] VGA_HS VGA_VS}] -2.0
 
 # HDMI. The transmitter latches on the clock we hand it, so the data bus wants
 # the same skew bound as the analog side. I2C is a 100kHz open-drain bus and
 # needs no constraining.
-# 25 ns, the same reasoning as the VGA pins above.
-#
-# A source-synchronous constraint was tried here first: a generated clock on the
-# forwarded HDMI_TX_CLK with +/-1.5 ns of output delay, which is the textbook
-# shape and what the ADV7513 actually samples with. It made timing worse, not
-# better -- -8.251 ns against the -5.641 it replaced -- because the forwarded
-# clock leaves through a DDIO and its arrival at the pin bears no simple
-# relation to the launch clock at the registers. Getting that right needs the
-# DDIO path modelled properly, which is a job on its own.
-#
-# So: a plain bound, generous enough to be met, tight enough to keep the bits
-# of a channel together. At 79 ns per pixel the outputs have never been close
-# to marginal, and both HDMI and the CRT have worked throughout.
-set_max_delay -to [get_ports {HDMI_TX_D[*] HDMI_TX_DE HDMI_TX_HS HDMI_TX_VS}] 25.0
-set_min_delay -to [get_ports {HDMI_TX_D[*] HDMI_TX_DE HDMI_TX_HS HDMI_TX_VS}] 0.0
+# 12 ns, failing, for the same reason as the VGA pins above: it keeps the bits
+# of the bus arriving together, which is what the ADV7513 needs.
+set_max_delay -to [get_ports {HDMI_TX_D[*] HDMI_TX_DE HDMI_TX_HS HDMI_TX_VS}] 12.0
 set_min_delay -to [get_ports {HDMI_TX_D[*] HDMI_TX_DE HDMI_TX_HS HDMI_TX_VS}] -2.0
 set_false_path -to   [get_ports {HDMI_I2C_SCL HDMI_I2C_SDA}]
 set_false_path -from [get_ports {HDMI_I2C_SDA HDMI_TX_INT}]

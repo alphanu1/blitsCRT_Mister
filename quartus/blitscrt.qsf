@@ -97,12 +97,25 @@ set_global_assignment -name VERILOG_FILE ../rtl/pll_modes.v
 # threshold -- every advertised mode still solves exactly on integers and never
 # reaches it. See docs/MEGAFUNCTIONS.md.
 #
-# Quartus warns "Ignored N assignments for entity pll_pix_frac -- entity does
-# not exist in design" while the macro is commented out. That is expected: the
-# IP files are listed so the core is available, and the RTL only instantiates
-# it when the macro is defined. Harmless, and the alternative is commenting out
-# the QIP lines too, which makes switching a four-line edit instead of one.
-#set_global_assignment -name VERILOG_MACRO "BLITSCRT_PLL_FRAC=1"
+# Fitted. Comment the macro out to go back to the integer core -- both are
+# compiled in and the RTL picks with `ifdef.
+#
+# Quartus warns "Ignored N assignments for entity pll_pix -- entity does not
+# exist in design" for whichever core is not selected. That is expected: the IP
+# files for both are listed so either is available, and only one is
+# instantiated. Which one is in the design is visible in the synthesis log:
+#
+#   Elaborating entity "pll_pix_frac" for hierarchy "pll_modes:u_pll|..."
+#   Parameter "fractional_vco_multiplier" = "true"
+# Fitted. Comment out to go back to the integer core -- both are compiled in
+# and the RTL picks with `ifdef.
+#
+# The generated fractional IP did not lock: the parameter editor produced a VCO
+# of 403.2 MHz against a 600 MHz minimum, and outputs at half the intended
+# frequency. Corrected by hand in rtl/pll_pix_frac/pll_pix_frac_0002.v, which
+# now matches pll_pix exactly apart from fractional_vco_multiplier and a
+# narrower loop bandwidth. See rtl/pll_pix_frac/PATCHED.md.
+set_global_assignment -name VERILOG_MACRO "BLITSCRT_PLL_FRAC=1"
 
 set_global_assignment -name QIP_FILE ../rtl/pll_pix.qip
 set_global_assignment -name QIP_FILE ../rtl/pll_reconfig/pll_reconfig.qip

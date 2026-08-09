@@ -803,8 +803,23 @@ module blitscrt_top #(
     /* Capabilities are a build-time fact reported at runtime. DDR3 and on-chip
      * need different write paths, and choosing wrong fails silently: rect writes
      * on a DDR3 build land in a register nothing is listening to. */
-    localparam [31:0] CAPS_WORD = (SCANOUT_SRC == "DDR3") ? 32'h0000_0001
-                                                          : 32'h0000_0002;
+    /* Bit 2 says which pixel PLL is fitted, and the daemon must know.
+     *
+     * The solver returns a fractional M for most clocks. On the integer core
+     * the K write is ignored -- AN-661: "K counter reconfiguration is effective
+     * only when you configure the PLL in fractional mode prior to
+     * reconfiguration" -- so the PLL would run the integer part alone. For
+     * 6.518 MHz that is 50 * 31 / 245 = 6.327 MHz, out by 3%, with nothing to
+     * say so. Exactly the silent-failure this word exists to prevent. */
+`ifdef BLITSCRT_PLL_FRAC
+    localparam [31:0] CAPS_PLL = 32'h0000_0004;
+`else
+    localparam [31:0] CAPS_PLL = 32'h0000_0000;
+`endif
+
+    localparam [31:0] CAPS_WORD = ((SCANOUT_SRC == "DDR3") ? 32'h0000_0001
+                                                           : 32'h0000_0002)
+                                  | CAPS_PLL;
 
     blitscrt_regs #(
         .SC_W(SCANOUT_W), .SC_H(SCANOUT_H), .CAPS(CAPS_WORD),

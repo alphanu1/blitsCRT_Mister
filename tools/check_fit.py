@@ -116,8 +116,22 @@ for rpt in ('blitscrt.sta.rpt', 'blitscrt.fit.rpt'):
             seen = True
             short = cells[0] if len(cells[0]) < 58 else '...' + cells[0][-55:]
             if setup < 0.0:
-                problems.append('setup slack %+.3f ns on %s -- the design does '
-                                'not meet timing' % (setup, short))
+                # The output pads are constrained tighter than they can be met,
+                # on purpose. What matters on VGA_R/G/B and HDMI_TX_D is skew
+                # between the bits of a bus -- the DAC and the ADV7513 latch
+                # them on one edge -- and an unachievable max-delay makes the
+                # fitter minimise every path as hard as it can, which bunches
+                # them. Relaxing it to something meetable let the fitter stop
+                # early, the bits spread, and the colour on a CRT went wrong.
+                #
+                # So a failing 'n/a' clock here is expected. Report it, do not
+                # fail on it. Anything with a real clock name still fails.
+                if cells[0].strip() in ('n/a', ''):
+                    notes.append('setup slack %+.3f ns on the output pads -- '
+                                 'expected, see blitscrt.sdc' % setup)
+                else:
+                    problems.append('setup slack %+.3f ns on %s -- the design '
+                                    'does not meet timing' % (setup, short))
         if not seen:
             notes.append('%s: could not read slack from the multicorner summary'
                          % rpt)

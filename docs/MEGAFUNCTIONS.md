@@ -103,12 +103,62 @@ hardware limits are not:
              frac      +0 ppm (M=31 + 4174021017/2^32, N=1 C=64)
 ```
 
+### The generated core does not lock
+
+**Not fitted, and the macro is commented out.** Tried on hardware and the PLL
+never locked -- `reconfig_from_pll[16] = 0` from power-on, before software
+writes anything. The core gates everything on that, so the raster never starts,
+the daemon cannot finish, and the front panel shows power off with the orange
+LED for a gadget that never bound.
+
+Not the reconfiguration path: `peek -p` showed `accepts=255`, `stalled=0` and no
+counter writes even attempted. The K register and the write sequence are fine.
+The counters the IP editor generated are not:
+
+| | integer `pll_pix` | fractional `pll_pix_frac` |
+|---|---|---|
+| M | 63 | 8 + 274877907/2³² = 8.064 |
+| N | 5 | **512** |
+| C | 50 | 32 |
+| VCO | **630.0 MHz** | **0.79 MHz** |
+
+Cyclone V's VCO minimum is 600 MHz. 0.79 is three orders of magnitude below it,
+so this is not a marginal choice -- it is not a working configuration.
+
+N = 512 is the giveaway. Something in the parameter editor session produced a
+reference divider of 512 against the integer core's 5, which suggests the
+reference clock frequency or the output frequency was not entered as intended
+when the core was generated.
+
+**To fix:** regenerate `pll_pix_frac` with the same reference (50 MHz) and
+outputs (12.600 and 6.300 MHz) as `pll_pix`, differing only in PLL mode being
+Fractional-N, then check the generated `n_cnt`/`m_cnt` give a VCO between 600
+and 1600 MHz before building.
+
+### When it is used
 ### When it is used
 
-Not always. `pll_solve_best()` takes the integer solution unless it is worse
-than 50 ppm, because the dithering is a real cost and there is no point paying
-it to remove an error that is already invisible. Every mode the fabric
-advertises solves to 0 ppm on integers and never reaches the fractional path.
+Whenever it is closer. The threshold is zero, so an integer solution is kept
+only when it is already exact.
+
+This started at 50 ppm, on the reasoning that a small rate error is not worth
+the dithering. That is the wrong trade here. A 15 kHz 2D game scrolls a whole
+screen at a constant rate, and any mismatch between the source's frame rate and
+the display's shows as a repeated or dropped frame -- a hitch in a smoothly
+moving background, which is the artefact these modelines exist to avoid. 50 ppm
+is a slip every five and a half minutes. **Dither is a noise floor; a slipped
+frame is an event you see.**
+
+Swept in 1 kHz steps across both bands:
+
+| | |
+|---|---|
+| exact | **23001 of 23001 (100%)** |
+| fraction used | 21391 (93%) |
+| integer kept | 1610 (7%), already exact |
+
+So the modes the fabric advertises still carry no dithering -- they are in that
+7% -- and every awkward Switchres clock lands on zero.
 
 The modeline log says which ran:
 

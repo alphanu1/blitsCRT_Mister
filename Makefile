@@ -628,6 +628,7 @@ check-ip:
 # somebody else's machine. Checked here instead.
 check-decl:
 	@python3 tools/check_decl_order.py rtl/*.v sim/*.v
+	@python3 tools/check_ctrl_reset.py rtl/blitscrt_regs.v
 
 # Both memory sources elaborate. The DDR3 configuration has no Platform Designer
 # system behind it yet, so this is what catches a break in it before the Quartus

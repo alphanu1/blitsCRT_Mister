@@ -45,6 +45,21 @@ module blitscrt_regs #(
      *   3.6  BUS_DIAG; the bridge gives up on a slave that never accepts
      *        instead of wedging the transport
      *   3.7  blitscrt_pllbus between the bridge and the reconfig slave
+     *   3.33 av_force, av_dac and av_clk_inv go back to s_ctrl rather than the
+     *        synchroniser. Moving them onto ctrl_vid in 3.29 looked like the
+     *        tidy thing to do and changed the colour on a CRT: av_dac gates the
+     *        DAC clock and av_clk_inv picks its edge, so both are part of the
+     *        clock path to the A/V board. Driving that from a clk_pix register
+     *        instead of a static wire moves the sampling edge relative to the
+     *        data, and a DAC latching mid-transition reads high. ctrl_vid stays
+     *        nine bits so the assignment does not truncate, which is what
+     *        started this -- it is simply not the source for these three
+     *   3.32 CSYNC restored to the control synchroniser's reset value. Widening
+     *        it from 6 bits to 9 in 3.29 was typed as 0_1001_0110 against the
+     *        register's own 0_1001_1110, dropping bit 3 -- so composite sync
+     *        was off until software wrote CTRL, and a set recovering its AGC
+     *        and black level from that pin came up with the levels visibly
+     *        wrong. tools/check_ctrl_reset.py now compares the two literals
      *   3.31 the buffer swap used the mode table's porches, not the raster's.
      *        h_act_start read t_hsy + t_hbp while video_timing runs on
      *        v_hsy/v_hbp, which follow the host -- so with the table at 640
@@ -136,7 +151,7 @@ module blitscrt_regs #(
      * clock select pointing at a clock pin and once without -- and the only way
      * to tell them apart was whether the monitor synced.
      */
-    parameter [31:0] VERSION = 32'h0003_001F,
+    parameter [31:0] VERSION = 32'h0003_0021,
     parameter [11:0] SCANOUT_MAXW = 12'd1280,
     /* Cycles the user button ignores further edges for, covering contact
      * bounce. 20 ms at 50 MHz. A testbench overrides it to something it can
@@ -801,7 +816,12 @@ module blitscrt_regs #(
     reg [8:0] ctrl_meta, ctrl_vid;
     always @(posedge clk_pix or negedge vid_cfg_rst_n) begin
         if (!vid_cfg_rst_n) begin
-            ctrl_meta <= 9'b0_1001_0110; ctrl_vid <= 9'b0_1001_0110;
+            /* The same value s_ctrl resets to. Widening this from 6 bits to
+             * 9 was typed as 0_1001_0110 and dropped bit 3, CSYNC -- so
+             * composite sync was off until software wrote CTRL, and a set
+             * recovering its AGC and black level from that pin came up with
+             * the levels wrong. */
+            ctrl_meta <= 9'b0_1001_1110; ctrl_vid <= 9'b0_1001_1110;
         end else begin
             ctrl_meta <= s_ctrl; ctrl_vid <= ctrl_meta;
         end
@@ -814,9 +834,28 @@ module blitscrt_regs #(
     assign hdmi_en     = ctrl_vid[4];
     assign hps_timing  = ctrl_vid[5];
     assign hps_timing_bus = s_ctrl[5];
-    assign av_force      = ctrl_vid[6];
-    assign av_dac        = ctrl_vid[7];
-    assign av_clk_inv    = ctrl_vid[8];
+    /*
+     * These three stay on s_ctrl, not ctrl_vid.
+     *
+     * Moving them onto the synchroniser looked like the tidy thing to do -- it
+     * is a bus crossing clock domains -- and it changed the colour on a CRT.
+     * They are static after configuration, so the value is identical either
+     * way; what differs is where the signal comes from and how it is placed.
+     *
+     * av_dac gates the DAC clock and av_clk_inv chooses its edge, so both are
+     * part of the clock path to the A/V board rather than ordinary control
+     * bits. Feeding that path from a clk_pix register instead of a static wire
+     * moves the sampling edge relative to the data, and a DAC latching
+     * part-way through a transition reads high -- which looks like the gamma
+     * has been raised.
+     *
+     * ctrl_vid stays nine bits wide so the assignment from s_ctrl does not
+     * truncate, which is what started this. It simply is not the source for
+     * these three.
+     */
+    assign av_force      = s_ctrl[6];
+    assign av_dac        = s_ctrl[7];
+    assign av_clk_inv    = s_ctrl[8];
 
 endmodule
 

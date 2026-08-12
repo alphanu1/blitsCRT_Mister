@@ -4,26 +4,11 @@ The milestone history, in detail: what each one covers, what is done, and what
 was learned getting there. The README carries the summary.
 
 **Current bugs are at the top, deliberately.** The milestone history below is
-long and mostly settled; what needs attention is here.
+long and mostly settled; what needs attention is here. One open, and it is not
+yet investigated.
 
 
 ## Open bugs
-
-### Stale pixels outside the new active area -- partly fixed, needs testing
-
-On a mode change the scanout geometry shrinks but DDR3 still holds the larger
-picture, and nothing clears what the new mode does not cover -- so the edges
-show the previous frame as garbage. Seen directly during debugging: a RetroArch
-menu survived a full-frame black fill at a smaller geometry.
-
-`blitscrt_fabric_enable()` now clears the window when it blanks, which covers the
-common path: a host disables the controller on a mode switch, so the clear
-happens on the way through. **Whether that is enough in practice is untested.**
-
-Not covered: a geometry change with the controller left enabled. The complete
-fix is a clear in `blitscrt_scanout_configure()` whenever the geometry changes --
-at most 630 KB at 115 MB/s is about 5 ms, once per modeset, against the 100 ms
-the mode latch already allows. Daemon-side, no fabric change.
 
 ### Stray pixel lines in the Donkey Kong 64 intro -- not investigated
 
@@ -36,6 +21,21 @@ which would put it host-side rather than here.
 
 
 ## Done, awaiting confirmation on hardware
+
+**Stale pixels outside the new active area are gone.** On a mode change the
+scanout geometry shrank but DDR3 still held the larger picture, and nothing
+cleared what the new mode did not cover -- so the edges showed the previous
+frame as garbage. Seen directly during debugging: a RetroArch menu survived a
+full-frame black fill at a smaller geometry.
+
+Fixed as a side effect of the blanking below. `blitscrt_fabric_enable()` clears
+the window when it blanks, and a host disables the controller on every mode
+change -- so in practice the clear happens on the way through every switch.
+Confirmed on hardware.
+
+A geometry change with the controller left enabled would still not be covered.
+Nothing does that today; if something ever does, the fix is the same clear in
+`blitscrt_scanout_configure()`.
 
 **The test card no longer flashes between modes.** A host disables the
 controller on every mode change, and the card used to appear for a fraction of a

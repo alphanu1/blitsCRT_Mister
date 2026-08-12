@@ -183,6 +183,44 @@ void blitscrt_dev_heartbeat(struct blitscrt_dev *d)
 	d->heartbeat++;
 	blitscrt_fabric_write(d->fabric, BLITSCRT_REG_HEARTBEAT, d->heartbeat);
 
+	/*
+	 * Bring the test card back once nothing has been driving the display
+	 * for a while.
+	 *
+	 * blitscrt_fabric_enable() blanks rather than showing the card, because
+	 * a host disables the controller on every mode change and the card used
+	 * to flash between games. But the card earns its place when the board
+	 * really is idle: it says the hardware is alive and the CRT is locked,
+	 * which a black screen does not.
+	 *
+	 * So it is a timeout rather than an edge. A mode change is over in
+	 * milliseconds and never reaches it; an unplugged cable or a host that
+	 * has stopped does.
+	 */
+	{
+		struct timespec now;
+
+		clock_gettime(CLOCK_MONOTONIC, &now);
+
+		if (d->controller_enabled) {
+			d->idle_since = now;
+			if (d->testcard_shown) {
+				blitscrt_fabric_testcard(d->fabric, 0);
+				d->testcard_shown = 0;
+			}
+		} else if (!d->testcard_shown) {
+			long ms = (now.tv_sec - d->idle_since.tv_sec) * 1000
+				+ (now.tv_nsec - d->idle_since.tv_nsec) / 1000000;
+
+			if (d->idle_since.tv_sec == 0)
+				d->idle_since = now;
+			else if (ms >= BLITSCRT_TESTCARD_DELAY_MS) {
+				blitscrt_fabric_testcard(d->fabric, 1);
+				d->testcard_shown = 1;
+			}
+		}
+	}
+
 	{
 		uint32_t hs = d->host_attached
 			? (d->controller_enabled ? BLITSCRT_HOST_STREAMING

@@ -3,6 +3,122 @@
 The milestone history, in detail: what each one covers, what is done, and what
 was learned getting there. The README carries the summary.
 
+**Current bugs are at the top, deliberately.** The milestone history below is
+long and mostly settled; what needs attention is here.
+
+
+## Open bugs
+
+### Stale pixels outside the new active area -- partly fixed, needs testing
+
+On a mode change the scanout geometry shrinks but DDR3 still holds the larger
+picture, and nothing clears what the new mode does not cover -- so the edges
+show the previous frame as garbage. Seen directly during debugging: a RetroArch
+menu survived a full-frame black fill at a smaller geometry.
+
+`blitscrt_fabric_enable()` now clears the window when it blanks, which covers the
+common path: a host disables the controller on a mode switch, so the clear
+happens on the way through. **Whether that is enough in practice is untested.**
+
+Not covered: a geometry change with the controller left enabled. The complete
+fix is a clear in `blitscrt_scanout_configure()` whenever the geometry changes --
+at most 630 KB at 115 MB/s is about 5 ms, once per modeset, against the 100 ms
+the mode latch already allows. Daemon-side, no fabric change.
+
+### Stray pixel lines in the Donkey Kong 64 intro -- not investigated
+
+Beside two of the heads. No code written for this.
+
+Worth capturing `peek -g` with it on screen, for `late lines` and `underruns`,
+and establishing whether it is N64-wide or only that scene: the intro is
+pre-rendered video, so it may be a decode path the emulator uses nowhere else,
+which would put it host-side rather than here.
+
+
+## Done, awaiting confirmation on hardware
+
+**The test card no longer flashes between modes.** A host disables the
+controller on every mode change, and the card used to appear for a fraction of a
+second each time. Scanout now blanks instead, and the card returns only after
+three seconds idle -- long enough that a mode change never reaches it, short
+enough to answer "is it alive?" when a cable comes out.
+
+Black has to come from the framebuffer, because the fabric shows the card
+whenever scanout is off:
+
+```verilog
+src_scanout = r_scanout_en && !r_testcard_en;
+```
+
+Both bits clear is still the card. So scanout stays enabled over a cleared
+window. `BLITSCRT_TESTCARD_DELAY_MS` in `device.h` if three seconds is wrong.
+
+
+**M7 -- Windows host. Not started, and probably not here.** GUD is a wire
+protocol, not a Linux one: request codes, a mode structure, a buffer format.
+Nothing about the board depends on what is at the other end, so a Windows host
+that speaks the same protocol works against this hardware unmodified.
+
+That cuts both ways, and is the reason M7 belongs in its own repository with a
+link from here rather than inside this tree. A Windows GUD driver is not specific
+to blitsCRT in any way: it would drive a Pi Zero adapter, the STM32 reference
+device, or anything else implementing the protocol. Burying it in an FPGA CRT
+project would make it hard to find and hard to reuse, and would tie its release
+cycle to hardware it does not care about. The protocol is open by design -- "all
+that's needed is to add a USB vid:pid" -- so a host driver is a peer of the Linux
+one, not an accessory to this board.
+
+Nothing like it appears to exist. The GUD ecosystem is entirely Linux: the in-tree
+driver, the gadget side, Raspberry Pi images. The IddCx samples that do exist are
+all *virtual* displays -- they enumerate a monitor and discard the frames -- so the
+frame loop is demonstrated but the transport is not. Two references make it new
+work rather than a blank page. The GUD host driver is **deliberately MIT
+licensed**, in the author's words "to smooth the path for any BSD port", so its
+protocol logic is both readable and reusable. And Microsoft ships an IddCx sample
+for the Windows plumbing. The novel part is the join between them.
+
+| | |
+|---|---|
+| done | the protocol is host-agnostic; the device side needs no change for this |
+| **todo** | **stand it up as its own project and link it from here; it is useful to any GUD device** |
+| **todo** | **an IddCx user-mode driver, starting from Microsoft's sample** |
+| **todo** | **establish how a modeline reaches the driver; IddCx carries resolution and refresh, not porches** |
+| todo | most likely a Switchres backend for this driver, alongside its existing drmkms and adl ones |
+| todo | damage tracking from the desktop surface, which the Linux driver does for free |
+| todo | format conversion to RGB888 or RGB565 in the driver |
+| todo | driver signing: test-signed for a cabinet, attestation-signed to distribute |
+
+The framework is IddCx, the Indirect Display Driver class extension: user-mode
+only with no kernel component, running in Session 0, handed the desktop image as a
+DirectX surface. Microsoft names this exact case -- a USB dongle with a monitor
+attached -- and ships a sample that enumerates a monitor and runs the frame loop.
+
+Switchres stays where it is, in the emulator, as on Linux. What differs is how its
+output reaches the display. On Linux it adds the mode to DRM and GUD carries the
+whole modeline through `SET_STATE_CHECK`. Windows has no equivalent path: IddCx
+deals in a monitor mode list and EDID, so resolution and refresh reach a driver and
+porches do not. A normal indirect display does not generate its own timing and has
+no use for them. This one does.
+
+The existing Windows arrangement is a two-part one. A tool installs the resolution
+list into the driver ahead of time, and the emulator then adjusts timings at run
+time through a driver-specific interface -- ADL on AMD -- so every refresh rate
+does not have to be predefined. The first half maps straight onto IddCx, which
+reports a mode list already. The second half has no IddCx equivalent and is the
+real work of M7.
+
+Switchres has a pluggable backend for exactly this reason, with `drmkms` on Linux
+and `adl` and `powerstrip` on Windows, so another one for this driver is the shape
+the problem already has. That is the expected route rather than a settled one:
+where a Windows Switchres deposits a generated modeline, and whether it can be
+read rather than pushed, is the first thing M7 has to establish.
+
+Screen capture through the Desktop Duplication API would be a fraction of the
+effort and is not an option: it cannot switch resolution per game, which is the
+point of the whole design.
+
+
+
 **M1 -- fabric only. Done.** Running on hardware: 15kHz output, both connectors
 live.
 
@@ -478,69 +594,6 @@ would have been invisible underneath it.
 The registers-only report was clean throughout -- worst slack **+3.397 ns** in
 `scanout_fetch` -- so the fabric itself was never the problem.
 
-
-**M7 -- Windows host. Not started, and probably not here.** GUD is a wire
-protocol, not a Linux one: request codes, a mode structure, a buffer format.
-Nothing about the board depends on what is at the other end, so a Windows host
-that speaks the same protocol works against this hardware unmodified.
-
-That cuts both ways, and is the reason M7 belongs in its own repository with a
-link from here rather than inside this tree. A Windows GUD driver is not specific
-to blitsCRT in any way: it would drive a Pi Zero adapter, the STM32 reference
-device, or anything else implementing the protocol. Burying it in an FPGA CRT
-project would make it hard to find and hard to reuse, and would tie its release
-cycle to hardware it does not care about. The protocol is open by design -- "all
-that's needed is to add a USB vid:pid" -- so a host driver is a peer of the Linux
-one, not an accessory to this board.
-
-Nothing like it appears to exist. The GUD ecosystem is entirely Linux: the in-tree
-driver, the gadget side, Raspberry Pi images. The IddCx samples that do exist are
-all *virtual* displays -- they enumerate a monitor and discard the frames -- so the
-frame loop is demonstrated but the transport is not. Two references make it new
-work rather than a blank page. The GUD host driver is **deliberately MIT
-licensed**, in the author's words "to smooth the path for any BSD port", so its
-protocol logic is both readable and reusable. And Microsoft ships an IddCx sample
-for the Windows plumbing. The novel part is the join between them.
-
-| | |
-|---|---|
-| done | the protocol is host-agnostic; the device side needs no change for this |
-| **todo** | **stand it up as its own project and link it from here; it is useful to any GUD device** |
-| **todo** | **an IddCx user-mode driver, starting from Microsoft's sample** |
-| **todo** | **establish how a modeline reaches the driver; IddCx carries resolution and refresh, not porches** |
-| todo | most likely a Switchres backend for this driver, alongside its existing drmkms and adl ones |
-| todo | damage tracking from the desktop surface, which the Linux driver does for free |
-| todo | format conversion to RGB888 or RGB565 in the driver |
-| todo | driver signing: test-signed for a cabinet, attestation-signed to distribute |
-
-The framework is IddCx, the Indirect Display Driver class extension: user-mode
-only with no kernel component, running in Session 0, handed the desktop image as a
-DirectX surface. Microsoft names this exact case -- a USB dongle with a monitor
-attached -- and ships a sample that enumerates a monitor and runs the frame loop.
-
-Switchres stays where it is, in the emulator, as on Linux. What differs is how its
-output reaches the display. On Linux it adds the mode to DRM and GUD carries the
-whole modeline through `SET_STATE_CHECK`. Windows has no equivalent path: IddCx
-deals in a monitor mode list and EDID, so resolution and refresh reach a driver and
-porches do not. A normal indirect display does not generate its own timing and has
-no use for them. This one does.
-
-The existing Windows arrangement is a two-part one. A tool installs the resolution
-list into the driver ahead of time, and the emulator then adjusts timings at run
-time through a driver-specific interface -- ADL on AMD -- so every refresh rate
-does not have to be predefined. The first half maps straight onto IddCx, which
-reports a mode list already. The second half has no IddCx equivalent and is the
-real work of M7.
-
-Switchres has a pluggable backend for exactly this reason, with `drmkms` on Linux
-and `adl` and `powerstrip` on Windows, so another one for this driver is the shape
-the problem already has. That is the expected route rather than a settled one:
-where a Windows Switchres deposits a generated modeline, and whether it can be
-read rather than pushed, is the first thing M7 has to establish.
-
-Screen capture through the Desktop Duplication API would be a fraction of the
-effort and is not an option: it cannot switch resolution per game, which is the
-point of the whole design.
 
 ## The live raster, and why narrow modes were broken
 

@@ -149,7 +149,12 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 #       fitted. The K write is ignored on an integer core, so a fractional
 #       solution would run the integer part of M alone -- 6.327 MHz where 6.518
 #       was asked for -- and nothing would report it
-BLITSCRTD_BUILD ?= d55
+#   d56 blank instead of showing the test card when scanout stops, and bring
+#       the card back only after three seconds idle. A host disables the
+#       controller on every mode change, so the card used to flash between
+#       games; a mode change is over in milliseconds and never reaches the
+#       timeout, while an unplugged cable does
+BLITSCRTD_BUILD ?= d56
 CFLAGS  += -DBLITSCRTD_BUILD='"$(BLITSCRTD_BUILD)"'
 # -lpthread: the bulk endpoint runs on its own thread, so a blocking read cannot
 # stop ep0 being serviced. Static linking needs it named explicitly.

@@ -2,6 +2,7 @@
 #ifndef BLITSCRT_DEVICE_H
 #define BLITSCRT_DEVICE_H
 
+#include <time.h>
 #include <stdint.h>
 #include <stddef.h>
 #include "gud.h"
@@ -10,6 +11,11 @@
 #define BLITSCRT_MAX_MODES  32
 
 struct blitscrt_fabric;    /* opaque, see fabric.h */
+
+/* How long the display stays black before the test card returns. Long enough
+ * that a mode change never reaches it -- those are over in milliseconds -- and
+ * short enough to answer "is it still alive?" without a wait. */
+#define BLITSCRT_TESTCARD_DELAY_MS  3000
 
 struct blitscrt_dev {
 	struct blitscrt_fabric *fabric;      /* NULL runs headless, for tests */
@@ -23,6 +29,10 @@ struct blitscrt_dev {
 	uint8_t  format;
 	int      host_attached;
 	int      controller_enabled;
+	/* Test card timeout: when the display last had something driving it, and
+	 * whether the card is currently up. */
+	struct timespec idle_since;
+	int      testcard_shown;
 	uint32_t heartbeat;
 	int      display_enabled;
 

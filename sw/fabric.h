@@ -92,6 +92,9 @@ int blitscrt_fabric_take_user_press(struct blitscrt_fabric *f);
 /* Write a line of text into the overlay character buffer. */
 void blitscrt_fabric_overlay_line(struct blitscrt_fabric *f,
 				  unsigned row, unsigned col, const char *s);
+/* Show or hide the test card without disturbing scanout. */
+void blitscrt_fabric_testcard(struct blitscrt_fabric *f, int on);
+
 void blitscrt_fabric_overlay_clear(struct blitscrt_fabric *f);
 
 #endif

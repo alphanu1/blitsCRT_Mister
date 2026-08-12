@@ -1009,9 +1009,47 @@ void blitscrt_fabric_enable(struct blitscrt_fabric *f, int on)
 	if (!on) c &= ~BLITSCRT_CTRL_HPS_TIMING;
 	if (on) c |=  BLITSCRT_CTRL_ENABLE;
 	else    c &= ~BLITSCRT_CTRL_ENABLE;
-	/* the test card is what shows when scanout is off */
-	if (on) c &= ~BLITSCRT_CTRL_TESTCARD;
-	else    c |=  BLITSCRT_CTRL_TESTCARD;
+
+	/*
+	 * Turning scanout off no longer shows the test card straight away.
+	 *
+	 * A host disables the controller on every mode change, so the card used
+	 * to flash on screen at each switch -- colour bars for a fraction of a
+	 * second between two games. Blanking instead makes a mode change look
+	 * like a mode change.
+	 *
+	 * The card still has a job: it says the board is alive when nothing is
+	 * driving it. So it comes back on a timer rather than immediately --
+	 * see blitscrt_dev_heartbeat, which turns it on once the host has been
+	 * gone for BLITSCRT_TESTCARD_DELAY_MS.
+	 *
+	 * Black has to come from the framebuffer, because the fabric shows the
+	 * card whenever scanout is off:
+	 *
+	 *     src_scanout = r_scanout_en && !r_testcard_en;
+	 *
+	 * so both bits clear is still the card. Scanout therefore stays enabled
+	 * over a cleared window.
+	 */
+	if (on) {
+		c &= ~BLITSCRT_CTRL_TESTCARD;
+	} else {
+		blitscrt_scanout_fill(f, 0, 0, f->sc_w, f->sc_h, 0x0000);
+		c &= ~BLITSCRT_CTRL_TESTCARD;
+		c |=  BLITSCRT_CTRL_ENABLE;
+	}
+	blitscrt_fabric_write(f, BLITSCRT_REG_CTRL, c);
+}
+
+/* Show or hide the test card without touching scanout. Used by the timer that
+ * brings it back once a host has been gone a while. */
+void blitscrt_fabric_testcard(struct blitscrt_fabric *f, int on)
+{
+	uint32_t c;
+	if (!f) return;
+	c = blitscrt_fabric_read(f, BLITSCRT_REG_CTRL);
+	if (on) c |=  BLITSCRT_CTRL_TESTCARD;
+	else    c &= ~BLITSCRT_CTRL_TESTCARD;
 	blitscrt_fabric_write(f, BLITSCRT_REG_CTRL, c);
 }
 

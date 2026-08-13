@@ -54,38 +54,27 @@ Both bits clear is still the card. So scanout stays enabled over a cleared
 window. `BLITSCRT_TESTCARD_DELAY_MS` in `device.h` if three seconds is wrong.
 
 
-**M8 -- vblank in gud. Not started.** The driver reports no vblank at all, so an
-application asking to synchronise to this display gets nothing to synchronise
-to. Measured with vsync on and nothing else attached: 186 frames/s against a
-59.99 Hz raster, 128 against 59.82, 95 against 59.83. The host is not being
-paced, frames land in DDR3 mid-scan, and two thirds of what it renders is
-overwritten before it is displayed.
+**M7 -- Windows host. Working, early, in its own repository:
+https://github.com/alphanu1/gud-windows**
 
-DRM has a standard answer -- an hrtimer at `framedur_ns`, as vkms, virtgpu,
-vmwgfx and amdgpu's virtual display all do -- and there is work in flight to
-move it into the core as `DRM_CRTC_VBLANK_TIMER`.
+The desktop reaches a 15 kHz CRT from Windows, at per-game modelines. Switchres
+generates a timing, a backend on the `gud-backend` branch writes it to the
+driver, and the driver re-enumerates its monitor within about two seconds so
+Windows offers the new geometry -- no replug. Verified with `384x224@59.185` and
+an interlaced `640x480@60`, neither of which the device advertises.
 
-But every driver using that pattern is guessing, because none of them have a
-real raster. **This one does.** A free-running timer on the host would drift
-against a fabric generating exact timing, which is the thing this project goes
-to some lengths to avoid. So the timer is the first step and not the end of it:
-either discipline it against a frame counter read back from the fabric, or send
-a real vblank event over the wire and call `drm_crtc_handle_vblank()` on
-arrival.
+Its own README calls it WIP and means it: one device, one machine. **Signing is
+the blocker** rather than anything in the driver. It is self-signed, so
+installing means asking a user to trust a root certificate, and Defender flags a
+newly signed binary as `Trojan:Win32/Bearfoos.A!ml` on reputation alone -- the
+identical binary signed with a certificate the machine has already seen installs
+silently. Attestation signing through Partner Center is the real fix and needs an
+EV certificate. GUD is a wire protocol, not a Linux
+one: request codes, a mode structure, a buffer format. Nothing about the board
+depends on what is at the other end, so a Windows host that speaks the same
+protocol works against this hardware unmodified.
 
-The second needs a GUD protocol addition, which is the significant part -- GUD
-is a wire protocol with other implementations, so an event channel is not
-something to add casually.
-
-`docs/VBLANK.md` has the callbacks needed, the ordering trap in the timer
-callback, and what each option costs.
-
-**M7 -- Windows host. Not started, and probably not here.** GUD is a wire
-protocol, not a Linux one: request codes, a mode structure, a buffer format.
-Nothing about the board depends on what is at the other end, so a Windows host
-that speaks the same protocol works against this hardware unmodified.
-
-That cuts both ways, and is the reason M7 belongs in its own repository with a
+That cuts both ways, and is the reason M7 lives in its own repository with a
 link from here rather than inside this tree. A Windows GUD driver is not specific
 to blitsCRT in any way: it would drive a Pi Zero adapter, the STM32 reference
 device, or anything else implementing the protocol. Burying it in an FPGA CRT
@@ -125,6 +114,11 @@ whole modeline through `SET_STATE_CHECK`. Windows has no equivalent path: IddCx
 deals in a monitor mode list and EDID, so resolution and refresh reach a driver and
 porches do not. A normal indirect display does not generate its own timing and has
 no use for them. This one does.
+
+*The notes below were written before it was built. Three of the guesses turned
+out right and are worth recording as such: IddCx does report a mode list, the
+second half did need something new, and a Switchres backend was the shape the
+problem had. The repository is the authority on the rest.*
 
 The existing Windows arrangement is a two-part one. A tool installs the resolution
 list into the driver ahead of time, and the emulator then adjusts timings at run
@@ -558,6 +552,41 @@ What was worth keeping from it is the safety argument. A fixed-frequency
 deflection circuit can be damaged by sync outside its band, so `mode_check()`
 clamps against `blitscrt_limits_15khz` on every timing a host sets, advertised or
 not. Widening that band for a multisync should stay a deliberate act.
+
+
+**M8 -- vblank. Not started; designed on both sides.**
+
+The host side is written up in
+[gud-windows/docs/VBLANK.md](https://github.com/alphanu1/gud-windows/blob/master/docs/VBLANK.md),
+with the budget measured rather than assumed: blanking is 1.40 ms at 632x240p60
+and 1.43 ms per field at 648x480i60, against 0.83 ms for one 64x48 damage
+rectangle and 1.59 ms for a full 648x480 surface. So a small update fits inside
+the blanking interval and a whole frame does not -- which is the constraint the
+design has to work around, and it is the same on Linux. The driver reports no vblank at all, so an
+application asking to synchronise to this display gets nothing to synchronise
+to. Measured with vsync on and nothing else attached: 186 frames/s against a
+59.99 Hz raster, 128 against 59.82, 95 against 59.83. The host is not being
+paced, frames land in DDR3 mid-scan, and two thirds of what it renders is
+overwritten before it is displayed.
+
+DRM has a standard answer -- an hrtimer at `framedur_ns`, as vkms, virtgpu,
+vmwgfx and amdgpu's virtual display all do -- and there is work in flight to
+move it into the core as `DRM_CRTC_VBLANK_TIMER`.
+
+But every driver using that pattern is guessing, because none of them have a
+real raster. **This one does.** A free-running timer on the host would drift
+against a fabric generating exact timing, which is the thing this project goes
+to some lengths to avoid. So the timer is the first step and not the end of it:
+either discipline it against a frame counter read back from the fabric, or send
+a real vblank event over the wire and call `drm_crtc_handle_vblank()` on
+arrival.
+
+The second needs a GUD protocol addition, which is the significant part -- GUD
+is a wire protocol with other implementations, so an event channel is not
+something to add casually.
+
+`docs/VBLANK.md` has the callbacks needed, the ordering trap in the timer
+callback, and what each option costs.
 
 ## Interlace at 60 Hz
 

@@ -63,8 +63,11 @@ pixel clock, over USB with LZ4 compression, full-screen at 60 fps.
 `make setup && make world` builds everything from source -- bitstream, kernel,
 daemon, bootloader -- and writes a card image. Nothing of MiSTer's ends up on it.
 
-GUD is a wire protocol rather than a Linux one, so a Windows driver would work
-against the same board unchanged. That is **M7**.
+GUD is a wire protocol rather than a Linux one, so the same board works
+unchanged from Windows: an IddCx driver speaking the same protocol, with
+Switchres generating per-game modelines that reach the board with their own
+porches. Early, and in its own repository:
+https://github.com/alphanu1/gud-windows
 
 
 ## Quick start
@@ -522,7 +525,8 @@ scanout geometry and underruns, `-i` for the I/O board pins.
 | **M4** GUD USB host link | done -- a host enumerates it as a display and drives it |
 | **M5** bandwidth | done -- LZ4, 60 fps full-screen |
 | **M6** front panel and soft disconnect | done -- buttons and LEDs through the I2C expander, and a button that disconnects the display without touching the cable |
-| **M7** Windows host | not started, and its own repository |
+| **M7** Windows host | working, early -- an IddCx driver speaking the same GUD protocol, with a Switchres backend. Its own repository: https://github.com/alphanu1/gud-windows |
+| **M8** vblank in gud | not started -- the driver reports none, so a host's vsync has nothing to synchronise to and renders whenever it likes. `docs/VBLANK.md` |
 
 `docs/ROADMAP.md` has each milestone in full: what it covers, what is done, and
 what it cost to get working.

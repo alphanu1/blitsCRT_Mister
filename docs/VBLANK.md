@@ -90,6 +90,27 @@ a wire protocol with other implementations, so an event channel is not something
 to add casually. An interrupt endpoint is the obvious shape; the device already
 has spare endpoints.
 
+## The host side is already designed
+
+[gud-windows/docs/VBLANK.md](https://github.com/alphanu1/gud-windows/blob/master/docs/VBLANK.md)
+works the same problem from the Windows end, with the budget measured rather
+than assumed:
+
+| mode | blanking window | a full surface costs |
+|---|---|---|
+| 632x240p60 | 1.40 ms | 0.85 ms at 384x224 |
+| 648x480i60 | 1.43 ms per field | 1.59 ms |
+| 384x224p60 | 2.61 ms | 0.85 ms |
+
+One 64x48 damage rectangle is 0.83 ms on this hardware. So a small update fits
+inside the blanking interval and a whole 648x480 frame does not -- 1.59 ms
+against 1.43. That constraint is the same on Linux and shapes what a vblank
+event can usefully promise: it is not "you may now write a frame", it is "you
+may now write about a millisecond's worth".
+
+Worth reading before starting the Linux side, since the two want the same answer
+and it is the same device at the other end.
+
 ## What it would fix
 
 **Tearing.** The host would render one frame per field instead of two or three,

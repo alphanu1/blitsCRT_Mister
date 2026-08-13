@@ -340,6 +340,7 @@ release built from sources at head would not be.
 | `docs/DESIGN.md` | how it works: mode selection, the write path, the PLL solver |
 | `docs/BRINGUP.md` | step by step to first picture |
 | `docs/INTERLACE.md` | interlace at 60 Hz, and the two monitor profiles |
+| `docs/VBLANK.md` | why gud has no vblank, and what adding one takes |
 | `docs/UBOOT.md` | the bootloader: why MiSTer's, what gets patched, and why |
 | `docs/UBOOT_ENV.md` | the boot environment: importing, changing, recovery |
 | `docs/BOOT.md` | how the bitstream reaches the FPGA |
@@ -534,6 +535,12 @@ what it cost to get working.
   cable has VBUS cut and that is what dwc2 raises `FUNCTIONFS_DISABLE`
   from. `/sys/class/udc/<name>/state` reports `configured` independently of the
   FunctionFS event stream, so polling it would catch an unannounced unplug too.
+- **No vblank.** `gud` reports none, so an application's vsync has nothing to
+  synchronise to and the host renders whenever it likes -- measured at 186
+  frames a second against a 59.99 Hz raster. Frames land in memory mid-scan, so
+  the picture can tear, and most of what the host draws is overwritten before it
+  is shown. `docs/VBLANK.md`; it is **M8**.
+
 - **A host framebuffer larger than the mode is cropped, not scaled.** An X screen
   that has not followed a mode switch sends rects wider than the raster; the blit
   clips them to the left edge and the daemon says so once. The fix is on the host

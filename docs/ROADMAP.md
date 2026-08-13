@@ -54,6 +54,32 @@ Both bits clear is still the card. So scanout stays enabled over a cleared
 window. `BLITSCRT_TESTCARD_DELAY_MS` in `device.h` if three seconds is wrong.
 
 
+**M8 -- vblank in gud. Not started.** The driver reports no vblank at all, so an
+application asking to synchronise to this display gets nothing to synchronise
+to. Measured with vsync on and nothing else attached: 186 frames/s against a
+59.99 Hz raster, 128 against 59.82, 95 against 59.83. The host is not being
+paced, frames land in DDR3 mid-scan, and two thirds of what it renders is
+overwritten before it is displayed.
+
+DRM has a standard answer -- an hrtimer at `framedur_ns`, as vkms, virtgpu,
+vmwgfx and amdgpu's virtual display all do -- and there is work in flight to
+move it into the core as `DRM_CRTC_VBLANK_TIMER`.
+
+But every driver using that pattern is guessing, because none of them have a
+real raster. **This one does.** A free-running timer on the host would drift
+against a fabric generating exact timing, which is the thing this project goes
+to some lengths to avoid. So the timer is the first step and not the end of it:
+either discipline it against a frame counter read back from the fabric, or send
+a real vblank event over the wire and call `drm_crtc_handle_vblank()` on
+arrival.
+
+The second needs a GUD protocol addition, which is the significant part -- GUD
+is a wire protocol with other implementations, so an event channel is not
+something to add casually.
+
+`docs/VBLANK.md` has the callbacks needed, the ordering trap in the timer
+callback, and what each option costs.
+
 **M7 -- Windows host. Not started, and probably not here.** GUD is a wire
 protocol, not a Linux one: request codes, a mode structure, a buffer format.
 Nothing about the board depends on what is at the other end, so a Windows host
